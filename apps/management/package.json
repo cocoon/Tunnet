@@ -8,8 +8,8 @@
     "start": "bun run src/index.ts"
   },
   "dependencies": {
-    "@better-auth/oauth-provider": "^1.6.23",
-    "@better-auth/sso": "^1.6.23",
+    "@better-auth/oauth-provider": "^1.6.25",
+    "@better-auth/sso": "^1.6.25",
     "@elysiajs/cors": "^1.4.2",
     "@peculiar/x509": "^2.0.0",
     "@tunnet/api": "workspace:*",
@@ -18,8 +18,8 @@
     "@tunnet/env": "workspace:*",
     "@tunnet/ip": "workspace:*",
     "@tunnet/policy-engine": "workspace:*",
-    "argon2": "^0.45.0",
-    "better-auth": "^1.6.23",
+    "argon2": "^0.45.1",
+    "better-auth": "^1.6.25",
     "drizzle-orm": "^0.45.2",
     "elysia": "^1.4.29",
     "hash-wasm": "^4.12.0",

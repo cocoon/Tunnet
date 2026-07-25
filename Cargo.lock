@@ -5895,9 +5895,9 @@ dependencies = [
 
 [[package]]
 name = "route_manager"
-version = "0.2.11"
+version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "319bb478ff9aae1dc7a544fa599e9eb47e2521621dc3921fba6abcaaa312092c"
+checksum = "1de4a73da5e20c4e521c395e21918034624165c31511e86b03e494bf0afa56ef"
 dependencies = [
  "flume",
  "libc",
@@ -6333,9 +6333,9 @@ checksum = "b12e76d157a900eb52e81bc6e9f3069344290341720e9178cde2407113ac8d89"
 
 [[package]]
 name = "self_update"
-version = "1.0.0-rc.5"
+version = "1.0.0-rc.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc3ded72e05f9b62c325cf3da9072fbefc2319e178c79a1355cb95ead740f8d4"
+checksum = "5b7cc0b87814417b0e0697ae582dfc5f614f469fbac9b138e40457d88913187d"
 dependencies = [
  "either",
  "flate2",
@@ -6657,9 +6657,9 @@ dependencies = [
 
 [[package]]
 name = "simd-adler32"
-version = "0.3.9"
+version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
+checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "simd_cesu8"
@@ -7805,9 +7805,9 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tun-rs"
-version = "2.8.6"
+version = "2.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "675d4d5a2a7fe12c743132eb35d45e90a5f9bf798762d2de6cea91d1d9d8feb4"
+checksum = "bb50fdefaf791097b5559791cef2b2e9da2fad974809264d104cafbaa3efc452"
 dependencies = [
  "blocking",
  "byteorder",
@@ -7922,10 +7922,12 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tun-rs",
+ "tunnet-client",
  "tunnet-common",
  "tunnet-core",
  "tunnet-policy-engine",
  "tunnet-posture",
+ "tunnet-service",
  "uuid",
  "windows-service",
  "windows-sys 0.61.2",
@@ -7949,6 +7951,43 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "tunnet-cli"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dotenvy",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "tunnet-client",
+ "tunnet-common",
+ "tunnet-service",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tunnet-client"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tunnet-common",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -8029,6 +8068,7 @@ dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
  "arc-swap",
+ "async-trait",
  "axum",
  "base64",
  "blake3",
@@ -8041,7 +8081,10 @@ dependencies = [
  "hex",
  "hickory-proto",
  "hmac",
+ "http-body-util",
  "httparse",
+ "hyper",
+ "hyper-util",
  "ipnet",
  "iroh",
  "iroh-blobs",
@@ -8064,9 +8107,11 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
+ "tokio-stream",
  "tokio-tungstenite 0.30.0",
  "tokio-util",
  "toml",
+ "tower",
  "tracing",
  "tunnet-common",
  "uuid",
@@ -8236,6 +8281,16 @@ dependencies = [
  "tunnet-common",
  "uuid",
  "x509-parser",
+]
+
+[[package]]
+name = "tunnet-service"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "windows-service",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

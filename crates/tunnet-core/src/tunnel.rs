@@ -19,9 +19,9 @@ use tunnet_common::match_redirect;
 use tunnet_common::relay::RelayCtrl;
 
 use crate::inspect::{InspectorHub, inspect_bidirectional, start_local_inspect_session};
-use crate::ipc::protocol::TunnelInfo;
 use crate::iroh_pool::ConnPool;
 use crate::stream::splice_bidirectional;
+use tunnet_common::local_api::TunnelInfo;
 
 #[derive(Clone)]
 pub struct TunnelManager {

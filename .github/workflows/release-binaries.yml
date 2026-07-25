@@ -136,14 +136,14 @@ jobs:
         shell: bash
         run: |
           cargo build --release --target ${{ matrix.target }} \
-            -p tunnet-agent -p tunnet-control -p tunnet-relay
+            -p tunnet-agent -p tunnet-cli -p tunnet-control -p tunnet-relay
 
       - name: Build (cross)
         if: matrix.cross
         shell: bash
         run: |
           cross build --release --target ${{ matrix.target }} \
-            -p tunnet-agent -p tunnet-control -p tunnet-relay
+            -p tunnet-agent -p tunnet-cli -p tunnet-control -p tunnet-relay
 
       - name: Package
         id: package
@@ -157,7 +157,7 @@ jobs:
           ext=""
           if [[ "$target" == *windows* ]]; then ext=".exe"; fi
 
-          for bin in tunnet tunnet-control tunnet-relay; do
+          for bin in tunnet tunnetd tunnet-control tunnet-relay; do
             src="target/${target}/release/${bin}${ext}"
             if [ -f "$src" ]; then cp "$src" "$staging/"; fi
           done

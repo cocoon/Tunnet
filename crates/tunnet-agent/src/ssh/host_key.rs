@@ -9,10 +9,6 @@ pub fn host_key_path(state_dir: &Path) -> PathBuf {
     state_dir.join("ssh_host_ed25519_key")
 }
 
-pub fn known_hosts_path(state_dir: &Path) -> PathBuf {
-    state_dir.join("known_hosts")
-}
-
 /// Load an OpenSSH Ed25519 host key from `state_dir`, or generate and persist one.
 pub fn load_or_create_host_key(state_dir: &Path) -> anyhow::Result<PrivateKey> {
     let path = host_key_path(state_dir);

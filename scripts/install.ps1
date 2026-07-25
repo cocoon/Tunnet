@@ -16,7 +16,7 @@ param(
     [string]$InstallDir = "",
     [switch]$NoService,
     [switch]$NoVerify,
-    [string[]]$Bins = @("tunnet", "tunnet-control", "tunnet-relay"),
+    [string[]]$Bins = @("tunnet", "tunnetd", "tunnet-control", "tunnet-relay"),
     [string]$Repo = $(if ($env:TUNNET_REPO) { $env:TUNNET_REPO } else { "tunnetio/Tunnet" })
 )
 

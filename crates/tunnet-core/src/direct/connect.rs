@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 use crate::direct::contact::{contact_id_from_endpoint, parse_contact_id};
 use crate::direct::{AUTH_ALPN, derive_ipv4, run_psk_handshake_client};
 use crate::identity::AgentIdentity;
-use crate::ipc::protocol::{DirectConnectPendingInfo, IpcResponse};
-use crate::ipc::server::AgentIpcState;
+use tunnet_common::local_api::DirectConnectPendingInfo;
+
+use crate::local_api::LocalApiState;
 use crate::routing::PeerInfo;
 use crate::state::PersistedState;
 
@@ -25,17 +26,17 @@ pub struct ConnectPending {
     pub received_at: String,
 }
 
-fn load_allowlist(state: &AgentIpcState) -> anyhow::Result<HashSet<String>> {
+fn load_allowlist(state: &LocalApiState) -> anyhow::Result<HashSet<String>> {
     Ok(crate::agent_config::load_connect_allowlist(
         &state.node.paths,
     ))
 }
 
-fn save_allowlist(state: &AgentIpcState, set: &HashSet<String>) -> anyhow::Result<()> {
+fn save_allowlist(state: &LocalApiState, set: &HashSet<String>) -> anyhow::Result<()> {
     crate::agent_config::save_connect_allowlist(&state.node.paths, set.iter().cloned())
 }
 
-fn load_pending(state: &AgentIpcState) -> anyhow::Result<Vec<ConnectPending>> {
+fn load_pending(state: &LocalApiState) -> anyhow::Result<Vec<ConnectPending>> {
     let p = state.node.paths.dir.join(CONNECT_PENDING_FILE);
     if !p.exists() {
         return Ok(vec![]);
@@ -43,7 +44,7 @@ fn load_pending(state: &AgentIpcState) -> anyhow::Result<Vec<ConnectPending>> {
     Ok(serde_json::from_slice(&std::fs::read(&p)?)?)
 }
 
-fn save_pending(state: &AgentIpcState, list: &[ConnectPending]) -> anyhow::Result<()> {
+fn save_pending(state: &LocalApiState, list: &[ConnectPending]) -> anyhow::Result<()> {
     state.node.paths.ensure()?;
     std::fs::write(
         state.node.paths.dir.join(CONNECT_PENDING_FILE),
@@ -53,7 +54,7 @@ fn save_pending(state: &AgentIpcState, list: &[ConnectPending]) -> anyhow::Resul
 }
 
 fn install_peer_route(
-    state: &AgentIpcState,
+    state: &LocalApiState,
     endpoint: EndpointId,
     hostname: &str,
     ip: std::net::Ipv4Addr,
@@ -121,7 +122,7 @@ fn install_peer_route(
 }
 
 /// Initiate a connect dial to a remote contact id.
-pub async fn request_connect(state: &AgentIpcState, contact_id: &str) -> anyhow::Result<String> {
+pub async fn request_connect(state: &LocalApiState, contact_id: &str) -> anyhow::Result<String> {
     let direct = state.node.persisted.require_direct_network(None)?;
     let peer = parse_contact_id(contact_id).context("parse contact id")?;
     let secret = direct.network_secret.clone();
@@ -184,7 +185,7 @@ pub async fn request_connect(state: &AgentIpcState, contact_id: &str) -> anyhow:
     }
 }
 
-pub fn allow_contact(state: &AgentIpcState, contact_id: &str) -> anyhow::Result<String> {
+pub fn allow_contact(state: &LocalApiState, contact_id: &str) -> anyhow::Result<String> {
     let _ = state.node.persisted.require_direct_network(None)?;
     let _ = parse_contact_id(contact_id)?;
     let mut set = load_allowlist(state)?;
@@ -193,23 +194,21 @@ pub fn allow_contact(state: &AgentIpcState, contact_id: &str) -> anyhow::Result<
     Ok(format!("Pre-approved {contact_id}"))
 }
 
-pub fn list_pending(state: &AgentIpcState) -> anyhow::Result<IpcResponse> {
+pub fn list_pending(state: &LocalApiState) -> anyhow::Result<Vec<DirectConnectPendingInfo>> {
     let _ = state.node.persisted.require_direct_network(None)?;
     let list = load_pending(state)?;
-    Ok(IpcResponse::DirectConnectPending {
-        requests: list
-            .into_iter()
-            .map(|p| DirectConnectPendingInfo {
-                contact_id: p.contact_id,
-                endpoint_id: p.endpoint_id,
-                hostname: p.hostname,
-                received_at: p.received_at,
-            })
-            .collect(),
-    })
+    Ok(list
+        .into_iter()
+        .map(|p| DirectConnectPendingInfo {
+            contact_id: p.contact_id,
+            endpoint_id: p.endpoint_id,
+            hostname: p.hostname,
+            received_at: p.received_at,
+        })
+        .collect())
 }
 
-pub async fn accept_pending(state: &AgentIpcState, contact_id: &str) -> anyhow::Result<String> {
+pub async fn accept_pending(state: &LocalApiState, contact_id: &str) -> anyhow::Result<String> {
     let direct = state.node.persisted.require_direct_network(None)?.clone();
     let mut list = load_pending(state)?;
     let Some(idx) = list.iter().position(|p| p.contact_id == contact_id) else {
@@ -252,7 +251,7 @@ pub async fn accept_pending(state: &AgentIpcState, contact_id: &str) -> anyhow::
     ))
 }
 
-pub fn deny_pending(state: &AgentIpcState, contact_id: &str) -> anyhow::Result<String> {
+pub fn deny_pending(state: &LocalApiState, contact_id: &str) -> anyhow::Result<String> {
     let _ = state.node.persisted.require_direct_network(None)?;
     let mut list = load_pending(state)?;
     let before = list.len();
@@ -264,7 +263,7 @@ pub fn deny_pending(state: &AgentIpcState, contact_id: &str) -> anyhow::Result<S
     Ok(format!("Denied {contact_id}"))
 }
 
-pub async fn rotate_identity(state: &AgentIpcState) -> anyhow::Result<IpcResponse> {
+pub async fn rotate_identity(state: &LocalApiState) -> anyhow::Result<String> {
     let networks = state.node.persisted.direct_networks().to_vec();
     if networks.is_empty() {
         anyhow::bail!("no Direct networks joined");
@@ -283,9 +282,7 @@ pub async fn rotate_identity(state: &AgentIpcState) -> anyhow::Result<IpcRespons
             .parse()
             .context("parse new endpoint")?,
     );
-    Ok(IpcResponse::DirectContact {
-        contact_id: contact,
-    })
+    Ok(contact)
 }
 
 /// Handle an inbound connect request after AUTH (called from accept path).
@@ -353,7 +350,7 @@ pub async fn handle_inbound_connect(
     Ok((false, serde_json::to_vec(&resp)?))
 }
 
-/// Load allowlist from disk for accept path (no full AgentIpcState).
+/// Load allowlist from disk for accept path (no full LocalApiState).
 pub fn load_allowlist_from_dir(state_dir: &std::path::Path) -> HashSet<String> {
     let paths = crate::state::StatePaths {
         dir: state_dir.to_path_buf(),

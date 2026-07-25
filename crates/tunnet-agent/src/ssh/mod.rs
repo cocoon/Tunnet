@@ -14,7 +14,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use uuid::Uuid;
 
-pub use host_key::{host_pubkey_openssh, known_hosts_path};
+pub use host_key::host_pubkey_openssh;
 pub use listener::spawn_ssh_listener;
 pub use server::SshServeDeps;
 

@@ -11,9 +11,9 @@ pub mod effective_config;
 pub mod identity;
 #[cfg(feature = "tunnel")]
 pub mod inspect;
-pub mod ipc;
 pub mod iroh_pool;
 pub mod known_hosts;
+pub mod local_api;
 #[cfg(feature = "direct")]
 pub mod mdns_relay;
 pub mod node;

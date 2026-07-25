@@ -1,12 +1,10 @@
 //! `tunnet ssh` - OpenSSH wrapper + session/recording helpers.
 
+use crate::state::{StatePaths, known_hosts_path};
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use tokio::io::AsyncWriteExt;
-use tunnet_core::ipc::protocol::{IpcRequest, IpcResponse, format_ipc_error};
-use tunnet_core::state::StatePaths;
-
-use crate::ssh::known_hosts_path;
+use tunnet_client::TunnetClient;
 
 #[derive(Args, Debug)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -106,11 +104,8 @@ pub async fn run_ssh(args: SshArgs) -> anyhow::Result<()> {
     }
 }
 
-async fn ipc_request(_state_dir: Option<&str>, req: IpcRequest) -> anyhow::Result<IpcResponse> {
-    crate::cmds::ipc_or_err(_state_dir)
-        .await?
-        .request(req)
-        .await
+async fn api_client(state_dir: Option<&str>) -> anyhow::Result<TunnetClient> {
+    crate::cmds::ipc_or_err(state_dir).await
 }
 
 async fn run_sessions(
@@ -118,80 +113,59 @@ async fn run_sessions(
     status: Option<String>,
     state_dir: Option<String>,
 ) -> anyhow::Result<()> {
-    let resp = ipc_request(
-        state_dir.as_deref(),
-        IpcRequest::SshSessions { limit, status },
-    )
-    .await?;
-    match resp {
-        IpcResponse::SshSessions { sessions } => {
-            if sessions.is_empty() {
-                println!("No SSH sessions.");
-                return Ok(());
-            }
-            println!(
-                "{:<38} {:<18} {:<18} {:<10} {:<8} STARTED",
-                "SESSION", "FROM", "TO", "USER", "STATUS"
-            );
-            for s in sessions {
-                let from = s
-                    .src_hostname
-                    .unwrap_or_else(|| short_id(&s.src_endpoint_id));
-                let to = s
-                    .dst_hostname
-                    .unwrap_or_else(|| short_id(&s.dst_endpoint_id));
-                println!(
-                    "{:<38} {:<18} {:<18} {:<10} {:<8} {}",
-                    s.id, from, to, s.target_user, s.status, s.started_at
-                );
-            }
-            Ok(())
-        }
-        IpcResponse::Error { code, message } => bail!("{}", format_ipc_error(&code, &message)),
-        other => bail!("unexpected IPC response: {other:?}"),
+    let client = api_client(state_dir.as_deref()).await?;
+    let resp = client.ssh_sessions(limit, status.as_deref()).await?;
+    let sessions = resp.sessions;
+    if sessions.is_empty() {
+        println!("No SSH sessions.");
+        return Ok(());
     }
+    println!(
+        "{:<38} {:<18} {:<18} {:<10} {:<8} STARTED",
+        "SESSION", "FROM", "TO", "USER", "STATUS"
+    );
+    for s in sessions {
+        let from = s
+            .src_hostname
+            .unwrap_or_else(|| short_id(&s.src_endpoint_id));
+        let to = s
+            .dst_hostname
+            .unwrap_or_else(|| short_id(&s.dst_endpoint_id));
+        println!(
+            "{:<38} {:<18} {:<18} {:<10} {:<8} {}",
+            s.id, from, to, s.target_user, s.status, s.started_at
+        );
+    }
+    Ok(())
 }
 
 async fn run_recordings(limit: u32, state_dir: Option<String>) -> anyhow::Result<()> {
-    let resp = ipc_request(state_dir.as_deref(), IpcRequest::SshRecordings { limit }).await?;
-    match resp {
-        IpcResponse::SshRecordings { recordings } => {
-            if recordings.is_empty() {
-                println!("No recordings.");
-                return Ok(());
-            }
-            println!(
-                "{:<38} {:<12} {:<18} {:>10} CREATED",
-                "SESSION", "USER", "MACHINE", "BYTES"
-            );
-            for r in recordings {
-                let machine = r.dst_hostname.unwrap_or_else(|| short_id(&r.session_id));
-                let user = r.target_user.unwrap_or_else(|| "-".into());
-                println!(
-                    "{:<38} {:<12} {:<18} {:>10} {}",
-                    r.session_id, user, machine, r.byte_size, r.created_at
-                );
-            }
-            Ok(())
-        }
-        IpcResponse::Error { code, message } => bail!("{}", format_ipc_error(&code, &message)),
-        other => bail!("unexpected IPC response: {other:?}"),
+    let client = api_client(state_dir.as_deref()).await?;
+    let resp = client.ssh_recordings(limit).await?;
+    let recordings = resp.recordings;
+    if recordings.is_empty() {
+        println!("No recordings.");
+        return Ok(());
     }
+    println!(
+        "{:<38} {:<12} {:<18} {:>10} CREATED",
+        "SESSION", "USER", "MACHINE", "BYTES"
+    );
+    for r in recordings {
+        let machine = r.dst_hostname.unwrap_or_else(|| short_id(&r.session_id));
+        let user = r.target_user.unwrap_or_else(|| "-".into());
+        println!(
+            "{:<38} {:<12} {:<18} {:>10} {}",
+            r.session_id, user, machine, r.byte_size, r.created_at
+        );
+    }
+    Ok(())
 }
 
 async fn run_play(session_id: String, state_dir: Option<String>) -> anyhow::Result<()> {
-    let resp = ipc_request(
-        state_dir.as_deref(),
-        IpcRequest::SshPlay {
-            session_id: session_id.clone(),
-        },
-    )
-    .await?;
-    let cast = match resp {
-        IpcResponse::SshCast { cast_text, .. } => cast_text,
-        IpcResponse::Error { code, message } => bail!("{}", format_ipc_error(&code, &message)),
-        other => bail!("unexpected IPC response: {other:?}"),
-    };
+    let client = api_client(state_dir.as_deref()).await?;
+    let resp = client.ssh_cast(&session_id).await?;
+    let cast = resp.cast_text;
     play_cast(&cast).await
 }
 
@@ -546,12 +520,8 @@ async fn resolve_host(target: &str) -> Option<String> {
     if target.parse::<std::net::Ipv4Addr>().is_ok() {
         return Some(target.to_string());
     }
-    let resp = ipc_request(None, IpcRequest::Status { peers: true })
-        .await
-        .ok()?;
-    let IpcResponse::Status(status) = resp else {
-        return None;
-    };
+    let client = api_client(None).await.ok()?;
+    let status = client.status(true).await.ok()?;
     let peers = status.peers.unwrap_or_default();
     let needle = target.trim_end_matches(".tunnet");
     for peer in peers {
@@ -585,14 +555,8 @@ fn local_username() -> String {
 
 pub async fn run_ssh_keyscan(args: SshKeyscanArgs) -> anyhow::Result<()> {
     let paths = StatePaths::resolve(args.state_dir.as_deref());
-    let resp = ipc_request(
-        args.state_dir.as_deref(),
-        IpcRequest::Status { peers: true },
-    )
-    .await?;
-    let IpcResponse::Status(status) = resp else {
-        bail!("unexpected IPC response: {resp:?}");
-    };
+    let client = api_client(args.state_dir.as_deref()).await?;
+    let status = client.status(true).await?;
     let peers = status.peers.unwrap_or_default();
     let suffix = "tunnet".to_string();
 
@@ -635,7 +599,7 @@ pub async fn run_ssh_keyscan(args: SshKeyscanArgs) -> anyhow::Result<()> {
         };
         let fqdn = format!("{}.{}", p.hostname, suffix.trim_matches('.'));
         let hosts = [p.ip.as_str(), p.hostname.as_str(), fqdn.as_str()];
-        if let Some(line) = tunnet_core::known_hosts::known_hosts_line(&hosts, key) {
+        if let Some(line) = crate::known_hosts::known_hosts_line(&hosts, key) {
             println!("{line}");
             entries.push((hosts.map(|s| s.to_string()), key.to_string()));
         }
@@ -644,7 +608,7 @@ pub async fn run_ssh_keyscan(args: SshKeyscanArgs) -> anyhow::Result<()> {
     if args.write {
         for (hosts, key) in entries {
             let host_refs: Vec<&str> = hosts.iter().map(|s| s.as_str()).collect();
-            tunnet_core::known_hosts::upsert_known_hosts_entry(&paths.dir, &host_refs, &key)?;
+            crate::known_hosts::upsert_known_hosts_entry(&paths.dir, &host_refs, &key)?;
         }
         eprintln!(
             "# wrote {} entr{} to {}",

@@ -19,7 +19,7 @@ VERSION=""
 INSTALL_SERVICE="${TUNNET_NO_SERVICE:+0}"
 INSTALL_SERVICE="${INSTALL_SERVICE:-1}"
 VERIFY="${TUNNET_VERIFY:-1}"
-BINS="tunnet tunnet-control tunnet-relay"
+BINS="tunnet tunnetd tunnet-control tunnet-relay"
 GITHUB_API="${GITHUB_API:-https://api.github.com}"
 GITHUB_DOWNLOAD="${GITHUB_DOWNLOAD:-https://github.com}"
 

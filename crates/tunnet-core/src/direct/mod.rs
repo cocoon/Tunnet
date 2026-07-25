@@ -13,7 +13,7 @@ pub mod admin;
 pub mod antispoof;
 #[cfg(feature = "direct")]
 pub mod auth;
-#[cfg(all(feature = "direct", feature = "ipc"))]
+#[cfg(all(feature = "direct", feature = "local_api"))]
 pub mod connect;
 #[cfg(feature = "direct")]
 pub mod discovery;

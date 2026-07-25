@@ -3,9 +3,12 @@ resolver = "2"
 members = [
   "crates/tunnet-common",
   "crates/tunnet-core",
+  "crates/tunnet-client",
   "crates/tunnet",
   "crates/tunnet-control",
   "crates/tunnet-agent",
+  "crates/tunnet-cli",
+  "crates/tunnet-service",
   "crates/tunnet-relay",
   "crates/tunnet-node-napi",
   "crates/tunnet-policy-napi",
@@ -50,7 +53,11 @@ reqwest = { version = "0.13", features = [
 
 axum = { version = "0.8", features = ["ws", "macros"] }
 httparse = "1"
-tower = "0.5"
+hyper = { version = "1", features = ["http1", "server", "client"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "server-graceful", "service"] }
+http-body-util = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower = { version = "0.5", features = ["util"] }
 tower_governor = { version = "0.8", features = ["axum"] }
 tower-http = { version = "0.7", features = [
   "trace",
@@ -130,6 +137,9 @@ napi-build = "2"
 # Local
 tunnet-common = { version = "0.7.0", path = "crates/tunnet-common" }
 tunnet-core = { version = "0.7.0", path = "crates/tunnet-core" }
+tunnet-client = { version = "0.7.0", path = "crates/tunnet-client" }
+tunnet-cli = { version = "0.7.0", path = "crates/tunnet-cli" }
+tunnet-service = { version = "0.7.0", path = "crates/tunnet-service" }
 tunnet-posture = { version = "0.7.0", path = "crates/tunnet-posture" }
 tunnet-policy-engine = { version = "0.7.0", path = "crates/tunnet-policy-engine" }
 tunnet-audit = { version = "0.7.0", path = "crates/tunnet-audit" }

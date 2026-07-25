@@ -5,12 +5,12 @@ use std::time::Instant;
 
 use anyhow::Context;
 use tunnet_core::direct::SecretResolver;
-use tunnet_core::ipc::{AgentIpcState, DataPlaneHandle, spawn_ipc_server};
+use tunnet_core::local_api::{DataPlaneHandle, LocalApiState, spawn_local_api};
 use tunnet_core::{CoreNode, CoreNodeConfig};
 use uuid::Uuid;
 
 use crate::accept::AcceptDeps;
-use crate::cli::RunArgs;
+use crate::daemon::RunArgs;
 use crate::dataplane::{
     ControllerSpawn, DataPlaneConfig, TunSlot, TunSlotState, build_initial_plane, spawn_controller,
     spawn_outbound,
@@ -208,12 +208,14 @@ pub async fn run(
         )
     };
 
-    // Bind IPC and signal service readiness before TUN/SSH bring-up. Control-plane
+    // Bind Local API and signal service readiness before TUN/SSH bring-up. Control-plane
     // presence can already be Online while wintun/SSH still start; `service start`
     // should not wait on that work.
     let peer_dns_active = Arc::new(AtomicBool::new(false));
     let (data_plane, cmd_rx) = DataPlaneHandle::new(8);
-    let ipc_state = Arc::new(AgentIpcState {
+    let bootstrap: Arc<dyn tunnet_core::local_api::BootstrapOps> =
+        Arc::new(crate::api_bootstrap::AgentBootstrapOps::new(paths.clone()));
+    let api_state = Arc::new(LocalApiState {
         node: node.clone(),
         hostname: hostname.clone(),
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -227,10 +229,11 @@ pub async fn run(
         tunnels: node.tunnels.clone(),
         send: node.send.clone(),
         data_plane: data_plane.clone(),
+        bootstrap,
     });
-    let _ipc_task = spawn_ipc_server(ipc_state)
+    let _api_task = spawn_local_api(api_state)
         .await
-        .context("start agent IPC server")?;
+        .context("start Local Management API")?;
     if let Some(tx) = on_ready.take() {
         let _ = tx.send(());
     }

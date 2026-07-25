@@ -1,4 +1,3 @@
-# bench-tunnet.ps1
 param(
     [string]$Peer = "10.7.0.2",
     [int]$Duration = 30
@@ -6,7 +5,6 @@ param(
 
 $iperf3 = "$env:USERPROFILE\bin\iperf3\iperf3.exe"
 
-# fallback — check common locations
 if (-not (Test-Path $iperf3)) {
     $iperf3 = Get-Command iperf3.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
 }
@@ -36,7 +34,7 @@ Write-Host "  OK" -ForegroundColor Green
 Write-Host ""
 
 # -------------------------------------------------------
-# 1. ICMP Ping — 100 packets
+# 1. ICMP Ping - 100 packets
 # -------------------------------------------------------
 Write-Host "[1/5] ICMP Ping (100 packets)..." -ForegroundColor Yellow
 $pingAll = Test-Connection -ComputerName $Peer -Count 100 -ErrorAction SilentlyContinue
@@ -46,7 +44,7 @@ $pingAll | Export-Csv "$ResultsDir\ping.csv" -NoTypeInformation
 Write-Host ""
 
 # -------------------------------------------------------
-# 2. TCP Upload — single stream
+# 2. TCP Upload - single stream
 # -------------------------------------------------------
 Write-Host "[2/5] TCP Upload (single stream, ${Duration}s)..." -ForegroundColor Yellow
 & $iperf3 -c $Peer -t $Duration --json | Out-File "$ResultsDir\tcp-upload.json"
@@ -62,7 +60,7 @@ if ($up.error) {
 Write-Host ""
 
 # -------------------------------------------------------
-# 3. TCP Download — reverse
+# 3. TCP Download - reverse
 # -------------------------------------------------------
 Write-Host "[3/5] TCP Download (reverse, ${Duration}s)..." -ForegroundColor Yellow
 & $iperf3 -c $Peer -t $Duration -R --json | Out-File "$ResultsDir\tcp-download.json"
@@ -76,7 +74,7 @@ if ($dl.error) {
 Write-Host ""
 
 # -------------------------------------------------------
-# 4. UDP — jitter + packet loss
+# 4. UDP - jitter + packet loss
 # -------------------------------------------------------
 Write-Host "[4/5] UDP (500M target, ${Duration}s)..." -ForegroundColor Yellow
 & $iperf3 -c $Peer -u -b 500M -t $Duration --json | Out-File "$ResultsDir\udp.json"

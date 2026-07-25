@@ -19,8 +19,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_rustls::TlsAcceptor;
 use tunnet_common::ws::ClientMsg;
 
-use crate::ipc::protocol::ServeInfo;
 use crate::routing::RoutingTable;
+use tunnet_common::local_api::ServeInfo;
 
 #[derive(Debug, Clone)]
 pub struct ServeAcl {

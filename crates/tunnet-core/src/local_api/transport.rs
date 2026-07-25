@@ -1,55 +1,51 @@
-//! Cross-platform local IPC transport: Unix domain sockets / Windows named pipes.
+//! Cross-platform Local Management API transport: Unix domain sockets / Windows named pipes.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// Resolve the fixed agent IPC endpoint path / pipe name.
-pub fn default_ipc_path() -> PathBuf {
-    if let Ok(override_path) = std::env::var("TUNNET_IPC_PATH") {
+/// Resolve the fixed Local Management API endpoint path / pipe marker.
+pub fn default_api_path() -> PathBuf {
+    if let Ok(override_path) =
+        std::env::var("TUNNET_API_PATH").or_else(|_| std::env::var("TUNNET_IPC_PATH"))
+    {
         return PathBuf::from(override_path);
     }
     #[cfg(unix)]
     {
         let base = std::env::var("TUNNET_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-        PathBuf::from(base).join("tunnet-agent.sock")
+        PathBuf::from(base).join("tunnetd.sock")
     }
     #[cfg(windows)]
     {
-        // Machine-wide marker so a user CLI can see a Local System service.
-        // (Per-user %LOCALAPPDATA% put SYSTEM's marker under systemprofile.)
-        system_ipc_marker_path()
+        system_api_marker_path()
     }
     #[cfg(not(any(unix, windows)))]
     {
-        PathBuf::from("tunnet-agent.ipc")
+        PathBuf::from("tunnetd.api")
     }
 }
 
+/// Alias for callers still using the old name.
+pub fn default_ipc_path() -> PathBuf {
+    default_api_path()
+}
+
 #[cfg(windows)]
-fn system_ipc_marker_path() -> PathBuf {
+fn system_api_marker_path() -> PathBuf {
     let base = std::env::var("PROGRAMDATA").unwrap_or_else(|_| r"C:\ProgramData".into());
     PathBuf::from(base)
         .join("tunnet")
         .join("ipc")
-        .join("tunnet-agent.pipe")
-}
-
-#[cfg(windows)]
-fn user_ipc_marker_path() -> PathBuf {
-    let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
-    PathBuf::from(base)
-        .join("tunnet")
-        .join("ipc")
-        .join("tunnet-agent.pipe")
+        .join("tunnetd.pipe")
 }
 
 #[cfg(windows)]
 pub fn pipe_name_for() -> String {
-    r"\\.\pipe\tunnet-agent".to_string()
+    r"\\.\pipe\tunnetd".to_string()
 }
 
-/// Abstract listener accepting framed JSON connections.
-pub struct IpcListener {
+/// Abstract listener accepting Local API connections.
+pub struct ApiListener {
     #[cfg(unix)]
     unix: tokio::net::UnixListener,
     #[cfg(windows)]
@@ -65,16 +61,16 @@ struct WindowsListener {
 }
 
 /// Accepted duplex connection.
-pub enum IpcStream {
+pub enum ApiStream {
     #[cfg(unix)]
     Unix(tokio::net::UnixStream),
     #[cfg(windows)]
     Windows(tokio::net::windows::named_pipe::NamedPipeServer),
 }
 
-impl IpcListener {
+impl ApiListener {
     pub async fn bind() -> anyhow::Result<(Self, PathBuf)> {
-        let path = default_ipc_path();
+        let path = default_api_path();
         #[cfg(unix)]
         {
             if path.exists() {
@@ -84,7 +80,7 @@ impl IpcListener {
                 std::fs::create_dir_all(parent)?;
             }
             let unix = tokio::net::UnixListener::bind(&path)?;
-            tracing::info!(path = %path.display(), "IPC listening (unix)");
+            tracing::info!(path = %path.display(), "Local API listening (unix)");
             Ok((
                 Self {
                     unix,
@@ -102,7 +98,7 @@ impl IpcListener {
             let name = pipe_name_for();
             std::fs::write(&marker, &name)?;
             let first = create_server_pipe(&name, true)?;
-            tracing::info!(pipe = %name, marker = %marker.display(), "IPC listening (windows)");
+            tracing::info!(pipe = %name, marker = %marker.display(), "Local API listening (windows)");
             Ok((
                 Self {
                     windows: WindowsListener {
@@ -116,7 +112,7 @@ impl IpcListener {
         }
         #[cfg(not(any(unix, windows)))]
         {
-            anyhow::bail!("IPC not supported on this platform");
+            anyhow::bail!("Local API not supported on this platform");
         }
     }
 
@@ -124,18 +120,18 @@ impl IpcListener {
         &self.path
     }
 
-    pub async fn accept(&self) -> anyhow::Result<IpcStream> {
+    pub async fn accept(&self) -> anyhow::Result<ApiStream> {
         #[cfg(unix)]
         {
             let (stream, _) = self.unix.accept().await?;
-            Ok(IpcStream::Unix(stream))
+            Ok(ApiStream::Unix(stream))
         }
         #[cfg(windows)]
         {
             let name = pipe_name_for();
             let mut guard = self.windows.pending.lock().await;
             let server = guard.take().ok_or_else(|| {
-                anyhow::anyhow!("IPC listener has no pending named pipe instance")
+                anyhow::anyhow!("Local API listener has no pending named pipe instance")
             })?;
             // Create the next instance before serving this one so clients never miss a window.
             let next = create_server_pipe(&name, false)?;
@@ -143,11 +139,11 @@ impl IpcListener {
             drop(guard);
 
             server.connect().await?;
-            Ok(IpcStream::Windows(server))
+            Ok(ApiStream::Windows(server))
         }
         #[cfg(not(any(unix, windows)))]
         {
-            anyhow::bail!("IPC not supported on this platform");
+            anyhow::bail!("Local API not supported on this platform");
         }
     }
 }
@@ -155,18 +151,7 @@ impl IpcListener {
 #[cfg(windows)]
 fn resolve_bind_marker(preferred: &Path) -> io::Result<PathBuf> {
     if let Some(parent) = preferred.parent() {
-        match std::fs::create_dir_all(parent) {
-            Ok(()) => return Ok(preferred.to_path_buf()),
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-                // Non-elevated `tunnet run`: fall back to the user profile.
-                let fallback = user_ipc_marker_path();
-                if let Some(p) = fallback.parent() {
-                    std::fs::create_dir_all(p)?;
-                }
-                return Ok(fallback);
-            }
-            Err(e) => return Err(e),
-        }
+        std::fs::create_dir_all(parent)?;
     }
     Ok(preferred.to_path_buf())
 }
@@ -220,7 +205,7 @@ fn create_server_pipe(
     result
 }
 
-impl Drop for IpcListener {
+impl Drop for ApiListener {
     fn drop(&mut self) {
         #[cfg(unix)]
         {
@@ -233,7 +218,7 @@ impl Drop for IpcListener {
     }
 }
 
-impl IpcStream {
+impl ApiStream {
     pub fn split(
         self,
     ) -> (
@@ -255,7 +240,7 @@ impl IpcStream {
     }
 }
 
-/// Client-side connect to a running agent IPC endpoint.
+/// Client-side connect to a running Local API endpoint.
 pub async fn connect(path: &Path) -> io::Result<ClientStream> {
     #[cfg(unix)]
     {
@@ -286,18 +271,14 @@ pub async fn connect(path: &Path) -> io::Result<ClientStream> {
         let _ = path;
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "IPC not supported on this platform",
+            "Local API not supported on this platform",
         ))
     }
 }
 
 #[cfg(windows)]
 fn resolve_windows_pipe_name(path: &Path) -> String {
-    let candidates = [
-        path.to_path_buf(),
-        system_ipc_marker_path(),
-        user_ipc_marker_path(),
-    ];
+    let candidates = [path.to_path_buf(), system_api_marker_path()];
     for candidate in &candidates {
         if let Ok(s) = std::fs::read_to_string(candidate) {
             let trimmed = s.trim();
@@ -310,7 +291,7 @@ fn resolve_windows_pipe_name(path: &Path) -> String {
     pipe_name_for()
 }
 
-/// Returns true when a live agent IPC endpoint is reachable.
+/// Returns true when a live Local API endpoint is reachable.
 pub async fn endpoint_reachable(path: &Path) -> bool {
     #[cfg(windows)]
     {

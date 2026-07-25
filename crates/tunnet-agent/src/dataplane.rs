@@ -8,8 +8,8 @@ use ipnet::Ipv4Net;
 use parking_lot::Mutex;
 use tun_rs::AsyncDevice;
 use tunnet_common::{DeviceProfile, DnsConfig};
-use tunnet_core::ipc::dataplane::DataPlaneCmdRx;
-use tunnet_core::ipc::{DataPlaneHandle, recv_cmd};
+use tunnet_core::local_api::dataplane::DataPlaneCmdRx;
+use tunnet_core::local_api::{DataPlaneHandle, recv_cmd};
 use tunnet_core::{AclEngine, ConnPool, CoreNode, RoutingTable};
 use uuid::Uuid;
 

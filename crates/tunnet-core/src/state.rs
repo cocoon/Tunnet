@@ -28,44 +28,6 @@ impl StatePaths {
         }
     }
 
-    /// Per-user state dir (used before a system service is installed).
-    pub fn user_dir() -> Option<PathBuf> {
-        #[cfg(unix)]
-        {
-            if let Ok(xdg) = std::env::var("XDG_STATE_HOME") {
-                return Some(PathBuf::from(xdg).join("tunnet"));
-            }
-            if let Ok(home) = std::env::var("HOME") {
-                return Some(PathBuf::from(home).join(".local/state/tunnet"));
-            }
-            None
-        }
-        #[cfg(windows)]
-        {
-            std::env::var("LOCALAPPDATA")
-                .ok()
-                .map(|base| PathBuf::from(base).join("tunnet"))
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            None
-        }
-    }
-
-    /// Well-known state directories that may hold enrollment (machine + user).
-    /// Used by `tunnet reset` so a service install cannot resurrect wiped state.
-    pub fn default_state_dirs() -> Vec<PathBuf> {
-        let mut dirs = Vec::new();
-        let system = Self::system_dir();
-        dirs.push(system.clone());
-        if let Some(user) = Self::user_dir()
-            && user != system
-        {
-            dirs.push(user);
-        }
-        dirs
-    }
-
     pub fn resolve(explicit: Option<&str>) -> Self {
         if let Some(p) = explicit {
             return Self {
@@ -79,31 +41,8 @@ impl StatePaths {
                 dir: PathBuf::from(p),
             };
         }
-
-        let system = Self::system_dir();
-        if system.join("state.json").is_file() {
-            return Self { dir: system };
-        }
-        // Match Linux `sudo` / systemd: elevated or service identity uses the
-        // machine state dir so SCM / Local System see the same enrollment.
-        if running_as_service_user() || process_is_elevated() {
-            return Self { dir: system };
-        }
-
-        #[cfg(unix)]
-        {
-            if let Some(user) = Self::user_dir() {
-                return Self { dir: user };
-            }
-        }
-        #[cfg(windows)]
-        {
-            if let Some(user) = Self::user_dir() {
-                return Self { dir: user };
-            }
-        }
         Self {
-            dir: PathBuf::from("./tunnet-state"),
+            dir: Self::system_dir(),
         }
     }
 
@@ -183,76 +122,6 @@ impl StatePaths {
         StatePaths {
             dir: self.dir.clone(),
         }
-    }
-}
-
-fn running_as_service_user() -> bool {
-    #[cfg(unix)]
-    {
-        if std::env::var("USER").ok().as_deref() == Some("root") {
-            return true;
-        }
-        if std::env::var("HOME").ok().as_deref() == Some("/root") {
-            return true;
-        }
-        // systemd sets this when StateDirectory= is used.
-        if std::env::var("STATE_DIRECTORY").is_ok() {
-            return true;
-        }
-    }
-    #[cfg(windows)]
-    {
-        if std::env::var("USERNAME")
-            .ok()
-            .is_some_and(|u| u.eq_ignore_ascii_case("SYSTEM"))
-        {
-            return true;
-        }
-    }
-    false
-}
-
-/// True when this process holds an elevated admin token (Windows UAC) or is root (Unix).
-/// Used so elevated `tunnet enroll` writes to the same dir the OS service reads.
-fn process_is_elevated() -> bool {
-    #[cfg(unix)]
-    {
-        unsafe { libc::geteuid() == 0 }
-    }
-    #[cfg(windows)]
-    {
-        windows_process_elevated()
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        false
-    }
-}
-
-#[cfg(windows)]
-fn windows_process_elevated() -> bool {
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::Security::{
-        GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
-    };
-    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-
-    unsafe {
-        let mut token = HANDLE::default();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
-            return false;
-        }
-        let mut elevation = TOKEN_ELEVATION::default();
-        let mut size = 0u32;
-        let ok = GetTokenInformation(
-            token,
-            TokenElevation,
-            Some((&raw mut elevation).cast()),
-            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
-            &mut size,
-        );
-        let _ = CloseHandle(token);
-        ok.is_ok() && elevation.TokenIsElevated != 0
     }
 }
 

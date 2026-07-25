@@ -1,15 +1,14 @@
-//! Direct-mode CLI: create / join / invite / firewall / coordinator / upgrade.
+//! Direct-mode bootstrap: create / join / leave / upgrade + AUTH post-auth.
 
 use std::net::Ipv4Addr;
 
 use anyhow::Context;
-use clap::{Args, Subcommand};
+use clap::Args;
 use tunnet_core::direct::admin::{PendingJoin, push_pending};
 use tunnet_core::direct::{
     AUTH_ALPN, DocsMembership, MembershipEntry, decode_invite, derive_ipv4, load_approved,
     network_id_from_topic, run_psk_handshake_client, save_approved, topic_from_name_secret,
 };
-use tunnet_core::ipc::protocol::{IpcRequest, IpcResponse, format_ipc_error};
 use tunnet_core::{
     AgentIdentity, DirectState, PersistedState, SealPolicy, StatePaths, load_agent, persist_agent,
 };
@@ -47,79 +46,6 @@ pub struct JoinArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct InviteArgs {
-    /// Network name (defaults to the local Direct network).
-    pub network: Option<String>,
-    #[arg(long)]
-    pub reusable: bool,
-    #[arg(long, default_value = "24h")]
-    pub expires: String,
-}
-
-#[derive(Args, Debug)]
-pub struct RequestsArgs {
-    pub network: Option<String>,
-}
-
-#[derive(Args, Debug)]
-pub struct AcceptArgs {
-    pub network: Option<String>,
-    pub peer_id: String,
-}
-
-#[derive(Args, Debug)]
-pub struct DenyArgs {
-    pub network: Option<String>,
-    pub peer_id: String,
-}
-
-#[derive(Args, Debug)]
-pub struct KickArgs {
-    pub network: Option<String>,
-    pub peer_id: String,
-}
-
-#[derive(Args, Debug)]
-pub struct ConnectArgs {
-    /// Contact id to dial, or a subcommand name when using allow/pending/…
-    #[arg(required = false)]
-    pub contact_id: Option<String>,
-    #[command(subcommand)]
-    pub cmd: Option<ConnectCommand>,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum ConnectCommand {
-    /// Pre-approve a contact id
-    Allow { contact_id: String },
-    /// List pending inbound connect requests
-    Pending,
-    /// Accept a pending connect request
-    Accept { contact_id: String },
-    /// Deny a pending connect request
-    Deny { contact_id: String },
-    /// Rotate local identity / contact id (requires agent restart)
-    Rotate,
-}
-
-#[derive(Args, Debug)]
-pub struct KeepAliveArgs {
-    pub hostname: String,
-    #[arg(long)]
-    pub off: bool,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum PolicyCommand {
-    /// Show published coordinator policy
-    Show,
-    /// Publish a policy TOML file
-    Set { file: String },
-    /// Clear published policy
-    Clear,
-}
-
-#[derive(Args, Debug)]
 pub struct UpgradeArgs {
     #[arg(
         long,
@@ -137,54 +63,6 @@ pub struct LeaveArgs {
     #[arg(long)]
     pub network: Option<String>,
     pub name: Option<String>,
-}
-
-#[derive(Args, Debug)]
-pub struct OverrideIpArgs {
-    #[arg(long)]
-    pub network: Option<String>,
-    #[arg(long)]
-    pub peer: String,
-    #[arg(long)]
-    pub ip: String,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum FirewallCommand {
-    /// Show current local firewall rules and conntrack stats
-    Show,
-    /// Disable the local firewall (allow all)
-    Off,
-    /// Add a firewall rule
-    Add(FirewallAddArgs),
-    /// Remove a rule by index
-    Remove { index: usize },
-    /// Reset to default policy
-    Reset,
-    /// Flush the conntrack table
-    FlushConntrack,
-    /// Show pending coordinator policy suggestion
-    Pending,
-    /// Accept pending coordinator suggestion
-    Accept,
-    /// Reject pending coordinator suggestion
-    RejectSuggestion,
-}
-
-#[derive(Args, Debug)]
-pub struct FirewallAddArgs {
-    #[arg(long)]
-    pub network: Option<String>,
-    /// `in` or `out`
-    pub direction: String,
-    /// `allow`, `deny`, or `reject`
-    pub action: String,
-    #[arg(short = 'p', long, default_value = "tcp")]
-    pub protocol: String,
-    #[arg(long)]
-    pub port: Option<String>,
-    #[arg(long)]
-    pub peer: Option<String>,
 }
 
 fn paths(state_dir: Option<&str>) -> StatePaths {
@@ -306,7 +184,6 @@ pub async fn try_handle_post_auth(
 
 pub async fn run_create(args: CreateArgs, state_dir: Option<&str>) -> anyhow::Result<()> {
     let paths = paths(state_dir);
-    crate::service::ensure_service_state_aligned(state_dir, &paths)?;
     paths.ensure()?;
     let existing = PersistedState::try_load(&paths)?;
     if let Some(PersistedState::Managed(m)) = &existing {
@@ -315,6 +192,8 @@ pub async fn run_create(args: CreateArgs, state_dir: Option<&str>) -> anyhow::Re
             m.network_name
         );
     }
+    let had_networks =
+        matches!(&existing, Some(PersistedState::Direct { networks }) if !networks.is_empty());
 
     let hostname = hostname_arg(args.hostname);
     let network_name = args
@@ -396,40 +275,14 @@ pub async fn run_create(args: CreateArgs, state_dir: Option<&str>) -> anyhow::Re
         tier.as_str()
     );
     println!("State directory: {}", paths.dir.display());
-    crate::service::reload_after_config(state_dir)?;
-    if let Err(e) = crate::cmds::wait_until_agent(state_dir, 20).await {
-        println!("Note: {e}");
-        println!("Once the agent is up: `tunnet invite` and share the code.");
-    } else {
-        println!("Agent is up. Next: `tunnet invite` and share the code.");
+    crate::cmds::finish_after_config(state_dir, had_networks).await?;
+    if std::env::var_os("TUNNET_SERVICE_MODE").is_none() {
+        println!("Next: `tunnet invite` and share the code.");
     }
     Ok(())
 }
-
-pub async fn run_invite(args: InviteArgs, state_dir: Option<&str>) -> anyhow::Result<()> {
-    let ipc = crate::cmds::ipc_or_err(state_dir).await?;
-    match ipc
-        .request(IpcRequest::DirectInvite {
-            network: args.network.clone(),
-            reusable: args.reusable,
-            expires: args.expires,
-        })
-        .await?
-    {
-        IpcResponse::DirectInvite { code } => {
-            println!("{code}");
-            Ok(())
-        }
-        IpcResponse::Error { code, message } => {
-            anyhow::bail!("{}", format_ipc_error(&code, &message))
-        }
-        other => anyhow::bail!("unexpected response: {other:?}"),
-    }
-}
-
 pub async fn run_join(args: JoinArgs, state_dir: Option<&str>) -> anyhow::Result<()> {
     let paths = paths(state_dir);
-    crate::service::ensure_service_state_aligned(state_dir, &paths)?;
     paths.ensure()?;
 
     let invite = decode_invite(&args.invite_code)?;
@@ -438,7 +291,10 @@ pub async fn run_join(args: JoinArgs, state_dir: Option<&str>) -> anyhow::Result
     let network_id = network_id_from_topic(&invite.topic);
     let network_name = invite.network_name.clone();
 
-    let (identity, existing_networks) = match PersistedState::try_load(&paths)? {
+    let loaded = PersistedState::try_load(&paths)?;
+    let had_networks =
+        matches!(&loaded, Some(PersistedState::Direct { networks }) if !networks.is_empty());
+    let (identity, existing_networks) = match loaded {
         Some(PersistedState::Managed(m)) => anyhow::bail!(
             "already enrolled in Managed network '{}'; run `tunnet reset --yes` first",
             m.network_name
@@ -510,7 +366,7 @@ pub async fn run_join(args: JoinArgs, state_dir: Option<&str>) -> anyhow::Result
         let mut len_buf = [0u8; 4];
         recv.read_exact(&mut len_buf)
             .await
-            .context("read join response (is the coordinator agent running `tunnet run`?)")?;
+            .context("read join response (is the coordinator agent running `tunnetd`?)")?;
         let n = u32::from_be_bytes(len_buf) as usize;
         let mut body = vec![0u8; n];
         recv.read_exact(&mut body)
@@ -535,7 +391,7 @@ pub async fn run_join(args: JoinArgs, state_dir: Option<&str>) -> anyhow::Result
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .context(
-                "coordinator did not return a doc_ticket (is `tunnet run` up on the coordinator?)",
+                "coordinator did not return a doc_ticket (is `tunnetd` up on the coordinator?)",
             )?;
         Ok::<_, anyhow::Error>(doc_ticket)
     }
@@ -577,15 +433,9 @@ pub async fn run_join(args: JoinArgs, state_dir: Option<&str>) -> anyhow::Result
         assigned_ipv4,
         tier.as_str()
     );
-    crate::service::reload_after_config(state_dir)?;
-    if let Err(e) = crate::cmds::wait_until_agent(state_dir, 20).await {
-        println!("Note: {e}");
-    } else {
-        println!("Agent is up. Bring the data plane online with `tunnet up` if needed.");
-    }
+    crate::cmds::finish_after_config(state_dir, had_networks).await?;
     Ok(())
 }
-
 /// Coordinator-side: handle join over AUTH connection (called from accept loop).
 /// Requires a live [`DocsMembership`] to issue a write ticket.
 pub async fn handle_join_request_bytes(
@@ -702,256 +552,6 @@ pub async fn handle_join_request_bytes(
         "doc_ticket": ticket,
     }))?)
 }
-
-pub async fn run_requests(args: RequestsArgs, state_dir: Option<&str>) -> anyhow::Result<()> {
-    let ipc = crate::cmds::ipc_or_err(state_dir).await?;
-    match ipc
-        .request(IpcRequest::DirectRequests {
-            network: args.network.clone(),
-        })
-        .await?
-    {
-        IpcResponse::DirectPending { requests } => {
-            if requests.is_empty() {
-                println!("No pending join requests.");
-                return Ok(());
-            }
-            for (i, p) in requests.iter().enumerate() {
-                println!("{i}: {} {} {}", p.endpoint_id, p.hostname, p.ipv4);
-            }
-            Ok(())
-        }
-        IpcResponse::Error { code, message } => {
-            anyhow::bail!("{}", format_ipc_error(&code, &message))
-        }
-        other => anyhow::bail!("unexpected response: {other:?}"),
-    }
-}
-
-pub async fn run_accept(args: AcceptArgs, state_dir: Option<&str>) -> anyhow::Result<()> {
-    let ipc = crate::cmds::ipc_or_err(state_dir).await?;
-    match ipc
-        .request(IpcRequest::DirectAccept {
-            network: args.network,
-            peer_id: args.peer_id,
-        })
-        .await?
-    {
-        IpcResponse::Ok { message } => {
-            println!("{message}");
-            Ok(())
-        }
-        IpcResponse::Error { code, message } => {
-            anyhow::bail!("{}", format_ipc_error(&code, &message))
-        }
-        other => anyhow::bail!("unexpected response: {other:?}"),
-    }
-}
-
-pub async fn run_deny(args: DenyArgs, state_dir: Option<&str>) -> anyhow::Result<()> {
-    let ipc = crate::cmds::ipc_or_err(state_dir).await?;
-    match ipc
-        .request(IpcRequest::DirectDeny {
-            network: args.network,
-            peer_id: args.peer_id,
-        })
-        .await?
-    {
-        IpcResponse::Ok { message } => {
-            println!("{message}");
-            Ok(())
-        }
-        IpcResponse::Error { code, message } => {
-            anyhow::bail!("{}", format_ipc_error(&code, &message))
-        }
-        other => anyhow::bail!("unexpected response: {other:?}"),
-    }
-}
-
-pub async fn run_kick(args: KickArgs, state_dir: Option<&str>) -> anyhow::Result<()> {
-    let ipc = crate::cmds::ipc_or_err(state_dir).await?;
-    match ipc
-        .request(IpcRequest::DirectKick {
-            network: args.network,
-            peer_id: args.peer_id,
-        })
-        .await?
-    {
-        IpcResponse::Ok { message } => {
-            println!("{message}");
-            Ok(())
-        }
-        IpcResponse::Error { code, message } => {
-            anyhow::bail!("{}", format_ipc_error(&code, &message))
-        }
-        other => anyhow::bail!("unexpected response: {other:?}"),
-    }
-}
-
-pub async fn run_connect(args: ConnectArgs, state_dir: Option<&str>) -> anyhow::Result<()> {
-    let ipc = crate::cmds::ipc_or_err(state_dir).await?;
-    let req = if let Some(cmd) = args.cmd {
-        match cmd {
-            ConnectCommand::Allow { contact_id } => IpcRequest::DirectConnectAllow { contact_id },
-            ConnectCommand::Pending => IpcRequest::DirectConnectPending,
-            ConnectCommand::Accept { contact_id } => IpcRequest::DirectConnectAccept { contact_id },
-            ConnectCommand::Deny { contact_id } => IpcRequest::DirectConnectDeny { contact_id },
-            ConnectCommand::Rotate => IpcRequest::DirectConnectRotate,
-        }
-    } else if let Some(contact_id) = args.contact_id {
-        IpcRequest::DirectConnect { contact_id }
-    } else {
-        anyhow::bail!("usage: tunnet connect <tt_…> | allow|pending|accept|deny|rotate");
-    };
-    match ipc.request(req).await? {
-        IpcResponse::Ok { message } => {
-            println!("{message}");
-            Ok(())
-        }
-        IpcResponse::DirectConnectPending { requests } => {
-            if requests.is_empty() {
-                println!("(no pending connect requests)");
-            }
-            for r in requests {
-                println!(
-                    "{}  {}  {}  {}",
-                    r.contact_id, r.hostname, r.endpoint_id, r.received_at
-                );
-            }
-            Ok(())
-        }
-        IpcResponse::DirectContact { contact_id } => {
-            println!("New contact id: {contact_id}");
-            println!("Restart the agent (`tunnet run`) for the new identity to take effect.");
-            Ok(())
-        }
-        IpcResponse::Error { code, message } => {
-            anyhow::bail!("{}", format_ipc_error(&code, &message))
-        }
-        other => anyhow::bail!("unexpected response: {other:?}"),
-    }
-}
-
-pub async fn run_firewall(cmd: FirewallCommand, state_dir: Option<&str>) -> anyhow::Result<()> {
-    let ipc = crate::cmds::ipc_or_err(state_dir).await?;
-    let req = match cmd {
-        FirewallCommand::Show => IpcRequest::DirectFirewallShow { network: None },
-        FirewallCommand::Off => IpcRequest::DirectFirewallOff { network: None },
-        FirewallCommand::Add(a) => IpcRequest::DirectFirewallAdd {
-            network: a.network,
-            direction: a.direction,
-            action: a.action,
-            protocol: a.protocol,
-            port: a.port,
-            peer: a.peer,
-        },
-        FirewallCommand::Remove { index } => IpcRequest::DirectFirewallRemove {
-            network: None,
-            index,
-        },
-        FirewallCommand::Reset => IpcRequest::DirectFirewallReset { network: None },
-        FirewallCommand::FlushConntrack => {
-            IpcRequest::DirectFirewallFlushConntrack { network: None }
-        }
-        FirewallCommand::Pending => IpcRequest::DirectFirewallPending { network: None },
-        FirewallCommand::Accept => IpcRequest::DirectFirewallAcceptSuggestion { network: None },
-        FirewallCommand::RejectSuggestion => {
-            IpcRequest::DirectFirewallRejectSuggestion { network: None }
-        }
-    };
-    match ipc.request(req).await? {
-        IpcResponse::DirectFirewall {
-            enabled,
-            rules,
-            conntrack_entries,
-            packets_allowed,
-            packets_denied,
-            packets_rejected,
-            suggested_rules,
-        } => {
-            println!("enabled={enabled}");
-            println!(
-                "conntrack={conntrack_entries} allowed={packets_allowed} denied={packets_denied} rejected={packets_rejected} suggested={suggested_rules}"
-            );
-            for r in rules {
-                println!(
-                    "{}: {} {} {} ports={:?} peer={:?}",
-                    r.index, r.direction, r.action, r.protocol, r.ports, r.peer
-                );
-            }
-            Ok(())
-        }
-        IpcResponse::DirectFirewallPending { pending } => {
-            match pending {
-                Some(s) => println!("{s}"),
-                None => println!("(no pending suggestion)"),
-            }
-            Ok(())
-        }
-        IpcResponse::Ok { message } => {
-            println!("{message}");
-            Ok(())
-        }
-        IpcResponse::Error { code, message } => {
-            anyhow::bail!("{}", format_ipc_error(&code, &message))
-        }
-        other => anyhow::bail!("unexpected response: {other:?}"),
-    }
-}
-
-pub async fn run_policy(cmd: PolicyCommand, state_dir: Option<&str>) -> anyhow::Result<()> {
-    let ipc = crate::cmds::ipc_or_err(state_dir).await?;
-    let req = match cmd {
-        PolicyCommand::Show => IpcRequest::DirectPolicyShow { network: None },
-        PolicyCommand::Set { file } => {
-            let toml = std::fs::read_to_string(&file)
-                .with_context(|| format!("read policy file {file}"))?;
-            IpcRequest::DirectPolicySet {
-                network: None,
-                toml,
-            }
-        }
-        PolicyCommand::Clear => IpcRequest::DirectPolicyClear { network: None },
-    };
-    match ipc.request(req).await? {
-        IpcResponse::DirectPolicy { json } => {
-            match json {
-                Some(s) => println!("{s}"),
-                None => println!("(no published policy)"),
-            }
-            Ok(())
-        }
-        IpcResponse::Ok { message } => {
-            println!("{message}");
-            Ok(())
-        }
-        IpcResponse::Error { code, message } => {
-            anyhow::bail!("{}", format_ipc_error(&code, &message))
-        }
-        other => anyhow::bail!("unexpected response: {other:?}"),
-    }
-}
-
-pub async fn run_keep_alive(args: KeepAliveArgs, state_dir: Option<&str>) -> anyhow::Result<()> {
-    let ipc = crate::cmds::ipc_or_err(state_dir).await?;
-    match ipc
-        .request(IpcRequest::DirectKeepAlive {
-            hostname: args.hostname,
-            enable: !args.off,
-        })
-        .await?
-    {
-        IpcResponse::Ok { message } => {
-            println!("{message}");
-            Ok(())
-        }
-        IpcResponse::Error { code, message } => {
-            anyhow::bail!("{}", format_ipc_error(&code, &message))
-        }
-        other => anyhow::bail!("unexpected response: {other:?}"),
-    }
-}
-
 pub async fn run_upgrade(args: UpgradeArgs, state_dir: Option<&str>) -> anyhow::Result<()> {
     let paths = paths(state_dir);
     let policy = SealPolicy::from_env_and_flag(false);
@@ -1031,7 +631,7 @@ pub async fn run_upgrade(args: UpgradeArgs, state_dir: Option<&str>) -> anyhow::
     )?;
 
     println!(
-        "Upgraded to Managed network '{}'. Restart with `tunnet run`. \
+        "Upgraded to Managed network '{}'. Restart with `tunnetd`. \
          Peers should pick up the upgrade notice or re-enroll with the same token.",
         resp.network_name
     );
@@ -1060,27 +660,6 @@ pub async fn run_leave(args: LeaveArgs, state_dir: Option<&str>) -> anyhow::Resu
     }
     persist_agent(&paths, &identity, persisted, policy)?;
     println!("Left Direct network '{nname}'. Restart the agent to apply.");
-    crate::service::reload_after_config(state_dir)?;
+    crate::cmds::finish_after_config(state_dir, true).await?;
     Ok(())
-}
-
-pub async fn run_override_ip(args: OverrideIpArgs, state_dir: Option<&str>) -> anyhow::Result<()> {
-    let ipc = crate::cmds::ipc_or_err(state_dir).await?;
-    match ipc
-        .request(IpcRequest::DirectOverrideIp {
-            network: args.network,
-            peer: args.peer,
-            ip: args.ip,
-        })
-        .await?
-    {
-        IpcResponse::Ok { message } => {
-            println!("{message}");
-            Ok(())
-        }
-        IpcResponse::Error { code, message } => {
-            anyhow::bail!("{}", format_ipc_error(&code, &message))
-        }
-        other => anyhow::bail!("unexpected response: {other:?}"),
-    }
 }

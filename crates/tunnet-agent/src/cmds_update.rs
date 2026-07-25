@@ -147,7 +147,7 @@ pub fn apply_update_quiet(previous_bin: Option<&Path>) -> Result<UpdateOutcome> 
 }
 
 pub fn apply_service_reload(force_restart: bool) -> Result<()> {
-    let probe = crate::service::probe();
+    let probe = tunnet_service::probe();
     if !probe.installed {
         tracing::info!("service not installed; binary updated in place");
         return Ok(());
@@ -157,11 +157,11 @@ pub fn apply_service_reload(force_restart: bool) -> Result<()> {
     {
         if force_restart {
             tracing::info!("restarting tunnet service");
-            crate::service::restart(None)?;
+            tunnet_service::restart(None)?;
         } else if std::path::Path::new("/etc/systemd/system/tunnet.service").exists() {
             tracing::info!("reloading tunnet service (graceful)");
-            if crate::service::is_root() {
-                let _ = crate::service::refresh_unit(None);
+            if tunnet_service::is_root() {
+                let _ = tunnet_service::refresh_unit(None);
             }
             let status = std::process::Command::new("systemctl")
                 .args(["reload", "tunnet"])
@@ -180,7 +180,7 @@ pub fn apply_service_reload(force_restart: bool) -> Result<()> {
     {
         let _ = force_restart;
         tracing::info!("restarting tunnet service");
-        crate::service::restart(None)?;
+        tunnet_service::restart(None)?;
         Ok(())
     }
 
@@ -188,7 +188,7 @@ pub fn apply_service_reload(force_restart: bool) -> Result<()> {
     {
         let _ = force_restart;
         tracing::info!("restarting tunnet service");
-        crate::service::restart(None)?;
+        tunnet_service::restart(None)?;
         Ok(())
     }
 

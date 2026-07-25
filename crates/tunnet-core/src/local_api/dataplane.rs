@@ -10,7 +10,7 @@ pub enum DataPlaneCmd {
     Down(oneshot::Sender<Result<(), String>>),
 }
 
-/// Cloneable control surface used by the IPC server.
+/// Cloneable control surface used by the Local Management API server.
 #[derive(Clone)]
 pub struct DataPlaneHandle {
     up: Arc<AtomicBool>,

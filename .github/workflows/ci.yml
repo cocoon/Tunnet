@@ -1,4 +1,4 @@
-name: "CodeQL Advanced"
+name: CI
 
 on:
   push:
@@ -11,47 +11,26 @@ on:
     paths-ignore:
       - "apps/docs/**"
       - "**.md"
-  schedule:
-    - cron: "28 20 * * 5"
 
 jobs:
-  analyze:
-    name: Analyze (${{ matrix.language }})
+  rust:
+    name: Rust
     runs-on: [self-host-linux]
-    permissions:
-      security-events: write
-      packages: read
-      actions: read
-      contents: read
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - language: javascript-typescript
-            build-mode: none
-          - language: rust
-            build-mode: none
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Set up Node.js v24
-        uses: actions/setup-node@v7
-        with:
-          node-version: "24"
+      - name: Format
+        run: cargo fmt --check
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
-        with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
-          config: |
-            paths-ignore:
-              - 'apps/docs/**'
+      - name: Clippy (workspace)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
-        with:
-          category: "/language:${{matrix.language}}"
+      - name: Clippy (tunnet-core no-default)
+        run: cargo clippy -p tunnet-core --no-default-features -- -D warnings
+
+      - name: Clippy (SDK managed)
+        run: cargo clippy -p tunnet --no-default-features --features managed -- -D warnings
+
+      - name: Clippy (SDK direct)
+        run: cargo clippy -p tunnet --no-default-features --features direct -- -D warnings

@@ -67,7 +67,6 @@ pub use send_types::Transfer;
 
 #[cfg(feature = "serve")]
 mod serve_types {
-    /// Active serve (mesh reverse proxy) info.
     #[derive(Debug, Clone)]
     pub struct ServeInfo {
         /// Serve id.
@@ -82,8 +81,8 @@ mod serve_types {
         pub status: String,
     }
 
-    impl From<tunnet_core::ipc::protocol::ServeInfo> for ServeInfo {
-        fn from(i: tunnet_core::ipc::protocol::ServeInfo) -> Self {
+    impl From<tunnet_common::local_api::ServeInfo> for ServeInfo {
+        fn from(i: tunnet_common::local_api::ServeInfo) -> Self {
             Self {
                 id: i.id,
                 port: i.port,
