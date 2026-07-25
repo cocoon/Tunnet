@@ -506,7 +506,9 @@ pub fn render_systemd_unit(exe: &str, state_dir: Option<&str>) -> String {
          TimeoutStartSec=30\n\
          TimeoutStopSec=30\n\
          StateDirectory=tunnet\n\
+         RuntimeDirectory=tunnet\n\
          Environment=TUNNET_STATE_DIR={dir}\n\
+         Environment=TUNNET_RUNTIME_DIR=/run/tunnet\n\
          \n\
          [Install]\n\
          WantedBy=multi-user.target\n"
@@ -600,6 +602,8 @@ mod tests {
         assert!(unit.contains("ExecReload=/bin/kill -HUP $MAINPID"));
         assert!(unit.contains("TUNNET_STATE_DIR=/var/lib/tunnet"));
         assert!(unit.contains("StateDirectory=tunnet"));
+        assert!(unit.contains("RuntimeDirectory=tunnet"));
+        assert!(unit.contains("TUNNET_RUNTIME_DIR=/run/tunnet"));
     }
 
     #[test]

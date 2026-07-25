@@ -117,11 +117,6 @@ pub async fn run_with_shutdown(
     let paths = paths(state_dir);
     paths.ensure()?;
 
-    #[cfg(unix)]
-    crate::sd_notify::ready("waiting for create/enroll/join");
-
-    // Idle agents still need the Local API (create/enroll/join) and must signal
-    // SCM Running - otherwise Windows StartPending hangs forever.
     let bootstrap_api = if !has_network_state(&paths) {
         let handle = start_idle_bootstrap(&paths, &mut on_ready).await?;
         wait_for_network_state(&paths, shutdown.as_ref()).await?;
@@ -193,7 +188,7 @@ async fn start_idle_bootstrap(
         let _ = tx.send(());
     }
     #[cfg(unix)]
-    crate::sd_notify::status("idle - Local API ready");
+    crate::sd_notify::ready("idle - Local API ready");
     Ok(handle)
 }
 

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Dispatcher } from "undici";
 import { Agent, fetch as undiciFetch } from "undici";
@@ -27,8 +27,14 @@ export function defaultApiPath(env: NodeJS.ProcessEnv = process.env): string {
     return join(base, "tunnet", "ipc", "tunnetd.pipe");
   }
 
-  const base = env.TUNNET_RUNTIME_DIR ?? "/tmp";
-  return join(base, "tunnetd.sock");
+  if (env.TUNNET_RUNTIME_DIR) {
+    return join(env.TUNNET_RUNTIME_DIR, "tunnetd.sock");
+  }
+
+  if (existsSync("/run/tunnet")) {
+    return "/run/tunnet/tunnetd.sock";
+  }
+  return join("/tmp", "tunnetd.sock");
 }
 
 /** Resolve the connection target for the current platform. */

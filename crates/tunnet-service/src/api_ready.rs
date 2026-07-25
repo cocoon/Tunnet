@@ -1,55 +1,70 @@
 //! Wait until the Local Management API endpoint accepts connections.
 //!
-//! SCM / systemd "running" is not enough - clients need the named pipe / socket.
+//! SCM / systemd "running" is not enough — clients need the named pipe / socket.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// Default Local API endpoint path / marker (mirrors tunnet-core transport).
-fn default_api_path() -> PathBuf {
+/// Candidate Local API paths (mirrors tunnet-core / tunnet-client).
+fn api_candidates() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let mut push = |p: PathBuf| {
+        if !paths.iter().any(|x| x == &p) {
+            paths.push(p);
+        }
+    };
     if let Ok(override_path) =
         std::env::var("TUNNET_API_PATH").or_else(|_| std::env::var("TUNNET_IPC_PATH"))
     {
-        return PathBuf::from(override_path);
+        push(PathBuf::from(override_path));
     }
     #[cfg(unix)]
     {
-        let base = std::env::var("TUNNET_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-        PathBuf::from(base).join("tunnetd.sock")
+        if let Ok(dir) = std::env::var("TUNNET_RUNTIME_DIR") {
+            push(PathBuf::from(dir).join("tunnetd.sock"));
+        }
+        push(PathBuf::from("/run/tunnet/tunnetd.sock"));
+        push(PathBuf::from("/tmp/tunnetd.sock"));
     }
     #[cfg(windows)]
     {
         let base = std::env::var("PROGRAMDATA").unwrap_or_else(|_| r"C:\ProgramData".into());
-        PathBuf::from(base)
-            .join("tunnet")
-            .join("ipc")
-            .join("tunnetd.pipe")
+        push(
+            PathBuf::from(base)
+                .join("tunnet")
+                .join("ipc")
+                .join("tunnetd.pipe"),
+        );
     }
     #[cfg(not(any(unix, windows)))]
     {
-        PathBuf::from("tunnetd.api")
+        push(PathBuf::from("tunnetd.api"));
     }
+    paths
 }
 
 fn try_connect() -> bool {
-    let path = default_api_path();
     #[cfg(unix)]
     {
-        std::os::unix::net::UnixStream::connect(&path).is_ok()
+        for path in api_candidates() {
+            if std::os::unix::net::UnixStream::connect(&path).is_ok() {
+                return true;
+            }
+        }
+        false
     }
     #[cfg(windows)]
     {
-        try_connect_windows(&path)
+        try_connect_windows()
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = path;
         false
     }
 }
 
 #[cfg(windows)]
-fn try_connect_windows(marker: &std::path::Path) -> bool {
+fn try_connect_windows() -> bool {
     use std::os::windows::ffi::OsStrExt;
 
     use windows_sys::Win32::Foundation::{
@@ -60,10 +75,12 @@ fn try_connect_windows(marker: &std::path::Path) -> bool {
     };
 
     let mut names = Vec::new();
-    if let Ok(s) = std::fs::read_to_string(marker) {
-        let trimmed = s.trim();
-        if !trimmed.is_empty() {
-            names.push(trimmed.to_string());
+    for marker in api_candidates() {
+        if let Ok(s) = std::fs::read_to_string(&marker) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                names.push(trimmed.to_string());
+            }
         }
     }
     names.push(r"\\.\pipe\tunnetd".to_string());

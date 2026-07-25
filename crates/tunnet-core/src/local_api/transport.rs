@@ -12,8 +12,10 @@ pub fn default_api_path() -> PathBuf {
     }
     #[cfg(unix)]
     {
-        let base = std::env::var("TUNNET_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-        PathBuf::from(base).join("tunnetd.sock")
+        unix_api_candidates()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| PathBuf::from("/tmp/tunnetd.sock"))
     }
     #[cfg(windows)]
     {
@@ -28,6 +30,47 @@ pub fn default_api_path() -> PathBuf {
 /// Alias for callers still using the old name.
 pub fn default_ipc_path() -> PathBuf {
     default_api_path()
+}
+
+/// Prefer system runtime dir when present (systemd `RuntimeDirectory=tunnet`), else `/tmp`.
+#[cfg(unix)]
+pub fn unix_api_candidates() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let mut push = |p: PathBuf| {
+        if !paths.iter().any(|x| x == &p) {
+            paths.push(p);
+        }
+    };
+
+    if let Ok(override_path) =
+        std::env::var("TUNNET_API_PATH").or_else(|_| std::env::var("TUNNET_IPC_PATH"))
+    {
+        push(PathBuf::from(override_path));
+    }
+    if let Ok(dir) = std::env::var("TUNNET_RUNTIME_DIR") {
+        push(PathBuf::from(dir).join("tunnetd.sock"));
+    }
+    push(PathBuf::from("/run/tunnet/tunnetd.sock"));
+    push(PathBuf::from("/tmp/tunnetd.sock"));
+    paths
+}
+
+/// Path used when *binding* the listener (single socket).
+#[cfg(unix)]
+fn unix_bind_path() -> PathBuf {
+    if let Ok(override_path) =
+        std::env::var("TUNNET_API_PATH").or_else(|_| std::env::var("TUNNET_IPC_PATH"))
+    {
+        return PathBuf::from(override_path);
+    }
+    if let Ok(dir) = std::env::var("TUNNET_RUNTIME_DIR") {
+        return PathBuf::from(dir).join("tunnetd.sock");
+    }
+    let run_dir = Path::new("/run/tunnet");
+    if run_dir.is_dir() {
+        return run_dir.join("tunnetd.sock");
+    }
+    PathBuf::from("/tmp/tunnetd.sock")
 }
 
 #[cfg(windows)]
@@ -70,9 +113,14 @@ pub enum ApiStream {
 
 impl ApiListener {
     pub async fn bind() -> anyhow::Result<(Self, PathBuf)> {
+        #[cfg(unix)]
+        let path = unix_bind_path();
+        #[cfg(not(unix))]
         let path = default_api_path();
         #[cfg(unix)]
         {
+            use std::os::unix::fs::PermissionsExt;
+
             if path.exists() {
                 let _ = std::fs::remove_file(&path);
             }
@@ -80,6 +128,7 @@ impl ApiListener {
                 std::fs::create_dir_all(parent)?;
             }
             let unix = tokio::net::UnixListener::bind(&path)?;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666));
             tracing::info!(path = %path.display(), "Local API listening (unix)");
             Ok((
                 Self {
@@ -244,8 +293,18 @@ impl ApiStream {
 pub async fn connect(path: &Path) -> io::Result<ClientStream> {
     #[cfg(unix)]
     {
-        let stream = tokio::net::UnixStream::connect(path).await?;
-        Ok(ClientStream::Unix(stream))
+        let mut last = None;
+        let mut tried = std::collections::HashSet::new();
+        for candidate in std::iter::once(path.to_path_buf()).chain(unix_api_candidates()) {
+            if !tried.insert(candidate.clone()) {
+                continue;
+            }
+            match tokio::net::UnixStream::connect(&candidate).await {
+                Ok(stream) => return Ok(ClientStream::Unix(stream)),
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| io::Error::other("unix socket connect failed")))
     }
     #[cfg(windows)]
     {
@@ -301,7 +360,13 @@ pub async fn endpoint_reachable(path: &Path) -> bool {
     }
     #[cfg(unix)]
     {
-        path.exists() && tokio::net::UnixStream::connect(path).await.is_ok()
+        let _ = path;
+        for candidate in unix_api_candidates() {
+            if tokio::net::UnixStream::connect(&candidate).await.is_ok() {
+                return true;
+            }
+        }
+        false
     }
     #[cfg(not(any(unix, windows)))]
     {

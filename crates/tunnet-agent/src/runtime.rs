@@ -239,7 +239,7 @@ pub async fn run(
     }
 
     #[cfg(unix)]
-    crate::sd_notify::status("running");
+    crate::sd_notify::ready("running");
 
     let tun = Arc::new(build_tun(
         &args.ifname,
