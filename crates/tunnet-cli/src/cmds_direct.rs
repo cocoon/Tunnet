@@ -160,13 +160,20 @@ pub async fn run_create(args: CreateArgs, state_dir: Option<&str>) -> anyhow::Re
     let body = NetworkCreateRequest {
         hostname: args.hostname,
         open: args.open,
-        network_name: args.network_name,
+        network_name: args.network_name.clone(),
         secret: args.secret,
         no_encrypt_state: args.no_encrypt_state,
     };
-    let resp = client.network_create(&body).await?;
-    println!("{}", resp.message);
-    Ok(())
+    match client.network_create(&body).await {
+        Ok(resp) => {
+            println!("{}", resp.message);
+            Ok(())
+        }
+        Err(e) if crate::cmds::is_api_connection_closed(&e) => {
+            crate::cmds::recover_bootstrap_result(state_dir, "created", e).await
+        }
+        Err(e) => Err(e),
+    }
 }
 
 pub async fn run_join(args: JoinArgs, state_dir: Option<&str>) -> anyhow::Result<()> {
@@ -178,9 +185,16 @@ pub async fn run_join(args: JoinArgs, state_dir: Option<&str>) -> anyhow::Result
         auto_accept_firewall: args.auto_accept_firewall,
         no_encrypt_state: args.no_encrypt_state,
     };
-    let resp = client.network_join(&body).await?;
-    println!("{}", resp.message);
-    Ok(())
+    match client.network_join(&body).await {
+        Ok(resp) => {
+            println!("{}", resp.message);
+            Ok(())
+        }
+        Err(e) if crate::cmds::is_api_connection_closed(&e) => {
+            crate::cmds::recover_bootstrap_result(state_dir, "joined", e).await
+        }
+        Err(e) => Err(e),
+    }
 }
 
 pub async fn run_invite(args: InviteArgs, state_dir: Option<&str>) -> anyhow::Result<()> {

@@ -18,11 +18,6 @@ pub fn ready(status: &str) {
     send(&msg);
 }
 
-/// Update the systemd STATUS= line (journal / systemctl status).
-pub fn status(status: &str) {
-    send(&format!("STATUS={status}\n"));
-}
-
 fn send(payload: &str) {
     let Some(raw) = std::env::var_os("NOTIFY_SOCKET") else {
         return;

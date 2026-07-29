@@ -36,16 +36,12 @@ pub async fn wait_until_agent(state_dir: Option<&str>, secs: u64) -> anyhow::Res
 
 fn running_as_service() -> bool {
     std::env::var_os("TUNNET_SERVICE_MODE").is_some()
+        || std::env::var_os("NOTIFY_SOCKET").is_some()
+        || std::env::var_os("INVOCATION_ID").is_some()
 }
 
-/// After writing network state: reload the OS service when invoked from the CLI.
-///
-/// When already inside `tunnetd` (service mode), never stop ourselves mid-request -
-/// that closes the Local API connection the CLI is waiting on. Idle agents pick up
-/// new state via the wait loop; live agents schedule a deferred restart.
 pub async fn finish_after_config(
     state_dir: Option<&str>,
-    // True when the mesh was already configured before this change (needs process restart).
     needs_process_restart: bool,
 ) -> anyhow::Result<()> {
     if running_as_service() {

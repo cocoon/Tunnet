@@ -276,9 +276,7 @@ pub async fn run_create(args: CreateArgs, state_dir: Option<&str>) -> anyhow::Re
     );
     println!("State directory: {}", paths.dir.display());
     crate::cmds::finish_after_config(state_dir, had_networks).await?;
-    if std::env::var_os("TUNNET_SERVICE_MODE").is_none() {
-        println!("Next: `tunnet invite` and share the code.");
-    }
+    println!("Next: `tunnet invite` and share the code.");
     Ok(())
 }
 pub async fn run_join(args: JoinArgs, state_dir: Option<&str>) -> anyhow::Result<()> {

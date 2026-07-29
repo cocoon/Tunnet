@@ -105,7 +105,11 @@ pub async fn run(
             src_posture_ok,
             enable_mdns: agent_cfg.effective_mdns_default() && !args.no_mdns,
             enable_gossip: !args.disable_gossip || agent_cfg.effective_service_relay(),
-            keep_alive: if is_direct { args.keep_alive } else { true },
+            keep_alive: match std::env::var("TUNNET_KEEP_ALIVE").ok().as_deref() {
+                Some("0" | "false" | "off") => false,
+                Some(_) => true,
+                None => true,
+            } || args.keep_alive,
             effective_config: Some(config_store.clone()),
         },
     )

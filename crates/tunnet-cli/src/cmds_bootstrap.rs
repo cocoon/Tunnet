@@ -74,7 +74,13 @@ pub async fn run_enroll(args: EnrollArgs, state_dir: Option<&str>) -> anyhow::Re
         expires_in: args.expires_in,
         no_encrypt_state: args.no_encrypt_state,
     };
-    let resp = client.enroll(&body).await?;
+    let resp = match client.enroll(&body).await {
+        Ok(resp) => resp,
+        Err(e) if crate::cmds::is_api_connection_closed(&e) => {
+            return crate::cmds::recover_bootstrap_result(state_dir, "enrolled", e).await;
+        }
+        Err(e) => return Err(e),
+    };
     println!("{}", resp.message);
     Ok(())
 }

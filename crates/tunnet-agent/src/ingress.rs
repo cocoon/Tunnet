@@ -20,22 +20,9 @@ impl IngressRegistry {
         Self::default()
     }
 
-    #[allow(dead_code)]
-    pub fn generation(&self) -> u64 {
-        self.generation.load(Ordering::SeqCst)
-    }
-
     /// Bump generation (e.g. data-plane down) so in-flight readers can exit.
     pub fn bump_generation(&self) {
         self.generation.fetch_add(1, Ordering::SeqCst);
-    }
-
-    /// Try to claim bulk ingress for `peer`. Returns `false` if a live reader already exists.
-    pub fn try_spawn<F>(&self, peer: EndpointId, fut: F) -> bool
-    where
-        F: std::future::Future<Output = ()> + Send + 'static,
-    {
-        Self::try_spawn_map(&self.readers, peer, fut)
     }
 
     /// Abort any existing bulk reader and start a new one.
@@ -46,44 +33,12 @@ impl IngressRegistry {
         Self::force_spawn_map(&self.readers, peer, fut);
     }
 
-    /// Try to claim latency-ALPN ingress (parallel to bulk).
-    pub fn try_spawn_latency<F>(&self, peer: EndpointId, fut: F) -> bool
-    where
-        F: std::future::Future<Output = ()> + Send + 'static,
-    {
-        Self::try_spawn_map(&self.latency_readers, peer, fut)
-    }
-
     /// Replace the latency-ALPN ingress reader.
     pub fn force_spawn_latency<F>(&self, peer: EndpointId, fut: F)
     where
         F: std::future::Future<Output = ()> + Send + 'static,
     {
         Self::force_spawn_map(&self.latency_readers, peer, fut);
-    }
-
-    fn try_spawn_map<F>(
-        map: &Arc<DashMap<EndpointId, JoinHandle<()>>>,
-        peer: EndpointId,
-        fut: F,
-    ) -> bool
-    where
-        F: std::future::Future<Output = ()> + Send + 'static,
-    {
-        use dashmap::mapref::entry::Entry;
-        match map.entry(peer) {
-            Entry::Occupied(occ) => {
-                if !occ.get().is_finished() {
-                    return false;
-                }
-                drop(occ);
-            }
-            Entry::Vacant(v) => {
-                drop(v);
-            }
-        }
-        Self::spawn_inner(map, peer, fut);
-        true
     }
 
     fn force_spawn_map<F>(map: &Arc<DashMap<EndpointId, JoinHandle<()>>>, peer: EndpointId, fut: F)
@@ -120,9 +75,16 @@ impl IngressRegistry {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn has_reader(&self, peer: EndpointId) -> bool {
         self.readers.get(&peer).is_some_and(|h| !h.is_finished())
+    }
+
+    #[cfg(test)]
+    pub fn has_latency_reader(&self, peer: EndpointId) -> bool {
+        self.latency_readers
+            .get(&peer)
+            .is_some_and(|h| !h.is_finished())
     }
 }
 
@@ -142,7 +104,7 @@ mod tests {
     }
 
     #[test]
-    fn try_spawn_second_time_returns_false() {
+    fn force_spawn_replaces_bulk_reader() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -153,13 +115,14 @@ mod tests {
             bytes[0] = 2;
             let p = iroh::SecretKey::from(bytes).public();
             let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-            assert!(reg.try_spawn(p, async move {
+            reg.force_spawn(p, async move {
                 let _ = rx.await;
-            }));
+            });
             tokio::task::yield_now().await;
             assert!(reg.has_reader(p));
-            assert!(!reg.try_spawn(p, async {}));
-            reg.abort_all();
+            reg.force_spawn(p, async {});
+            tokio::task::yield_now().await;
+            // Previous reader aborted; new one finishes immediately.
             assert!(!reg.has_reader(p));
             drop(tx);
             tokio::task::yield_now().await;
@@ -179,16 +142,18 @@ mod tests {
             let p = iroh::SecretKey::from(bytes).public();
             let (tx1, rx1) = tokio::sync::oneshot::channel::<()>();
             let (tx2, rx2) = tokio::sync::oneshot::channel::<()>();
-            assert!(reg.try_spawn(p, async move {
+            reg.force_spawn(p, async move {
                 let _ = rx1.await;
-            }));
-            assert!(reg.try_spawn_latency(p, async move {
+            });
+            reg.force_spawn_latency(p, async move {
                 let _ = rx2.await;
-            }));
+            });
             tokio::task::yield_now().await;
-            assert!(!reg.try_spawn(p, async {}));
-            assert!(!reg.try_spawn_latency(p, async {}));
+            assert!(reg.has_reader(p));
+            assert!(reg.has_latency_reader(p));
             reg.abort_all();
+            assert!(!reg.has_reader(p));
+            assert!(!reg.has_latency_reader(p));
             drop(tx1);
             drop(tx2);
             tokio::task::yield_now().await;
@@ -207,9 +172,9 @@ mod tests {
             bytes[0] = 3;
             let p = iroh::SecretKey::from(bytes).public();
             let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-            assert!(reg.try_spawn(p, async move {
+            reg.force_spawn(p, async move {
                 let _ = rx.await;
-            }));
+            });
             tokio::task::yield_now().await;
             assert!(reg.has_reader(p));
             reg.abort_all();

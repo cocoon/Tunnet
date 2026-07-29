@@ -164,11 +164,11 @@ impl ProtocolHandler for TunnelHandler {
 
         if is_latency {
             if !self.dgram_pool.adopt_latency(peer, conn.clone()).await {
-                tracing::debug!(%peer, "latency accept superseded by live dial; closing");
+                tracing::debug!(%peer, "latency accept not installed; closing");
                 conn.close(0u32.into(), b"superseded");
                 return Ok(());
             }
-            if !self.ingress.try_spawn_latency(peer, {
+            self.ingress.force_spawn_latency(peer, {
                 let conn = conn.clone();
                 let tun = self.tun.clone();
                 let routes = self.routes.clone();
@@ -193,19 +193,17 @@ impl ProtocolHandler for TunnelHandler {
                     })
                     .await;
                 }
-            }) {
-                tracing::debug!(%peer, "latency ingress skipped (reader already active)");
-            }
+            });
             return Ok(());
         }
 
         // Install into pool first so outbound send and ingress share one QUIC conn.
         if !self.dgram_pool.adopt(peer, conn.clone()).await {
-            tracing::debug!(%peer, "accept superseded by live dial; closing");
+            tracing::debug!(%peer, "accept not installed; closing");
             conn.close(0u32.into(), b"superseded");
             return Ok(());
         }
-        if !self.ingress.try_spawn(peer, {
+        self.ingress.force_spawn(peer, {
             let conn = conn.clone();
             let tun = self.tun.clone();
             let routes = self.routes.clone();
@@ -230,9 +228,7 @@ impl ProtocolHandler for TunnelHandler {
                 })
                 .await;
             }
-        }) {
-            tracing::debug!(%peer, "accept ingress skipped (reader already active)");
-        }
+        });
         Ok(())
     }
 }

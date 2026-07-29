@@ -232,11 +232,6 @@ impl ConnPool {
         }
     }
 
-    /// Install an accepted tunnel connection as the peer's live conn when none exists.
-    ///
-    /// Returns whether `conn` is (or already was) the canonical live connection.
-    /// If a *different* live dial already won the race, returns `false` and leaves
-    /// the pool unchanged - caller should close `conn` and not start a reader.
     pub async fn adopt(&self, peer: EndpointId, conn: Connection) -> bool {
         let slot = self.slot(peer);
         let mut guard = slot.lock().await;
@@ -245,18 +240,18 @@ impl ConnPool {
                 guard.touch();
                 return true;
             }
-            guard.touch();
-            return false;
+            if let Some(old) = guard.conn.take() {
+                old.close(0u32.into(), b"replaced_by_accept");
+            }
         }
-        guard.conn = Some(conn);
+        guard.conn = Some(conn.clone());
         guard.state = PeerConnState::Connected;
         guard.touch();
+        drop(guard);
+        self.fire_tunnel_hook(peer, conn);
         true
     }
 
-    /// Install an accepted latency-ALPN connection (does not replace the bulk tunnel).
-    ///
-    /// Returns `false` if a different live latency conn already won the race.
     pub async fn adopt_latency(&self, peer: EndpointId, conn: Connection) -> bool {
         let key = (peer, TUNNEL_LATENCY_ALPN.to_vec());
         let slot = self
@@ -269,9 +264,13 @@ impl ConnPool {
             if existing.stable_id() == conn.stable_id() {
                 return true;
             }
-            return false;
+            if let Some(old) = guard.take() {
+                old.close(0u32.into(), b"replaced_by_accept");
+            }
         }
-        *guard = Some(conn);
+        *guard = Some(conn.clone());
+        drop(guard);
+        self.fire_latency_hook(peer, conn);
         true
     }
 
@@ -294,16 +293,17 @@ impl ConnPool {
             .await
             .with_context(|| format!("latency connect to {peer}"))?;
         let mut guard = slot.lock().await;
-        // Accept may have won while we dialed.
         if let Some(existing) = guard.as_ref().filter(|c| c.close_reason().is_none()) {
             let existing = existing.clone();
             drop(guard);
             conn.close(0u32.into(), b"superseded");
+            self.fire_latency_hook(peer, existing.clone());
             return Ok(existing);
         }
         *guard = Some(conn.clone());
         drop(guard);
         self.fire_latency_hook(peer, conn.clone());
+        tokio::task::yield_now().await;
         Ok(conn)
     }
 
@@ -573,7 +573,7 @@ impl ConnPool {
                         let buffered = guard.take_buf();
                         drop(guard);
                         conn.close(0u32.into(), b"superseded");
-                        (existing, buffered, false)
+                        (existing, buffered, true)
                     } else {
                         guard.conn = Some(conn.clone());
                         guard.state = PeerConnState::Connected;
