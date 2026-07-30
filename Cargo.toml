@@ -80,6 +80,7 @@ blake3 = "1"
 toml = { version = "1", features = ["preserve_order"] }
 bs58 = "0.5"
 iroh-mdns-address-lookup = "0.4"
+iroh-mainline-address-lookup = "0.4"
 argon2 = "0.5"
 secrecy = { version = "0.10", features = ["serde"] }
 

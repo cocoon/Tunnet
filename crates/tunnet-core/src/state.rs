@@ -147,10 +147,10 @@ pub struct ManagedState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectState {
     pub network_name: String,
-    /// Hex-encoded 32-byte network secret (PSK). In-memory only - sealed in `state.enc`.
+    /// Hex join/bootstrap secret. In-memory only - sealed in `state.enc`.
     #[serde(skip)]
-    pub network_secret: String,
-    /// Hex topic id = blake3(network_name || secret).
+    pub join_secret: String,
+    /// Hex topic id = blake3(network_name || join_secret).
     pub topic_hash: String,
     /// Deterministic UUID derived from topic_hash (for IPC / gossip topic helpers).
     pub network_id: Uuid,
@@ -165,12 +165,27 @@ pub struct DirectState {
     /// Optional coordinator endpoint id (hex) known at join time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coordinator_endpoint_id: Option<String>,
-    /// iroh-docs write ticket. In-memory only - sealed in `state.enc`.
+    /// Coordinator ed25519 verifying key (hex). Public; also in invite + genesis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_verifying_key: Option<String>,
+    /// Current network epoch (revocation watermark).
+    #[serde(default)]
+    pub network_epoch: u64,
+    /// iroh-docs ticket. In-memory only - sealed in `state.enc`.
     #[serde(skip)]
     pub doc_ticket: Option<String>,
     /// iroh-docs namespace id (hex). Network document identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace_id: Option<String>,
+    /// Coordinator signing key seed (hex). In-memory only - sealed.
+    #[serde(skip)]
+    pub coordinator_signing_key: Option<String>,
+    /// Serialized NetworkGrant JSON for this endpoint. In-memory only - sealed.
+    #[serde(skip)]
+    pub network_grant: Option<String>,
+    /// Network content key (hex). In-memory only - sealed.
+    #[serde(skip)]
+    pub content_key: Option<String>,
     /// Auto-accept coordinator firewall policy suggestions.
     #[serde(default)]
     pub auto_accept_firewall: bool,
@@ -220,8 +235,11 @@ impl PersistedState {
         if let PersistedState::Direct { networks } = self {
             for d in networks.iter_mut() {
                 if let Some(ns) = secrets.networks.get(&d.network_id) {
-                    d.network_secret = ns.network_secret.clone();
+                    d.join_secret = ns.join_secret.clone();
                     d.doc_ticket = ns.doc_ticket.clone();
+                    d.coordinator_signing_key = ns.coordinator_signing_key.clone();
+                    d.network_grant = ns.network_grant.clone();
+                    d.content_key = ns.content_key.clone();
                 }
             }
         }
@@ -386,7 +404,7 @@ mod tests {
         let s = PersistedState::Direct {
             networks: vec![DirectState {
                 network_name: "home".into(),
-                network_secret: "aa".repeat(32),
+                join_secret: String::new(),
                 topic_hash: "bb".repeat(32),
                 network_id: Uuid::nil(),
                 coordinator: true,
@@ -395,8 +413,13 @@ mod tests {
                 collision_index: 0,
                 hostname: "laptop".into(),
                 coordinator_endpoint_id: None,
+                coordinator_verifying_key: None,
+                network_epoch: 0,
                 doc_ticket: None,
                 namespace_id: None,
+                coordinator_signing_key: None,
+                network_grant: None,
+                content_key: None,
                 auto_accept_firewall: false,
                 created_at: Utc::now(),
             }],
@@ -406,7 +429,7 @@ mod tests {
         assert!(loaded.is_direct());
         let d = loaded.require_direct_network(None).unwrap();
         assert!(
-            d.network_secret.is_empty(),
+            d.join_secret.is_empty(),
             "secrets must not live in state.json"
         );
         assert!(d.doc_ticket.is_none());
@@ -433,7 +456,7 @@ mod tests {
             networks: vec![
                 DirectState {
                     network_name: "gaming".into(),
-                    network_secret: String::new(),
+                    join_secret: String::new(),
                     topic_hash: "aa".repeat(32),
                     network_id: Uuid::from_u128(1),
                     coordinator: true,
@@ -442,14 +465,19 @@ mod tests {
                     collision_index: 0,
                     hostname: "laptop".into(),
                     coordinator_endpoint_id: None,
+                    coordinator_verifying_key: None,
+                    network_epoch: 0,
                     doc_ticket: None,
                     namespace_id: None,
+                    coordinator_signing_key: None,
+                    network_grant: None,
+                    content_key: None,
                     auto_accept_firewall: false,
                     created_at: Utc::now(),
                 },
                 DirectState {
                     network_name: "homelab".into(),
-                    network_secret: String::new(),
+                    join_secret: String::new(),
                     topic_hash: "bb".repeat(32),
                     network_id: Uuid::from_u128(2),
                     coordinator: false,
@@ -458,8 +486,13 @@ mod tests {
                     collision_index: 0,
                     hostname: "laptop".into(),
                     coordinator_endpoint_id: None,
+                    coordinator_verifying_key: None,
+                    network_epoch: 0,
                     doc_ticket: None,
                     namespace_id: None,
+                    coordinator_signing_key: None,
+                    network_grant: None,
+                    content_key: None,
                     auto_accept_firewall: false,
                     created_at: Utc::now(),
                 },

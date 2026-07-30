@@ -1,21 +1,26 @@
 //! Direct-mode membership via [iroh-docs](https://github.com/n0-computer/iroh-docs).
 //!
 //! One document per Direct network. Keys:
-//! - `meta/name`, `meta/coordinator`, `meta/subnet`, `meta/created_at`
-//! - `peers/<endpoint_id>/{hostname,ip,collision_index,tags,status,joined_at,coordinator,ssh_host_key}`
+//! - `meta/genesis` - network genesis (signed)
+//! - `meta/epoch` - current network epoch (signed)
+//! - `meta/name`, `meta/subnet` - optional display metadata
+//! - `peers/<endpoint_id>/record` - signed [`SignedMemberRecord`] JSON
+//! - `revocations/<endpoint_id>` - signed [`Revocation`] JSON
+//! - `policy/v1/bundle` - coordinator firewall policy bundle
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Context;
 use arc_swap::ArcSwap;
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
+use ed25519_dalek::SigningKey;
 use futures_util::StreamExt;
-use iroh::Endpoint;
 use iroh::protocol::ProtocolHandler;
 use iroh_blobs::store::fs::FsStore;
 use iroh_docs::api::Doc;
@@ -32,10 +37,16 @@ use uuid::Uuid;
 
 use crate::acl::AclEngine;
 use crate::direct::auth::AuthCache;
+use crate::direct::grants::{
+    EpochRecord, Genesis, MemberRole, NetworkGrant, Revocation, SignedMemberRecord, sign_epoch,
+    sign_genesis, sign_grant, sign_member_record, sign_revocation, verify_epoch, verify_genesis,
+    verify_member_record, verify_revocation, verifying_key_from_hex,
+};
 use crate::routing::RoutingTable;
 use crate::state::{DirectState, StatePaths};
 
 const SUBNET: &str = "100.64.0.0/10";
+const RECORD_SCHEMA: u16 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MembershipEntry {
@@ -49,32 +60,34 @@ pub struct MembershipEntry {
     pub joined_at: DateTime<Utc>,
     #[serde(default)]
     pub coordinator: bool,
-    #[serde(default = "default_online")]
+    #[serde(default = "default_active")]
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_host_key: Option<String>,
 }
 
-fn default_online() -> String {
-    "online".into()
+fn default_active() -> String {
+    "active".into()
 }
 
-fn peer_key(endpoint_id: &str, field: &str) -> Bytes {
-    Bytes::from(format!("peers/{endpoint_id}/{field}"))
+fn genesis_key() -> Bytes {
+    Bytes::from("meta/genesis")
+}
+
+fn epoch_key() -> Bytes {
+    Bytes::from("meta/epoch")
 }
 
 fn meta_key(field: &str) -> Bytes {
     Bytes::from(format!("meta/{field}"))
 }
 
-fn parse_peer_key(key: &[u8]) -> Option<(String, String)> {
-    let s = std::str::from_utf8(key).ok()?;
-    let rest = s.strip_prefix("peers/")?;
-    let (id, field) = rest.split_once('/')?;
-    if id.is_empty() || field.is_empty() || field.contains('/') {
-        return None;
-    }
-    Some((id.to_string(), field.to_string()))
+fn record_key(endpoint_id: &str) -> Bytes {
+    Bytes::from(format!("peers/{endpoint_id}/record"))
+}
+
+fn revocation_key(endpoint_id: &str) -> Bytes {
+    Bytes::from(format!("revocations/{endpoint_id}"))
 }
 
 /// Live Direct membership document (iroh-docs) plus protocol handlers for accept.
@@ -93,7 +106,15 @@ struct DocsInner {
     network_id: Uuid,
     join_index: u64,
     network_name: String,
-    network_secret: String,
+    join_secret: String,
+    coordinator_signing_key: Option<SigningKey>,
+    coordinator_verifying_key: String,
+    network_epoch: Arc<AtomicU64>,
+    content_key: String,
+    revoked: Arc<Mutex<HashSet<String>>>,
+    self_grant: Option<NetworkGrant>,
+    #[allow(dead_code)]
+    endpoint_signing_key: SigningKey,
     hostname: String,
     auto_accept_firewall: bool,
     self_endpoint_id: String,
@@ -104,21 +125,24 @@ struct DocsInner {
 
 /// Inputs for [`DocsMembership::bootstrap`].
 pub struct DocsBootstrap<'a> {
-    pub endpoint: Endpoint,
+    pub docs: Docs,
+    pub gossip: Gossip,
     pub paths: &'a StatePaths,
     pub direct: &'a DirectState,
     pub self_endpoint_id: &'a str,
     pub self_entry: MembershipEntry,
+    pub endpoint_signing_key: SigningKey,
+    pub coordinator_signing_key: Option<SigningKey>,
+    pub coordinator_verifying_key: String,
+    pub content_key: String,
+    pub network_grant: Option<NetworkGrant>,
     pub blobs: FsStore,
     pub routes: RoutingTable,
     pub acl: AclEngine,
     pub auth: AuthCache,
     pub policy: tunnet_common::policy::PolicyBundle,
-    /// Optional firewall engine for coordinator policy suggestions.
     pub firewall: Option<crate::direct::FirewallEngine>,
-    /// PeerDNS config (from tunnet.toml or defaults).
     pub dns: DnsConfig,
-    /// Join order among Direct networks (0 = first / outbound winner).
     pub join_index: u64,
 }
 
@@ -133,6 +157,22 @@ impl DocsMembership {
 
     pub fn namespace_id(&self) -> NamespaceId {
         self.inner.doc.id()
+    }
+
+    pub fn network_epoch(&self) -> u64 {
+        self.inner.network_epoch.load(Ordering::Relaxed)
+    }
+
+    pub fn revoked_snapshot(&self) -> HashSet<String> {
+        self.inner.revoked.lock().clone()
+    }
+
+    pub fn coordinator_verifying_key(&self) -> &str {
+        &self.inner.coordinator_verifying_key
+    }
+
+    pub fn join_secret(&self) -> &str {
+        &self.inner.join_secret
     }
 
     pub fn snapshot_members(&self) -> Vec<MembershipEntry> {
@@ -151,18 +191,31 @@ impl DocsMembership {
         Ok(ticket.to_string())
     }
 
-    /// Bootstrap docs for a Direct network (create or import).
-    ///
-    /// `blobs` must be the same store served on `iroh_blobs::ALPN`.
+    pub async fn share_read_ticket(&self) -> anyhow::Result<String> {
+        let ticket = self
+            .inner
+            .doc
+            .share(ShareMode::Read, AddrInfoOptions::RelayAndAddresses)
+            .await
+            .context("share read ticket")?;
+        Ok(ticket.to_string())
+    }
+
     pub async fn bootstrap(
         cfg: DocsBootstrap<'_>,
     ) -> anyhow::Result<(Self, Option<String>, Option<String>)> {
         let DocsBootstrap {
-            endpoint,
+            docs,
+            gossip,
             paths,
             direct,
             self_endpoint_id,
             self_entry,
+            endpoint_signing_key,
+            coordinator_signing_key,
+            coordinator_verifying_key,
+            content_key,
+            network_grant,
             blobs,
             routes,
             acl,
@@ -173,15 +226,10 @@ impl DocsMembership {
             join_index,
         } = cfg;
         paths.ensure_network_dirs(direct.network_id)?;
-        let docs_dir = paths.docs_dir(direct.network_id);
-
-        let gossip = Gossip::builder().spawn(endpoint.clone());
-        let docs = Docs::persistent(docs_dir)
-            .spawn(endpoint.clone(), (*blobs).clone(), gossip.clone())
-            .await
-            .context("spawn Docs")?;
 
         let author = docs.author_default().await.context("default author")?;
+        let network_epoch = Arc::new(AtomicU64::new(direct.network_epoch));
+        let revoked = Arc::new(Mutex::new(HashSet::new()));
 
         let (doc, created_ticket, namespace_str) = if let Some(ticket_str) = &direct.doc_ticket {
             let ticket = DocTicket::from_str(ticket_str).context("parse doc_ticket")?;
@@ -196,8 +244,10 @@ impl DocsMembership {
             let doc = docs
                 .open(id)
                 .await
-                .context("open namespace")?
-                .context("namespace not found locally; re-join or recreate")?;
+                .context("open namespace on unified docs engine")?
+                .context(
+                    "namespace not found in unified docs store; re-join with a fresh doc ticket",
+                )?;
             (doc, None, Some(ns.clone()))
         } else if direct.coordinator {
             let doc = docs.create().await.context("create membership doc")?;
@@ -206,7 +256,6 @@ impl DocsMembership {
                 .await
                 .context("share new doc")?;
             let ns = doc.id().to_string();
-            seed_meta(&doc, author, direct, self_endpoint_id).await?;
             (doc, Some(ticket.to_string()), Some(ns))
         } else {
             anyhow::bail!(
@@ -227,7 +276,14 @@ impl DocsMembership {
                 network_id: direct.network_id,
                 join_index,
                 network_name: direct.network_name.clone(),
-                network_secret: direct.network_secret.clone(),
+                join_secret: direct.join_secret.clone(),
+                coordinator_signing_key,
+                coordinator_verifying_key,
+                network_epoch: network_epoch.clone(),
+                content_key,
+                revoked: revoked.clone(),
+                self_grant: network_grant,
+                endpoint_signing_key,
                 hostname: direct.hostname.clone(),
                 auto_accept_firewall: direct.auto_accept_firewall,
                 self_endpoint_id: self_endpoint_id.to_string(),
@@ -237,17 +293,22 @@ impl DocsMembership {
             }),
         };
 
-        membership
-            .write_peer_entry(&self_entry)
-            .await
-            .context("write self peer entry")?;
+        if direct.coordinator && direct.doc_ticket.is_none() && direct.namespace_id.is_none() {
+            membership
+                .seed_coordinator_genesis(direct, self_endpoint_id)
+                .await?;
+            membership
+                .write_self_record(&self_entry)
+                .await
+                .context("write coordinator self record")?;
+        }
 
         membership.rebuild_from_doc().await?;
-        membership.apply_to_routes(&routes, &acl, &auth, &policy);
+        membership.apply_to_routes(&routes, &acl, &policy);
         if let Err(e) = membership.sync_firewall_policy().await {
             tracing::debug!(?e, "initial firewall policy sync");
         }
-        if let Err(e) = membership.apply_pending_kicks().await {
+        if let Err(e) = membership.apply_pending_kicks(&auth).await {
             tracing::warn!(?e, "apply pending kicks");
         }
 
@@ -272,7 +333,7 @@ impl DocsMembership {
                                     tracing::debug!(?e, "docs membership rebuild");
                                     continue;
                                 }
-                                bg.apply_to_routes(&routes_bg, &acl_bg, &auth_bg, &policy_bg);
+                                bg.apply_to_routes(&routes_bg, &acl_bg, &policy_bg);
                                 if let Err(e) = bg.sync_firewall_policy().await {
                                     tracing::debug!(?e, "docs firewall policy sync");
                                 }
@@ -291,7 +352,7 @@ impl DocsMembership {
                         }
                     }
                     _ = kick_tick.tick() => {
-                        let _ = bg.apply_pending_kicks().await;
+                        let _ = bg.apply_pending_kicks(&auth_bg).await;
                     }
                 }
             }
@@ -300,92 +361,273 @@ impl DocsMembership {
         Ok((membership, created_ticket, namespace_str))
     }
 
-    pub async fn write_peer_entry(&self, entry: &MembershipEntry) -> anyhow::Result<()> {
-        let author = self.inner.author;
-        let doc = &self.inner.doc;
-        let id = &entry.endpoint_id;
-        set_str(doc, author, peer_key(id, "hostname"), &entry.hostname).await?;
-        set_str(doc, author, peer_key(id, "ip"), &entry.ipv4.to_string()).await?;
+    async fn seed_coordinator_genesis(
+        &self,
+        direct: &DirectState,
+        coordinator_id: &str,
+    ) -> anyhow::Result<()> {
+        let Some(sk) = &self.inner.coordinator_signing_key else {
+            anyhow::bail!("coordinator signing key required to seed genesis");
+        };
+        let vk_hex = hex::encode(sk.verifying_key().to_bytes());
+        let genesis = sign_genesis(
+            sk,
+            Genesis {
+                network_id: direct.network_id,
+                network_name: direct.network_name.clone(),
+                coordinator_endpoint_id: coordinator_id.to_string(),
+                coordinator_verifying_key: vk_hex,
+                created_at: direct.created_at,
+                sig: String::new(),
+            },
+        )?;
+        set_json(&self.inner.doc, self.inner.author, genesis_key(), &genesis).await?;
+
+        let epoch = sign_epoch(
+            sk,
+            EpochRecord {
+                network_epoch: 0,
+                sig: String::new(),
+            },
+        )?;
+        set_json(&self.inner.doc, self.inner.author, epoch_key(), &epoch).await?;
+        self.inner.network_epoch.store(0, Ordering::Relaxed);
+
         set_str(
-            doc,
-            author,
-            peer_key(id, "collision_index"),
-            &entry.collision_index.to_string(),
+            &self.inner.doc,
+            self.inner.author,
+            meta_key("name"),
+            &direct.network_name,
         )
         .await?;
         set_str(
-            doc,
-            author,
-            peer_key(id, "tags"),
-            &serde_json::to_string(&entry.tags)?,
+            &self.inner.doc,
+            self.inner.author,
+            meta_key("subnet"),
+            SUBNET,
         )
         .await?;
-        set_str(doc, author, peer_key(id, "status"), &entry.status).await?;
-        set_str(
-            doc,
-            author,
-            peer_key(id, "joined_at"),
-            &entry.joined_at.to_rfc3339(),
-        )
-        .await?;
-        set_str(
-            doc,
-            author,
-            peer_key(id, "coordinator"),
-            if entry.coordinator { "true" } else { "false" },
-        )
-        .await?;
-        set_str(
-            doc,
-            author,
-            peer_key(id, "last_seen"),
-            &Utc::now().to_rfc3339(),
-        )
-        .await?;
-        if let Some(key) = &entry.ssh_host_key {
-            set_str(doc, author, peer_key(id, "ssh_host_key"), key).await?;
-        }
         Ok(())
     }
 
-    /// Publish this node's SSH host pubkey into the membership doc.
+    async fn write_self_record(&self, entry: &MembershipEntry) -> anyhow::Result<()> {
+        let grant = if let Some(g) = &self.inner.self_grant {
+            g.clone()
+        } else {
+            self.issue_grant(
+                &entry.endpoint_id,
+                if entry.coordinator {
+                    MemberRole::Coordinator
+                } else {
+                    MemberRole::Member
+                },
+            )?
+        };
+        let record = self.build_record(entry, grant, 1)?;
+        self.write_member_record(&record).await
+    }
+
+    fn issue_grant(&self, endpoint_id: &str, role: MemberRole) -> anyhow::Result<NetworkGrant> {
+        let Some(sk) = &self.inner.coordinator_signing_key else {
+            anyhow::bail!("coordinator signing key not configured");
+        };
+        let epoch = self.inner.network_epoch.load(Ordering::Relaxed);
+        let now = Utc::now();
+        sign_grant(
+            sk,
+            NetworkGrant {
+                network_id: self.inner.network_id,
+                endpoint_id: endpoint_id.to_string(),
+                role,
+                network_epoch: epoch,
+                issued_at: now,
+                expires_at: now + Duration::days(3650),
+                content_key: self.inner.content_key.clone(),
+                sig: String::new(),
+            },
+        )
+    }
+
+    fn build_record(
+        &self,
+        entry: &MembershipEntry,
+        grant: NetworkGrant,
+        sequence: u64,
+    ) -> anyhow::Result<SignedMemberRecord> {
+        let Some(sk) = &self.inner.coordinator_signing_key else {
+            anyhow::bail!("coordinator signing key not configured");
+        };
+        let record = SignedMemberRecord {
+            schema_version: RECORD_SCHEMA,
+            network_id: self.inner.network_id,
+            endpoint_id: entry.endpoint_id.clone(),
+            hostname: entry.hostname.clone(),
+            ipv4: entry.ipv4,
+            collision_index: entry.collision_index,
+            tags: entry.tags.clone(),
+            status: entry.status.clone(),
+            ssh_host_key: entry.ssh_host_key.clone(),
+            sequence,
+            joined_at: entry.joined_at,
+            grant,
+            endpoint_sig: String::new(),
+            coordinator: entry.coordinator,
+        };
+        sign_member_record(sk, record)
+    }
+
+    async fn write_member_record(&self, record: &SignedMemberRecord) -> anyhow::Result<()> {
+        set_json(
+            &self.inner.doc,
+            self.inner.author,
+            record_key(&record.endpoint_id),
+            record,
+        )
+        .await
+    }
+
+    /// Coordinator admits a joiner: issue grant + signed member record.
+    pub async fn admit_peer(
+        &self,
+        entry: &MembershipEntry,
+    ) -> anyhow::Result<(NetworkGrant, String)> {
+        let grant = self.issue_grant(
+            &entry.endpoint_id,
+            if entry.coordinator {
+                MemberRole::Coordinator
+            } else {
+                MemberRole::Member
+            },
+        )?;
+        let sequence = self
+            .inner
+            .members
+            .lock()
+            .get(&entry.endpoint_id)
+            .map(|_| 2)
+            .unwrap_or(1);
+        let record = self.build_record(entry, grant.clone(), sequence)?;
+        self.write_member_record(&record).await?;
+        self.inner
+            .members
+            .lock()
+            .insert(entry.endpoint_id.clone(), entry.clone());
+        Ok((grant, self.inner.content_key.clone()))
+    }
+
+    /// Publish this node's SSH host pubkey by updating the self member record.
     pub async fn set_ssh_host_key(&self, openssh_pubkey: &str) -> anyhow::Result<()> {
         let key = openssh_pubkey.trim();
         if key.is_empty() {
             return Ok(());
         }
-        set_str(
-            &self.inner.doc,
-            self.inner.author,
-            peer_key(&self.inner.self_endpoint_id, "ssh_host_key"),
-            key,
-        )
-        .await?;
-        if let Some(entry) = self
-            .inner
-            .members
-            .lock()
-            .get_mut(&self.inner.self_endpoint_id)
-        {
+        let entry = {
+            let mut members = self.inner.members.lock();
+            let Some(entry) = members.get_mut(&self.inner.self_endpoint_id) else {
+                return Ok(());
+            };
             entry.ssh_host_key = Some(key.to_string());
+            entry.clone()
+        };
+        if self.inner.coordinator_signing_key.is_some() {
+            self.write_self_record(&entry).await?;
         }
         Ok(())
     }
 
-    /// Coordinator marks a peer as kicked (wins via latest timestamp on status key).
-    pub async fn kick_peer(&self, endpoint_id: &str) -> anyhow::Result<()> {
-        set_str(
+    /// Coordinator revokes a peer: bump epoch, write revocation + kicked record.
+    pub async fn kick_peer(&self, endpoint_id: &str, auth: &AuthCache) -> anyhow::Result<()> {
+        let Some(sk) = &self.inner.coordinator_signing_key else {
+            anyhow::bail!("coordinator signing key not configured");
+        };
+
+        let new_epoch = self.inner.network_epoch.load(Ordering::Relaxed) + 1;
+        let epoch = sign_epoch(
+            sk,
+            EpochRecord {
+                network_epoch: new_epoch,
+                sig: String::new(),
+            },
+        )?;
+        set_json(&self.inner.doc, self.inner.author, epoch_key(), &epoch).await?;
+        self.inner.network_epoch.store(new_epoch, Ordering::Relaxed);
+
+        let revocation = sign_revocation(
+            sk,
+            Revocation {
+                endpoint_id: endpoint_id.to_string(),
+                network_epoch: new_epoch,
+                reason: "kicked".into(),
+                sig: String::new(),
+            },
+        )?;
+        set_json(
             &self.inner.doc,
             self.inner.author,
-            peer_key(endpoint_id, "status"),
-            "kicked",
+            revocation_key(endpoint_id),
+            &revocation,
         )
         .await?;
+        self.inner.revoked.lock().insert(endpoint_id.to_string());
+
+        // Do not issue a new grant for the kicked peer - epoch bump invalidates
+        // prior grants; revocation blocks Invite/Grant AUTH.
+        auth.remove_network(endpoint_id, self.inner.network_id);
         self.inner.members.lock().remove(endpoint_id);
         Ok(())
     }
 
     pub async fn rebuild_from_doc(&self) -> anyhow::Result<()> {
+        let coord_vk = verifying_key_from_hex(&self.inner.coordinator_verifying_key)
+            .context("coordinator verifying key")?;
+
+        if let Some(bytes) = self.get_key_bytes(&genesis_key()).await? {
+            let genesis: Genesis = serde_json::from_slice(&bytes)?;
+            verify_genesis(&coord_vk, &genesis)?;
+            if genesis.network_id != self.inner.network_id {
+                anyhow::bail!("genesis network_id mismatch");
+            }
+        }
+
+        let mut min_epoch = 0u64;
+        if let Some(bytes) = self.get_key_bytes(&epoch_key()).await? {
+            let epoch: EpochRecord = serde_json::from_slice(&bytes)?;
+            verify_epoch(&coord_vk, &epoch)?;
+            min_epoch = epoch.network_epoch;
+            self.inner
+                .network_epoch
+                .store(epoch.network_epoch, Ordering::Relaxed);
+        }
+
+        let mut revoked = HashSet::new();
+        let rev_stream = self
+            .inner
+            .doc
+            .get_many(Query::single_latest_per_key().key_prefix("revocations/"))
+            .await
+            .context("get_many revocations")?;
+        tokio::pin!(rev_stream);
+        while let Some(item) = rev_stream.next().await {
+            let entry = item.context("revocation entry")?;
+            let key = std::str::from_utf8(entry.key()).unwrap_or("");
+            let Some(endpoint_id) = key.strip_prefix("revocations/") else {
+                continue;
+            };
+            let hash = entry.content_hash();
+            let bytes = match self.inner.blobs.get_bytes(hash).await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(%endpoint_id, hash = %hash, error = %e, "skipping unread revocation blob");
+                    continue;
+                }
+            };
+            let revocation: Revocation = serde_json::from_slice(&bytes)?;
+            if verify_revocation(&coord_vk, &revocation).is_ok() {
+                revoked.insert(endpoint_id.to_string());
+            }
+        }
+        *self.inner.revoked.lock() = revoked.clone();
+
         let stream = self
             .inner
             .doc
@@ -394,76 +636,61 @@ impl DocsMembership {
             .context("get_many peers")?;
         tokio::pin!(stream);
 
-        let mut fields: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut map = HashMap::new();
         while let Some(item) = stream.next().await {
             let entry = item.context("peer entry")?;
-            let Some((id, field)) = parse_peer_key(entry.key()) else {
+            let key = std::str::from_utf8(entry.key()).unwrap_or("");
+            let Some(rest) = key.strip_prefix("peers/") else {
                 continue;
             };
+            let Some((endpoint_id, field)) = rest.split_once('/') else {
+                continue;
+            };
+            if field != "record" {
+                continue;
+            }
+            if revoked.contains(endpoint_id) {
+                continue;
+            }
             let hash = entry.content_hash();
             let bytes = match self.inner.blobs.get_bytes(hash).await {
                 Ok(b) => b,
                 Err(e) => {
-                    // Missing/corrupt blob must not brick agent startup (common after
-                    // partial sync, version skew, or unreachable peers).
                     tracing::warn!(
-                        peer = %id,
-                        %field,
+                        peer = %endpoint_id,
                         hash = %hash,
                         error = %e,
-                        "skipping unread membership blob"
+                        "skipping unread member record blob"
                     );
                     continue;
                 }
             };
-            let value = String::from_utf8_lossy(&bytes).into_owned();
-            fields.entry(id).or_default().insert(field, value);
-        }
-
-        let mut map = HashMap::new();
-        for (endpoint_id, f) in fields {
-            let status = f.get("status").cloned().unwrap_or_else(|| "online".into());
-            if status == "kicked" {
+            let record: SignedMemberRecord = match serde_json::from_slice(&bytes) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(peer = %endpoint_id, error = %e, "invalid member record json");
+                    continue;
+                }
+            };
+            if verify_member_record(&coord_vk, &record, min_epoch).is_err() {
+                tracing::warn!(peer = %endpoint_id, "member record verification failed");
                 continue;
             }
-            let hostname = f.get("hostname").cloned().unwrap_or_else(|| "peer".into());
-            let ipv4 = f
-                .get("ip")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(Ipv4Addr::UNSPECIFIED);
-            if ipv4.is_unspecified() {
+            if record.status == "kicked" || revoked.contains(&record.endpoint_id) {
                 continue;
             }
-            let collision_index = f
-                .get("collision_index")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
-            let tags = f
-                .get("tags")
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or_default();
-            let joined_at = f
-                .get("joined_at")
-                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                .map(|d| d.with_timezone(&Utc))
-                .unwrap_or_else(Utc::now);
-            let coordinator = f.get("coordinator").map(|s| s == "true").unwrap_or(false);
-            let ssh_host_key = f
-                .get("ssh_host_key")
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
             map.insert(
-                endpoint_id.clone(),
+                endpoint_id.to_string(),
                 MembershipEntry {
-                    endpoint_id,
-                    hostname,
-                    ipv4,
-                    collision_index,
-                    tags,
-                    joined_at,
-                    coordinator,
-                    status,
-                    ssh_host_key,
+                    endpoint_id: record.endpoint_id,
+                    hostname: record.hostname,
+                    ipv4: record.ipv4,
+                    collision_index: record.collision_index,
+                    tags: record.tags,
+                    joined_at: record.joined_at,
+                    coordinator: record.coordinator,
+                    status: "active".into(),
+                    ssh_host_key: record.ssh_host_key,
                 },
             );
         }
@@ -475,11 +702,9 @@ impl DocsMembership {
         &self,
         routes: &RoutingTable,
         acl: &AclEngine,
-        auth: &AuthCache,
         policy: &tunnet_common::policy::PolicyBundle,
     ) {
         let members = self.snapshot_members();
-        // Include self so PeerDNS resolves this node's hostname.
         let peers: Vec<tunnet_common::PeerEntry> = members
             .iter()
             .filter(|m| m.status != "kicked")
@@ -503,12 +728,6 @@ impl DocsMembership {
             version,
         );
         acl.replace_bundle(policy.clone());
-        for m in &members {
-            if m.status != "kicked" {
-                auth.insert(m.endpoint_id.clone(), self.inner.network_id);
-            }
-        }
-        // Cache for offline CLI (upgrade, etc.).
         if let Ok(json) = serde_json::to_vec_pretty(&members) {
             let _ = std::fs::write(self.inner.paths.dir.join("direct_members_cache.json"), json);
         }
@@ -519,7 +738,6 @@ impl DocsMembership {
         }
     }
 
-    /// Hot-reload PeerDNS settings without rebuilding membership.
     pub fn set_dns(&self, dns: DnsConfig) {
         self.inner.dns.store(Arc::new(dns));
     }
@@ -528,8 +746,7 @@ impl DocsMembership {
         (**self.inner.dns.load()).clone()
     }
 
-    /// Drain pending kick file written by CLI.
-    pub async fn apply_pending_kicks(&self) -> anyhow::Result<()> {
+    pub async fn apply_pending_kicks(&self, auth: &AuthCache) -> anyhow::Result<()> {
         let kick_path = self
             .inner
             .paths
@@ -541,30 +758,23 @@ impl DocsMembership {
         }
         let kicks: Vec<String> = serde_json::from_slice(&std::fs::read(&kick_path)?)?;
         for id in &kicks {
-            self.kick_peer(id).await?;
+            self.kick_peer(id, auth).await?;
         }
         let _ = std::fs::remove_file(&kick_path);
         Ok(())
     }
 
-    /// Load coordinator firewall policy from docs; verify and apply or stage as pending.
     pub async fn sync_firewall_policy(&self) -> anyhow::Result<()> {
         let Some(suggested) = self.read_suggested_policy().await? else {
             return Ok(());
         };
-        let payload = crate::direct::policy_docs::canonical_payload(
-            suggested.meta.version,
-            &suggested.meta.timestamp,
-            &suggested.global,
-            &suggested.by_hostname,
-        )?;
-        if !crate::direct::policy_docs::verify_policy(
-            &self.inner.network_secret,
-            &payload,
-            &suggested.meta.signature,
-        ) {
-            tracing::warn!("firewall policy signature invalid; ignoring");
-            return Ok(());
+        if let Ok(vk) = verifying_key_from_hex(&self.inner.coordinator_verifying_key) {
+            if crate::direct::policy_docs::verify_policy_bundle(&vk, &suggested).is_err() {
+                tracing::warn!("firewall policy signature invalid; ignoring");
+                return Ok(());
+            }
+        } else {
+            tracing::warn!("coordinator verifying key invalid; skipping policy signature check");
         }
 
         let rules =
@@ -600,61 +810,18 @@ impl DocsMembership {
     pub async fn read_suggested_policy(
         &self,
     ) -> anyhow::Result<Option<crate::direct::policy_docs::SuggestedPolicy>> {
-        use crate::direct::policy_docs::{POLICY_GLOBAL_KEY, POLICY_META_KEY, policy_hostname_key};
+        use crate::direct::policy_docs::POLICY_BUNDLE_KEY;
 
-        let meta_bytes = self.get_key_bytes(POLICY_META_KEY.as_bytes()).await?;
-        let Some(meta_bytes) = meta_bytes else {
+        let bundle_bytes = self.get_key_bytes(POLICY_BUNDLE_KEY.as_bytes()).await?;
+        let Some(bundle_bytes) = bundle_bytes else {
             return Ok(None);
         };
-        let meta: crate::direct::policy_docs::PolicyMeta = serde_json::from_slice(&meta_bytes)?;
-
-        let global = match self.get_key_bytes(POLICY_GLOBAL_KEY.as_bytes()).await? {
-            Some(b) => serde_json::from_slice(&b).unwrap_or_default(),
-            None => vec![],
-        };
-
-        let mut by_hostname = HashMap::new();
-        let host_key = policy_hostname_key(&self.inner.hostname);
-        if let Some(b) = self.get_key_bytes(host_key.as_bytes()).await?
-            && let Ok(rules) = serde_json::from_slice(&b)
-        {
-            by_hostname.insert(self.inner.hostname.clone(), rules);
+        if bundle_bytes.is_empty() {
+            return Ok(None);
         }
-
-        // Also load any hostname-specific keys we find under policy/v1/hostname/
-        let stream = self
-            .inner
-            .doc
-            .get_many(Query::single_latest_per_key().key_prefix("policy/v1/hostname/"))
-            .await
-            .context("get_many policy hostname")?;
-        tokio::pin!(stream);
-        while let Some(item) = stream.next().await {
-            let entry = item?;
-            let key = String::from_utf8_lossy(entry.key());
-            let Some(host) = key.strip_prefix("policy/v1/hostname/") else {
-                continue;
-            };
-            if host == self.inner.hostname {
-                continue; // already loaded
-            }
-            let hash = entry.content_hash();
-            let bytes = self
-                .inner
-                .blobs
-                .get_bytes(hash)
-                .await
-                .map_err(|e| anyhow::anyhow!("policy host blob: {e}"))?;
-            if let Ok(rules) = serde_json::from_slice::<Vec<_>>(&bytes) {
-                by_hostname.insert(host.to_string(), rules);
-            }
-        }
-
-        Ok(Some(crate::direct::policy_docs::SuggestedPolicy {
-            meta,
-            global,
-            by_hostname,
-        }))
+        let bundle: crate::direct::policy_docs::PolicyBundleDoc =
+            serde_json::from_slice(&bundle_bytes)?;
+        Ok(Some(bundle))
     }
 
     async fn get_key_bytes(&self, key: &[u8]) -> anyhow::Result<Option<Bytes>> {
@@ -679,70 +846,39 @@ impl DocsMembership {
         Ok(Some(bytes))
     }
 
-    /// Coordinator: publish a suggested firewall policy into the membership doc.
     pub async fn publish_firewall_policy(
         &self,
         global: Vec<crate::direct::firewall::FirewallRule>,
         by_hostname: HashMap<String, Vec<crate::direct::firewall::FirewallRule>>,
     ) -> anyhow::Result<()> {
-        use crate::direct::policy_docs::{
-            POLICY_GLOBAL_KEY, POLICY_META_KEY, PolicyMeta, canonical_payload, policy_hostname_key,
-            sign_policy,
+        use crate::direct::policy_docs::{POLICY_BUNDLE_KEY, sign_policy_bundle};
+
+        let Some(sk) = &self.inner.coordinator_signing_key else {
+            anyhow::bail!("coordinator signing key not configured");
         };
 
         let version = Utc::now().timestamp() as u64;
         let timestamp = Utc::now().to_rfc3339();
-        let payload = canonical_payload(version, &timestamp, &global, &by_hostname)?;
-        let signature = sign_policy(&self.inner.network_secret, &payload);
-        let meta = PolicyMeta {
-            version,
-            timestamp,
-            signature,
-        };
+        let bundle = sign_policy_bundle(sk, version, timestamp, global, by_hostname)?;
 
         set_str(
             &self.inner.doc,
             self.inner.author,
-            Bytes::from(POLICY_META_KEY),
-            &serde_json::to_string(&meta)?,
+            Bytes::from(POLICY_BUNDLE_KEY),
+            &serde_json::to_string(&bundle)?,
         )
         .await?;
-        set_str(
-            &self.inner.doc,
-            self.inner.author,
-            Bytes::from(POLICY_GLOBAL_KEY),
-            &serde_json::to_string(&global)?,
-        )
-        .await?;
-        for (host, rules) in &by_hostname {
-            set_str(
-                &self.inner.doc,
-                self.inner.author,
-                Bytes::from(policy_hostname_key(host)),
-                &serde_json::to_string(rules)?,
-            )
-            .await?;
-        }
         Ok(())
     }
 
-    /// Coordinator: clear published firewall policy keys.
     pub async fn clear_firewall_policy(&self) -> anyhow::Result<()> {
-        use crate::direct::policy_docs::{POLICY_GLOBAL_KEY, POLICY_META_KEY};
+        use crate::direct::policy_docs::POLICY_BUNDLE_KEY;
 
-        // Overwrite with empty tombstones (iroh-docs has no delete in all versions).
         set_str(
             &self.inner.doc,
             self.inner.author,
-            Bytes::from(POLICY_META_KEY),
+            Bytes::from(POLICY_BUNDLE_KEY),
             "",
-        )
-        .await?;
-        set_str(
-            &self.inner.doc,
-            self.inner.author,
-            Bytes::from(POLICY_GLOBAL_KEY),
-            "[]",
         )
         .await?;
         if let Some(fw) = &self.inner.firewall {
@@ -751,7 +887,6 @@ impl DocsMembership {
         Ok(())
     }
 
-    /// Accept inbound docs / gossip ALPNs.
     pub async fn accept_docs(&self, conn: iroh::endpoint::Connection) {
         if let Err(e) = self.inner.docs.accept(conn).await {
             tracing::debug!(?e, "docs accept ended");
@@ -769,25 +904,6 @@ impl DocsMembership {
     }
 }
 
-async fn seed_meta(
-    doc: &Doc,
-    author: AuthorId,
-    direct: &DirectState,
-    coordinator_id: &str,
-) -> anyhow::Result<()> {
-    set_str(doc, author, meta_key("name"), &direct.network_name).await?;
-    set_str(doc, author, meta_key("coordinator"), coordinator_id).await?;
-    set_str(doc, author, meta_key("subnet"), SUBNET).await?;
-    set_str(
-        doc,
-        author,
-        meta_key("created_at"),
-        &direct.created_at.to_rfc3339(),
-    )
-    .await?;
-    Ok(())
-}
-
 async fn set_str(doc: &Doc, author: AuthorId, key: Bytes, value: &str) -> anyhow::Result<()> {
     doc.set_bytes(author, key, Bytes::copy_from_slice(value.as_bytes()))
         .await
@@ -795,7 +911,19 @@ async fn set_str(doc: &Doc, author: AuthorId, key: Bytes, value: &str) -> anyhow
     Ok(())
 }
 
-/// Approved peer ids waiting for a re-join to receive a write ticket.
+async fn set_json<T: Serialize>(
+    doc: &Doc,
+    author: AuthorId,
+    key: Bytes,
+    value: &T,
+) -> anyhow::Result<()> {
+    let json = serde_json::to_vec(value)?;
+    doc.set_bytes(author, key, Bytes::from(json))
+        .await
+        .context("doc set_bytes")?;
+    Ok(())
+}
+
 pub fn load_approved(paths: &StatePaths) -> anyhow::Result<Vec<String>> {
     let p = paths.dir.join("direct_approved.json");
     if !p.exists() {

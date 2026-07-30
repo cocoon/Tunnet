@@ -4,7 +4,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use anyhow::Context;
-use tunnet_core::direct::SecretResolver;
+use tunnet_core::direct::ConnectivityOptions;
+use tunnet_core::direct::build_auth_server_context;
 use tunnet_core::local_api::{DataPlaneHandle, LocalApiState, spawn_local_api};
 use tunnet_core::{CoreNode, CoreNodeConfig};
 use uuid::Uuid;
@@ -63,17 +64,6 @@ pub async fn run(
     };
     let src_posture_ok = posture_runtime.as_ref().map(|p| p.src_posture_ok());
 
-    let secret_resolver: Option<SecretResolver> = if is_direct {
-        let secrets: HashMap<Uuid, String> = persisted
-            .direct_networks()
-            .iter()
-            .map(|d| (d.network_id, d.network_secret.clone()))
-            .collect();
-        Some(Arc::new(move |nid: Uuid| secrets.get(&nid).cloned()) as SecretResolver)
-    } else {
-        None
-    };
-
     let agent_cfg = tunnet_core::TunnetConfig::load(&paths).unwrap_or_default();
     let config_store = tunnet_core::EffectiveConfigStore::new();
     let _ = config_store.recompute(&agent_cfg, Default::default());
@@ -103,7 +93,13 @@ pub async fn run(
             posture_hooks: posture_runtime.as_ref().map(|p| p.hooks()),
             agent_config_hooks,
             src_posture_ok,
-            enable_mdns: agent_cfg.effective_mdns_default() && !args.no_mdns,
+            connectivity: if is_direct {
+                ConnectivityOptions::direct_default(
+                    agent_cfg.effective_mdns_default() && !args.no_mdns,
+                )
+            } else {
+                ConnectivityOptions::managed_default()
+            },
             enable_gossip: !args.disable_gossip || agent_cfg.effective_service_relay(),
             keep_alive: match std::env::var("TUNNET_KEEP_ALIVE").ok().as_deref() {
                 Some("0" | "false" | "off") => false,
@@ -306,6 +302,25 @@ pub async fn run(
         .map(|(id, rt)| (*id, rt.docs.clone()))
         .collect();
 
+    let auth_server_ctx = if is_direct {
+        Some(build_auth_server_context(
+            node.persisted.direct_networks(),
+            &docs_map,
+        ))
+    } else {
+        None
+    };
+
+    if is_direct
+        && let Some(key) = node
+            .persisted
+            .direct_networks()
+            .first()
+            .and_then(|d| d.content_key.clone())
+    {
+        node.send.set_content_key(Some(key));
+    }
+
     let network_name = node
         .persisted
         .primary_network_name()
@@ -393,13 +408,14 @@ pub async fn run(
         recorder_enabled: args.recorder,
         send: node.send.clone(),
         direct_auth: node.direct_auth.clone(),
-        secret_resolver,
+        auth_server_ctx,
         state_dir: node.paths.dir.clone(),
         docs: docs_map,
         firewalls,
         spoofs,
         dgram_pool: dgram_pool.clone(),
         agent_gossip: node.gossip.clone(),
+        shared_docs: node.docs_engine.clone(),
         ingress: ingress.clone(),
     });
 
@@ -476,38 +492,98 @@ pub async fn run(
 
     if !args.disable_gossip {
         if let Some(gossip) = node.shared_gossip() {
-            let peers: Vec<iroh::EndpointId> = node
-                .routes
-                .peers()
-                .iter()
-                .take(5)
-                .filter_map(|p| p.endpoint_hex.parse().ok())
-                .collect();
-            let topic = tunnet_common::network_topic_hex(&network_id);
-            let ep = node.endpoint.clone();
-            let hostname = hostname.clone();
+            let signing_key = node.identity.signing_key.clone();
+            let self_endpoint_id = node.endpoint_id_hex();
+            let agent_version = env!("CARGO_PKG_VERSION").to_string();
             let state_dir = node.paths.dir.clone();
             let dns_suffix = dns_cfg.suffix.clone();
             let ssh_host_key = ssh_pubkey.clone();
-            let mesh_ip = Some(assigned_ipv4.to_string());
-            tokio::spawn(async move {
-                if let Err(e) =
-                    crate::gossip_presence::spawn(crate::gossip_presence::GossipPresenceArgs {
-                        endpoint: ep,
+
+            if is_direct {
+                for rt in node.direct.values() {
+                    let peers: Vec<iroh::EndpointId> = node
+                        .routes
+                        .peers()
+                        .iter()
+                        .take(5)
+                        .filter_map(|p| p.endpoint_hex.parse().ok())
+                        .collect();
+                    let network_id = rt.state.network_id;
+                    let hostname = rt.state.hostname.clone();
+                    let mesh_ip = Some(rt.state.assigned_ipv4.to_string());
+                    let gossip = gossip.clone();
+                    let signing_key = signing_key.clone();
+                    let self_endpoint_id = self_endpoint_id.clone();
+                    let agent_version = agent_version.clone();
+                    let state_dir = state_dir.clone();
+                    let dns_suffix = dns_suffix.clone();
+                    let ssh_host_key = ssh_host_key.clone();
+                    let presence_tables = node.presence_tables.clone();
+                    tokio::spawn(async move {
+                        match tunnet_core::direct::spawn_presence(
+                            tunnet_core::direct::PresenceConfig {
+                                gossip,
+                                network_id,
+                                signing_key,
+                                self_endpoint_id,
+                                hostname,
+                                mesh_ip,
+                                ssh_host_key,
+                                agent_version,
+                                bootstrap: peers,
+                                state_dir: Some(state_dir),
+                                dns_suffix: Some(dns_suffix),
+                            },
+                        )
+                        .await
+                        {
+                            Ok(handle) => {
+                                if let Ok(mut tables) = presence_tables.lock() {
+                                    tables.insert(network_id, handle.table);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(%network_id, ?e, "direct gossip presence disabled");
+                            }
+                        }
+                    });
+                }
+            } else {
+                let peers: Vec<iroh::EndpointId> = node
+                    .routes
+                    .peers()
+                    .iter()
+                    .take(5)
+                    .filter_map(|p| p.endpoint_hex.parse().ok())
+                    .collect();
+                let hostname = hostname.clone();
+                let mesh_ip = Some(assigned_ipv4.to_string());
+                let presence_tables = node.presence_tables.clone();
+                tokio::spawn(async move {
+                    match tunnet_core::direct::spawn_presence(tunnet_core::direct::PresenceConfig {
                         gossip,
-                        topic_hex: topic,
-                        bootstrap: peers,
-                        self_hostname: hostname,
+                        network_id,
+                        signing_key,
+                        self_endpoint_id,
+                        hostname,
                         mesh_ip,
                         ssh_host_key,
-                        state_dir,
-                        dns_suffix,
+                        agent_version,
+                        bootstrap: peers,
+                        state_dir: Some(state_dir),
+                        dns_suffix: Some(dns_suffix),
                     })
                     .await
-                {
-                    tracing::warn!(?e, "gossip presence disabled");
-                }
-            });
+                    {
+                        Ok(handle) => {
+                            if let Ok(mut tables) = presence_tables.lock() {
+                                tables.insert(network_id, handle.table);
+                            }
+                        }
+                        Err(e) => tracing::warn!(?e, "gossip presence disabled"),
+                    }
+                });
+            }
         } else {
             tracing::warn!("gossip presence skipped (no shared Gossip)");
         }

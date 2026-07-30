@@ -8,7 +8,7 @@ use iroh::EndpointId;
 use serde::{Deserialize, Serialize};
 
 use crate::direct::contact::{contact_id_from_endpoint, parse_contact_id};
-use crate::direct::{AUTH_ALPN, derive_ipv4, run_psk_handshake_client};
+use crate::direct::{AUTH_ALPN, AuthClientMode, derive_ipv4, run_auth_client};
 use crate::identity::AgentIdentity;
 use tunnet_common::local_api::DirectConnectPendingInfo;
 
@@ -125,7 +125,7 @@ fn install_peer_route(
 pub async fn request_connect(state: &LocalApiState, contact_id: &str) -> anyhow::Result<String> {
     let direct = state.node.persisted.require_direct_network(None)?;
     let peer = parse_contact_id(contact_id).context("parse contact id")?;
-    let secret = direct.network_secret.clone();
+    let secret = direct.join_secret.clone();
     let network_id = direct.network_id;
     let hostname = direct.hostname.clone();
     let self_hex = state.node.endpoint_id_hex();
@@ -136,9 +136,17 @@ pub async fn request_connect(state: &LocalApiState, contact_id: &str) -> anyhow:
         .connect(peer, AUTH_ALPN)
         .await
         .context("dial contact")?;
-    run_psk_handshake_client(&conn, network_id, &secret, &self_hex)
-        .await
-        .context("connect auth")?;
+    run_auth_client(
+        &conn,
+        AuthClientMode::Invite {
+            network_id,
+            invite_id: "connect".into(),
+            join_secret_hex: secret,
+        },
+        &self_hex,
+    )
+    .await
+    .context("connect auth")?;
 
     // Send connect request on a bi-stream.
     let (mut send, mut recv) = conn.open_bi().await.context("open bi")?;
@@ -227,9 +235,16 @@ pub async fn accept_pending(state: &LocalApiState, contact_id: &str) -> anyhow::
     // Best-effort: dial back to notify acceptance.
     if let Ok(conn) = state.node.endpoint.connect(peer, AUTH_ALPN).await {
         let self_hex = state.node.endpoint_id_hex();
-        let _ =
-            run_psk_handshake_client(&conn, direct.network_id, &direct.network_secret, &self_hex)
-                .await;
+        let _ = run_auth_client(
+            &conn,
+            AuthClientMode::Invite {
+                network_id: direct.network_id,
+                invite_id: "connect-accept".into(),
+                join_secret_hex: direct.join_secret.clone(),
+            },
+            &self_hex,
+        )
+        .await;
         if let Ok((mut send, _)) = conn.open_bi().await {
             let resp = serde_json::json!({
                 "type": "connect_accepted",

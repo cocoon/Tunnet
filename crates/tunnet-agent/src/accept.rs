@@ -11,9 +11,10 @@ use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use tunnet_common::ws::ClientMsg;
 use tunnet_common::{RECORDING_ALPN, SEND_ALPN, TUNNEL_ALPN, TUNNEL_LATENCY_ALPN};
+use tunnet_core::Docs;
 use tunnet_core::direct::{
-    AUTH_ALPN, AuthCache, DOCS_ALPN, DocsMembership, FirewallEngine, GOSSIP_ALPN, SecretResolver,
-    SpoofTracker, run_psk_handshake_server,
+    AUTH_ALPN, AuthCache, DOCS_ALPN, DocsMembership, FirewallEngine, GOSSIP_ALPN,
+    SharedAuthServerContext, SpoofTracker, run_auth_server,
 };
 use tunnet_core::stream::{StreamHandler, StreamProtocolHandler, TUNNEL_STREAM_ALPN};
 use tunnet_core::{AclEngine, ConnPool, RoutingTable, SendManager, SignedClient};
@@ -39,13 +40,14 @@ pub struct AcceptDeps {
     pub recorder_enabled: bool,
     pub send: SendManager,
     pub direct_auth: Option<AuthCache>,
-    pub secret_resolver: Option<SecretResolver>,
+    pub auth_server_ctx: Option<SharedAuthServerContext>,
     pub state_dir: PathBuf,
     pub docs: HashMap<Uuid, DocsMembership>,
     pub firewalls: HashMap<Uuid, FirewallEngine>,
     pub spoofs: HashMap<Uuid, SpoofTracker>,
     pub dgram_pool: ConnPool,
     pub agent_gossip: Option<iroh_gossip::net::Gossip>,
+    pub shared_docs: Option<Docs>,
     pub ingress: IngressRegistry,
 }
 
@@ -65,18 +67,17 @@ pub fn spawn(deps: AcceptDeps) -> Router {
     let stream = StreamProtocolHandler::new(deps.stream_handler);
     let auth = AuthHandler {
         direct_auth: deps.direct_auth.clone(),
-        secret_resolver: deps.secret_resolver,
+        auth_server_ctx: deps.auth_server_ctx,
         self_endpoint_id: deps.self_endpoint_id.clone(),
         state_dir: deps.state_dir,
         docs: deps.docs.clone(),
     };
     let docs = DocsHandler {
         direct_auth: deps.direct_auth.clone(),
-        docs: deps.docs.clone(),
+        shared_docs: deps.shared_docs,
     };
     let gossip = GossipHandler {
         direct_auth: deps.direct_auth.clone(),
-        docs: deps.docs,
         agent_gossip: deps.agent_gossip,
     };
     let recording = RecordingHandler {
@@ -89,10 +90,7 @@ pub fn spawn(deps: AcceptDeps) -> Router {
     let send = SendOfferHandler {
         send: deps.send.clone(),
     };
-    let blobs = BlobsHandler {
-        send: deps.send,
-        direct_auth: deps.direct_auth,
-    };
+    let blobs = BlobsHandler { send: deps.send };
 
     let mut builder = Router::builder(deps.endpoint);
     builder = builder.accept(TUNNEL_ALPN, tunnel.clone());
@@ -107,30 +105,6 @@ pub fn spawn(deps: AcceptDeps) -> Router {
 
     tracing::info!("unified ALPN accept router started");
     builder.spawn()
-}
-
-fn preferred_network(auth: &Option<AuthCache>, peer: &str) -> Option<Uuid> {
-    auth.as_ref()
-        .and_then(|a| a.networks_for(peer).into_iter().next())
-}
-
-/// Pick which Direct network should handle an inbound docs/gossip connection.
-///
-/// Prefer AuthCache (peer already PSK-authenticated). If the peer is unknown yet
-/// (ticket sync before AUTH), fall back to the sole joined network so membership
-/// can bootstrap - otherwise docs never sync and peers stay at 0/0.
-fn docs_for_peer<'a>(
-    auth: &Option<AuthCache>,
-    docs: &'a HashMap<Uuid, DocsMembership>,
-    peer: &str,
-) -> Option<&'a DocsMembership> {
-    if let Some(nid) = preferred_network(auth, peer) {
-        return docs.get(&nid);
-    }
-    if docs.len() == 1 {
-        return docs.values().next();
-    }
-    None
 }
 
 #[derive(Clone)]
@@ -236,7 +210,7 @@ impl ProtocolHandler for TunnelHandler {
 #[derive(Clone)]
 struct AuthHandler {
     direct_auth: Option<AuthCache>,
-    secret_resolver: Option<SecretResolver>,
+    auth_server_ctx: Option<SharedAuthServerContext>,
     self_endpoint_id: String,
     state_dir: PathBuf,
     docs: HashMap<Uuid, DocsMembership>,
@@ -250,13 +224,13 @@ impl fmt::Debug for AuthHandler {
 
 impl ProtocolHandler for AuthHandler {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
-        let (Some(auth), Some(resolver)) = (self.direct_auth.clone(), self.secret_resolver.clone())
+        let (Some(auth), Some(ctx)) = (self.direct_auth.clone(), self.auth_server_ctx.clone())
         else {
             tracing::debug!("AUTH_ALPN ignored (not in Direct mode)");
             conn.close(0u32.into(), b"not_direct");
             return Ok(());
         };
-        match run_psk_handshake_server(&conn, resolver, &self.self_endpoint_id, &auth).await {
+        match run_auth_server(&conn, &ctx, &self.self_endpoint_id, &auth).await {
             Ok((_peer, network_id)) => {
                 let docs_ref = self.docs.get(&network_id);
                 if let Err(e) = crate::cmds_direct::try_handle_post_auth(
@@ -284,7 +258,7 @@ impl ProtocolHandler for AuthHandler {
 #[derive(Clone)]
 struct DocsHandler {
     direct_auth: Option<AuthCache>,
-    docs: HashMap<Uuid, DocsMembership>,
+    shared_docs: Option<Docs>,
 }
 
 impl fmt::Debug for DocsHandler {
@@ -296,15 +270,16 @@ impl fmt::Debug for DocsHandler {
 impl ProtocolHandler for DocsHandler {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let peer = format!("{}", conn.remote_id());
-        if let Some(d) = docs_for_peer(&self.direct_auth, &self.docs, &peer) {
-            d.accept_docs(conn).await;
-        } else {
-            tracing::debug!(
-                %peer,
-                networks = self.docs.len(),
-                "DOCS_ALPN skipped (no network mapping for peer)"
-            );
+        if let Some(auth) = &self.direct_auth
+            && auth.contains(&peer)
+            && let Some(docs) = &self.shared_docs
+        {
+            if let Err(e) = docs.accept(conn).await {
+                tracing::debug!(?e, "docs accept ended");
+            }
+            return Ok(());
         }
+        tracing::debug!(%peer, "DOCS_ALPN skipped (peer not authenticated)");
         Ok(())
     }
 }
@@ -312,7 +287,6 @@ impl ProtocolHandler for DocsHandler {
 #[derive(Clone)]
 struct GossipHandler {
     direct_auth: Option<AuthCache>,
-    docs: HashMap<Uuid, DocsMembership>,
     agent_gossip: Option<iroh_gossip::net::Gossip>,
 }
 
@@ -325,19 +299,19 @@ impl fmt::Debug for GossipHandler {
 impl ProtocolHandler for GossipHandler {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let peer = format!("{}", conn.remote_id());
-        if let Some(d) = docs_for_peer(&self.direct_auth, &self.docs, &peer) {
-            d.accept_gossip(conn).await;
-        } else if let Some(g) = &self.agent_gossip {
-            if let Err(e) = g.handle_connection(conn).await {
-                tracing::debug!(?e, "agent gossip accept ended");
-            }
-        } else {
-            tracing::debug!(
-                %peer,
-                networks = self.docs.len(),
-                "GOSSIP_ALPN skipped (no network mapping / agent gossip)"
-            );
+        if let Some(auth) = &self.direct_auth
+            && !auth.contains(&peer)
+        {
+            tracing::debug!(%peer, "GOSSIP_ALPN skipped (peer not authenticated)");
+            return Ok(());
         }
+        if let Some(g) = &self.agent_gossip {
+            if let Err(e) = g.handle_connection(conn).await {
+                tracing::debug!(?e, "gossip accept ended");
+            }
+            return Ok(());
+        }
+        tracing::debug!(%peer, "GOSSIP_ALPN skipped (no shared Gossip)");
         Ok(())
     }
 }
@@ -402,7 +376,6 @@ impl ProtocolHandler for SendOfferHandler {
 #[derive(Clone)]
 struct BlobsHandler {
     send: SendManager,
-    direct_auth: Option<AuthCache>,
 }
 
 impl fmt::Debug for BlobsHandler {
@@ -413,13 +386,6 @@ impl fmt::Debug for BlobsHandler {
 
 impl ProtocolHandler for BlobsHandler {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
-        if let Some(auth) = self.direct_auth.as_ref() {
-            let peer = format!("{}", conn.remote_id());
-            if auth.contains(&peer) {
-                self.send.handle_blobs_connection_trusted(conn).await;
-                return Ok(());
-            }
-        }
         self.send.handle_blobs_connection(conn).await;
         Ok(())
     }

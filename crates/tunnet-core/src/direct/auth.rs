@@ -1,8 +1,8 @@
-//! PSK transport authentication for Direct mode.
+//! Grant and invite transport authentication for Direct mode.
 //!
-//! Peers prove knowledge of a **specific** network secret over [`AUTH_ALPN`] using an
-//! HMAC challenge-response. The claimed `network_id` is bound into the proof so the
-//! server verifies against that network's secret only (no try-all-secrets).
+//! Peers authenticate over [`AUTH_ALPN`] using either a signed [`NetworkGrant`]
+//! or an invite bootstrap proof (HMAC over join secret). The claimed `network_id`
+//! is bound into the proof so the server verifies against that network only.
 //!
 //! [`DirectAuthHook`] blocks non-auth ALPNs until the peer is authenticated for at
 //! least one joined network or already allowed by ACL.
@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::Context;
+use ed25519_dalek::VerifyingKey;
 use hmac::{Hmac, KeyInit, Mac};
 use iroh::EndpointAddr;
 use iroh::endpoint::{
@@ -18,17 +19,20 @@ use iroh::endpoint::{
     Side,
 };
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use uuid::Uuid;
 
 use crate::acl::AclEngine;
 
-/// Wire version: network_id bound into the HMAC proof.
-pub const AUTH_ALPN: &[u8] = b"tunnet/direct-auth/2";
+use super::grants::{NetworkGrant, verify_grant, verifying_key_from_hex};
+
+/// Wire version: grant-based auth with invite bootstrap.
+pub const AUTH_ALPN: &[u8] = b"tunnet/direct-auth/3";
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Peers that completed PSK auth, keyed per network.
+/// Peers that completed auth, keyed per network.
 #[derive(Clone, Default)]
 pub struct AuthCache {
     /// endpoint_hex → set of network_ids
@@ -86,7 +90,7 @@ impl AuthCache {
     }
 }
 
-/// Compose ACL + Direct PSK gate.
+/// Compose ACL + Direct auth gate.
 #[derive(Clone)]
 pub struct DirectAuthHook {
     acl: AclEngine,
@@ -144,14 +148,53 @@ impl EndpointHooks for DirectAuthHook {
     }
 }
 
-fn compute_proof(
-    secret_hex: &str,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AuthClientMode {
+    Invite {
+        network_id: Uuid,
+        invite_id: String,
+        join_secret_hex: String,
+    },
+    Grant {
+        grant: NetworkGrant,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthClientHello {
+    pub mode: AuthClientMode,
+    /// Present for invite bootstrap only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
+    /// Present for invite bootstrap only (hex HMAC proof).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite_proof: Option<String>,
+}
+
+type ResolveJoinSecretFn = dyn Fn(Uuid) -> Option<String> + Send + Sync;
+type ResolveCoordVkFn = dyn Fn(Uuid) -> Option<VerifyingKey> + Send + Sync;
+type ResolveMinEpochFn = dyn Fn(Uuid) -> u64 + Send + Sync;
+type IsRevokedFn = dyn Fn(Uuid, &str) -> bool + Send + Sync;
+
+pub struct AuthServerContext {
+    pub resolve_join_secret: Arc<ResolveJoinSecretFn>,
+    pub resolve_coord_vk: Arc<ResolveCoordVkFn>,
+    pub resolve_min_epoch: Arc<ResolveMinEpochFn>,
+    pub is_revoked: Arc<IsRevokedFn>,
+}
+
+pub type SharedAuthServerContext = Arc<AuthServerContext>;
+
+fn compute_invite_proof(
+    join_secret_hex: &str,
     local_hex: &str,
     remote_hex: &str,
     network_id: Uuid,
     nonce: &[u8],
 ) -> Vec<u8> {
-    let secret = hex::decode(secret_hex).unwrap_or_else(|_| secret_hex.as_bytes().to_vec());
+    let secret =
+        hex::decode(join_secret_hex).unwrap_or_else(|_| join_secret_hex.as_bytes().to_vec());
     let mut mac = HmacSha256::new_from_slice(&secret).expect("hmac accepts any key length");
     mac.update(local_hex.as_bytes());
     mac.update(b"|");
@@ -195,80 +238,170 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Client side: prove PSK for a specific network.
-pub async fn run_psk_handshake_client(
+async fn write_response(send: &mut SendStream, ok: bool) -> anyhow::Result<()> {
+    write_frame(send, if ok { b"ok" } else { b"no" }).await
+}
+
+/// Client side: authenticate with invite bootstrap or network grant.
+pub async fn run_auth_client(
     conn: &Connection,
-    network_id: Uuid,
-    network_secret_hex: &str,
+    mode: AuthClientMode,
     local_endpoint_hex: &str,
 ) -> anyhow::Result<()> {
     let (mut send, mut recv) = conn.open_bi().await.context("open auth stream")?;
     let remote_hex = format!("{}", conn.remote_id());
-    let nonce: [u8; 32] = rand::random();
-    write_frame(&mut send, local_endpoint_hex.as_bytes()).await?;
-    write_frame(&mut send, network_id.as_bytes()).await?;
-    write_frame(&mut send, &nonce).await?;
-    let proof = compute_proof(
-        network_secret_hex,
-        local_endpoint_hex,
-        &remote_hex,
-        network_id,
-        &nonce,
-    );
-    write_frame(&mut send, &proof).await?;
+
+    let hello = match mode {
+        AuthClientMode::Invite {
+            network_id,
+            invite_id,
+            join_secret_hex,
+        } => {
+            let nonce: [u8; 32] = rand::random();
+            let proof = compute_invite_proof(
+                &join_secret_hex,
+                local_endpoint_hex,
+                &remote_hex,
+                network_id,
+                &nonce,
+            );
+            AuthClientHello {
+                mode: AuthClientMode::Invite {
+                    network_id,
+                    invite_id,
+                    join_secret_hex,
+                },
+                nonce: Some(hex::encode(nonce)),
+                invite_proof: Some(hex::encode(proof)),
+            }
+        }
+        AuthClientMode::Grant { grant } => AuthClientHello {
+            mode: AuthClientMode::Grant { grant },
+            nonce: None,
+            invite_proof: None,
+        },
+    };
+
+    let payload = serde_json::to_vec(&hello)?;
+    write_frame(&mut send, &payload).await?;
     let resp = read_frame(&mut recv, 64).await?;
     if resp.as_slice() != b"ok" {
-        anyhow::bail!("PSK auth rejected by peer");
+        anyhow::bail!("auth rejected by peer");
     }
     Ok(())
 }
 
-/// Resolve a network secret by id (joined networks only).
-pub type SecretResolver = Arc<dyn Fn(Uuid) -> Option<String> + Send + Sync>;
-
-/// Server handshake: client claims `network_id`; verify against that secret only.
-pub async fn run_psk_handshake_server(
+/// Server handshake: verify invite proof or signed grant for claimed network.
+pub async fn run_auth_server(
     conn: &Connection,
-    resolve_secret: SecretResolver,
+    ctx: &AuthServerContext,
     self_endpoint_hex: &str,
     auth: &AuthCache,
 ) -> anyhow::Result<(String, Uuid)> {
     let (mut send, mut recv) = conn.accept_bi().await.context("accept auth stream")?;
-    let peer_claimed =
-        String::from_utf8(read_frame(&mut recv, 128).await?).context("peer id utf8")?;
-    let network_id_bytes = read_frame(&mut recv, 16).await?;
-    if network_id_bytes.len() != 16 {
-        write_frame(&mut send, b"no").await.ok();
-        anyhow::bail!("invalid network_id frame");
-    }
-    let mut uuid_bytes = [0u8; 16];
-    uuid_bytes.copy_from_slice(&network_id_bytes);
-    let network_id = Uuid::from_bytes(uuid_bytes);
-
-    let nonce = read_frame(&mut recv, 64).await?;
-    let proof = read_frame(&mut recv, 64).await?;
     let remote_hex = format!("{}", conn.remote_id());
-    if peer_claimed != remote_hex {
-        anyhow::bail!("peer id mismatch in auth handshake");
-    }
+    let frame = read_frame(&mut recv, 64 * 1024).await?;
+    let hello: AuthClientHello = serde_json::from_slice(&frame).context("auth hello json")?;
 
-    let Some(secret) = resolve_secret(network_id) else {
-        write_frame(&mut send, b"no").await.ok();
-        anyhow::bail!("unknown network_id in PSK handshake");
+    let network_id = match &hello.mode {
+        AuthClientMode::Invite { network_id, .. } => *network_id,
+        AuthClientMode::Grant { grant } => grant.network_id,
     };
 
-    let expected = compute_proof(
-        &secret,
-        &peer_claimed,
-        self_endpoint_hex,
-        network_id,
-        &nonce,
-    );
-    if !constant_time_eq(&expected, &proof) {
-        write_frame(&mut send, b"no").await.ok();
-        anyhow::bail!("invalid PSK proof");
+    let (ok, insert_auth) = match hello.mode {
+        AuthClientMode::Invite {
+            network_id,
+            invite_id: _,
+            join_secret_hex,
+        } => {
+            if (ctx.is_revoked)(network_id, &remote_hex) {
+                (false, false)
+            } else {
+                match (hello.nonce, hello.invite_proof) {
+                    (Some(nonce_hex), Some(proof_hex)) => match (
+                        hex::decode(nonce_hex),
+                        hex::decode(proof_hex),
+                        (ctx.resolve_join_secret)(network_id),
+                    ) {
+                        (Ok(nonce), Ok(proof), Some(join_secret))
+                            if join_secret == join_secret_hex =>
+                        {
+                            let expected = compute_invite_proof(
+                                &join_secret,
+                                &remote_hex,
+                                self_endpoint_hex,
+                                network_id,
+                                &nonce,
+                            );
+                            (constant_time_eq(&expected, &proof), false)
+                        }
+                        _ => (false, false),
+                    },
+                    _ => (false, false),
+                }
+            }
+        }
+        AuthClientMode::Grant { grant } => {
+            let ok = if grant.endpoint_id != remote_hex
+                || (ctx.is_revoked)(network_id, &grant.endpoint_id)
+            {
+                false
+            } else if let Some(vk) = (ctx.resolve_coord_vk)(network_id) {
+                let min_epoch = (ctx.resolve_min_epoch)(network_id);
+                verify_grant(&vk, &grant, min_epoch).is_ok()
+            } else {
+                false
+            };
+            (ok, ok)
+        }
+    };
+
+    if !ok {
+        write_response(&mut send, false).await.ok();
+        anyhow::bail!("auth verification failed");
     }
-    write_frame(&mut send, b"ok").await?;
-    auth.insert(peer_claimed.clone(), network_id);
-    Ok((peer_claimed, network_id))
+
+    write_response(&mut send, true).await?;
+    if insert_auth {
+        auth.insert(remote_hex.clone(), network_id);
+    }
+    Ok((remote_hex, network_id))
+}
+
+/// Build server auth context from live docs membership + persisted join secrets.
+pub fn build_auth_server_context(
+    networks: &[crate::state::DirectState],
+    docs: &std::collections::HashMap<Uuid, crate::direct::membership::DocsMembership>,
+) -> SharedAuthServerContext {
+    let join_secrets: std::collections::HashMap<Uuid, String> = networks
+        .iter()
+        .map(|d| (d.network_id, d.join_secret.clone()))
+        .collect();
+    let secrets = Arc::new(join_secrets);
+    let docs = Arc::new(docs.clone());
+    Arc::new(AuthServerContext {
+        resolve_join_secret: Arc::new({
+            let secrets = secrets.clone();
+            move |nid| secrets.get(&nid).cloned()
+        }),
+        resolve_coord_vk: Arc::new({
+            let docs = docs.clone();
+            move |nid| {
+                docs.get(&nid)
+                    .and_then(|d| verifying_key_from_hex(d.coordinator_verifying_key()).ok())
+            }
+        }),
+        resolve_min_epoch: Arc::new({
+            let docs = docs.clone();
+            move |nid| docs.get(&nid).map(|d| d.network_epoch()).unwrap_or(0)
+        }),
+        is_revoked: Arc::new({
+            let docs = docs.clone();
+            move |nid, eid| {
+                docs.get(&nid)
+                    .map(|d| d.revoked_snapshot().contains(eid))
+                    .unwrap_or(false)
+            }
+        }),
+    })
 }

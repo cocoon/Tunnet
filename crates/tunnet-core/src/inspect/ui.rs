@@ -193,7 +193,7 @@ function renderList() {
   listEl.innerHTML = items.slice().reverse().map(r => `
     <div class="row ${r.id === selectedId ? "active" : ""}" data-id="${r.id}">
       <span class="method ${r.method}">${r.method}</span>
-      <span class="status ${statusClass(r.status)}">${r.status || "—"}</span>
+      <span class="status ${statusClass(r.status)}">${r.status || "-"}</span>
       <span class="path">${escapeHtml(r.path)}</span>
       <span class="meta">${r.latencyMs}ms${r.replayedFrom ? " · replay" : ""}</span>
     </div>
@@ -227,7 +227,7 @@ async function select(id) {
   detailEl.innerHTML = `
     <div class="detail-head">
       <span class="method ${r.method}">${r.method}</span>
-      <span class="status ${statusClass(r.status)}">${r.status || "—"}</span>
+      <span class="status ${statusClass(r.status)}">${r.status || "-"}</span>
       <h2>${escapeHtml(r.path)}</h2>
     </div>
     <section>

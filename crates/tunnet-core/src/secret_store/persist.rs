@@ -18,8 +18,11 @@ pub fn persist_agent(
         networks.insert(
             d.network_id,
             NetworkSecrets {
-                network_secret: d.network_secret.clone(),
+                join_secret: d.join_secret.clone(),
                 doc_ticket: d.doc_ticket.clone(),
+                coordinator_signing_key: d.coordinator_signing_key.clone(),
+                network_grant: d.network_grant.clone(),
+                content_key: d.content_key.clone(),
             },
         );
     }

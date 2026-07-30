@@ -1,0 +1,521 @@
+//! Ed25519 network grants, member records, genesis, epochs, and content encryption.
+
+use std::net::Ipv4Addr;
+
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
+use anyhow::{Context, bail};
+use chrono::{DateTime, Utc};
+use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemberRole {
+    Coordinator,
+    Member,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkGrant {
+    pub network_id: Uuid,
+    pub endpoint_id: String,
+    pub role: MemberRole,
+    pub network_epoch: u64,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub content_key: String,
+    pub sig: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignedMemberRecord {
+    pub schema_version: u16,
+    pub network_id: Uuid,
+    pub endpoint_id: String,
+    pub hostname: String,
+    pub ipv4: Ipv4Addr,
+    pub collision_index: u8,
+    pub tags: Vec<String>,
+    pub status: String,
+    pub ssh_host_key: Option<String>,
+    pub sequence: u64,
+    pub joined_at: DateTime<Utc>,
+    pub grant: NetworkGrant,
+    pub endpoint_sig: String,
+    pub coordinator: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Genesis {
+    pub network_id: Uuid,
+    pub network_name: String,
+    pub coordinator_endpoint_id: String,
+    pub coordinator_verifying_key: String,
+    pub created_at: DateTime<Utc>,
+    pub sig: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpochRecord {
+    pub network_epoch: u64,
+    pub sig: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Revocation {
+    pub endpoint_id: String,
+    pub network_epoch: u64,
+    pub reason: String,
+    pub sig: String,
+}
+
+pub fn generate_coordinator_keypair() -> (SigningKey, VerifyingKey) {
+    let sk = SigningKey::generate(&mut rand::rng());
+    let vk = sk.verifying_key();
+    (sk, vk)
+}
+
+pub fn signing_key_from_hex(hex_key: &str) -> anyhow::Result<SigningKey> {
+    let bytes = hex::decode(hex_key.trim()).context("invalid signing key hex")?;
+    let arr: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("signing key must be 32 bytes"))?;
+    Ok(SigningKey::from_bytes(&arr))
+}
+
+pub fn verifying_key_from_hex(hex_key: &str) -> anyhow::Result<VerifyingKey> {
+    let bytes = hex::decode(hex_key.trim()).context("invalid verifying key hex")?;
+    let arr: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("verifying key must be 32 bytes"))?;
+    VerifyingKey::from_bytes(&arr).context("invalid ed25519 verifying key")
+}
+
+fn sign_bytes(sk: &SigningKey, payload: &[u8]) -> String {
+    hex::encode(sk.sign(payload).to_bytes())
+}
+
+fn verify_sig(vk: &VerifyingKey, payload: &[u8], sig_hex: &str) -> anyhow::Result<()> {
+    let sig_bytes = hex::decode(sig_hex.trim()).context("invalid signature hex")?;
+    let sig_arr: [u8; 64] = sig_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("signature must be 64 bytes"))?;
+    let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
+    vk.verify(payload, &sig)
+        .map_err(|_| anyhow::anyhow!("invalid signature"))
+}
+
+#[derive(Serialize)]
+struct GrantSignPayload<'a> {
+    network_id: Uuid,
+    endpoint_id: &'a str,
+    role: MemberRole,
+    network_epoch: u64,
+    issued_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+    content_key: &'a str,
+}
+
+fn grant_sign_payload(grant: &NetworkGrant) -> anyhow::Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&GrantSignPayload {
+        network_id: grant.network_id,
+        endpoint_id: &grant.endpoint_id,
+        role: grant.role,
+        network_epoch: grant.network_epoch,
+        issued_at: grant.issued_at,
+        expires_at: grant.expires_at,
+        content_key: &grant.content_key,
+    })?)
+}
+
+pub fn sign_grant(sk: &SigningKey, mut grant: NetworkGrant) -> anyhow::Result<NetworkGrant> {
+    let payload = grant_sign_payload(&grant)?;
+    grant.sig = sign_bytes(sk, &payload);
+    Ok(grant)
+}
+
+pub fn verify_grant(vk: &VerifyingKey, grant: &NetworkGrant, min_epoch: u64) -> anyhow::Result<()> {
+    if grant.network_epoch < min_epoch {
+        bail!(
+            "grant epoch {} below minimum {}",
+            grant.network_epoch,
+            min_epoch
+        );
+    }
+    if grant.expires_at <= Utc::now() {
+        bail!("grant expired at {}", grant.expires_at);
+    }
+    let payload = grant_sign_payload(grant)?;
+    verify_sig(vk, &payload, &grant.sig)
+}
+
+#[derive(Serialize)]
+struct MemberRecordSignPayload<'a> {
+    schema_version: u16,
+    network_id: Uuid,
+    endpoint_id: &'a str,
+    hostname: &'a str,
+    ipv4: Ipv4Addr,
+    collision_index: u8,
+    tags: &'a [String],
+    status: &'a str,
+    ssh_host_key: &'a Option<String>,
+    sequence: u64,
+    joined_at: DateTime<Utc>,
+    grant: &'a NetworkGrant,
+    coordinator: bool,
+}
+
+fn member_record_sign_payload(record: &SignedMemberRecord) -> anyhow::Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&MemberRecordSignPayload {
+        schema_version: record.schema_version,
+        network_id: record.network_id,
+        endpoint_id: &record.endpoint_id,
+        hostname: &record.hostname,
+        ipv4: record.ipv4,
+        collision_index: record.collision_index,
+        tags: &record.tags,
+        status: &record.status,
+        ssh_host_key: &record.ssh_host_key,
+        sequence: record.sequence,
+        joined_at: record.joined_at,
+        grant: &record.grant,
+        coordinator: record.coordinator,
+    })?)
+}
+
+/// Coordinator attestation over the member record (including embedded grant).
+pub fn sign_member_record(
+    coord_sk: &SigningKey,
+    mut record: SignedMemberRecord,
+) -> anyhow::Result<SignedMemberRecord> {
+    let payload = member_record_sign_payload(&record)?;
+    record.endpoint_sig = sign_bytes(coord_sk, &payload);
+    Ok(record)
+}
+
+pub fn verify_member_record(
+    coord_vk: &VerifyingKey,
+    record: &SignedMemberRecord,
+    min_epoch: u64,
+) -> anyhow::Result<()> {
+    if record.schema_version != 1 {
+        bail!("unsupported member record schema {}", record.schema_version);
+    }
+    verify_grant(coord_vk, &record.grant, min_epoch)?;
+    let payload = member_record_sign_payload(record)?;
+    verify_sig(coord_vk, &payload, &record.endpoint_sig)
+}
+
+#[derive(Serialize)]
+struct GenesisSignPayload<'a> {
+    network_id: Uuid,
+    network_name: &'a str,
+    coordinator_endpoint_id: &'a str,
+    coordinator_verifying_key: &'a str,
+    created_at: DateTime<Utc>,
+}
+
+fn genesis_sign_payload(genesis: &Genesis) -> anyhow::Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&GenesisSignPayload {
+        network_id: genesis.network_id,
+        network_name: &genesis.network_name,
+        coordinator_endpoint_id: &genesis.coordinator_endpoint_id,
+        coordinator_verifying_key: &genesis.coordinator_verifying_key,
+        created_at: genesis.created_at,
+    })?)
+}
+
+pub fn sign_genesis(sk: &SigningKey, mut genesis: Genesis) -> anyhow::Result<Genesis> {
+    let payload = genesis_sign_payload(&genesis)?;
+    genesis.sig = sign_bytes(sk, &payload);
+    Ok(genesis)
+}
+
+pub fn verify_genesis(vk: &VerifyingKey, genesis: &Genesis) -> anyhow::Result<()> {
+    let payload = genesis_sign_payload(genesis)?;
+    verify_sig(vk, &payload, &genesis.sig)
+}
+
+#[derive(Serialize)]
+struct EpochSignPayload {
+    network_epoch: u64,
+}
+
+fn epoch_sign_payload(epoch: &EpochRecord) -> anyhow::Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&EpochSignPayload {
+        network_epoch: epoch.network_epoch,
+    })?)
+}
+
+pub fn sign_epoch(sk: &SigningKey, mut epoch: EpochRecord) -> anyhow::Result<EpochRecord> {
+    let payload = epoch_sign_payload(&epoch)?;
+    epoch.sig = sign_bytes(sk, &payload);
+    Ok(epoch)
+}
+
+pub fn verify_epoch(vk: &VerifyingKey, epoch: &EpochRecord) -> anyhow::Result<()> {
+    let payload = epoch_sign_payload(epoch)?;
+    verify_sig(vk, &payload, &epoch.sig)
+}
+
+#[derive(Serialize)]
+struct RevocationSignPayload<'a> {
+    endpoint_id: &'a str,
+    network_epoch: u64,
+    reason: &'a str,
+}
+
+fn revocation_sign_payload(revocation: &Revocation) -> anyhow::Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&RevocationSignPayload {
+        endpoint_id: &revocation.endpoint_id,
+        network_epoch: revocation.network_epoch,
+        reason: &revocation.reason,
+    })?)
+}
+
+pub fn sign_revocation(sk: &SigningKey, mut revocation: Revocation) -> anyhow::Result<Revocation> {
+    let payload = revocation_sign_payload(&revocation)?;
+    revocation.sig = sign_bytes(sk, &payload);
+    Ok(revocation)
+}
+
+pub fn verify_revocation(vk: &VerifyingKey, revocation: &Revocation) -> anyhow::Result<()> {
+    let payload = revocation_sign_payload(revocation)?;
+    verify_sig(vk, &payload, &revocation.sig)
+}
+
+pub fn encrypt_content(content_key_hex: &str, plaintext: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let key_bytes = hex::decode(content_key_hex.trim()).context("invalid content key hex")?;
+    let key_arr: [u8; 32] = key_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("content key must be 32 bytes"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key_arr).map_err(|_| anyhow::anyhow!("aes key init"))?;
+    let nonce_bytes: [u8; 12] = rand::random();
+    let nonce = Nonce::from(nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext)
+        .map_err(|e| anyhow::anyhow!("encrypt failed: {e}"))?;
+    let mut out = nonce_bytes.to_vec();
+    out.extend(ciphertext);
+    Ok(out)
+}
+
+pub fn decrypt_content(content_key_hex: &str, ciphertext: &[u8]) -> anyhow::Result<Vec<u8>> {
+    if ciphertext.len() < 12 {
+        bail!("ciphertext too short");
+    }
+    let key_bytes = hex::decode(content_key_hex.trim()).context("invalid content key hex")?;
+    let key_arr: [u8; 32] = key_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("content key must be 32 bytes"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key_arr).map_err(|_| anyhow::anyhow!("aes key init"))?;
+    let (nonce_bytes, enc) = ciphertext.split_at(12);
+    let nonce_arr: [u8; 12] = nonce_bytes.try_into().unwrap();
+    let nonce = Nonce::from(nonce_arr);
+    cipher
+        .decrypt(&nonce, enc)
+        .map_err(|e| anyhow::anyhow!("decrypt failed: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    fn sample_grant(network_id: Uuid, endpoint_id: &str, role: MemberRole) -> NetworkGrant {
+        let now = Utc::now();
+        NetworkGrant {
+            network_id,
+            endpoint_id: endpoint_id.into(),
+            role,
+            network_epoch: 1,
+            issued_at: now,
+            expires_at: now + Duration::hours(24),
+            content_key: hex::encode([0xAB; 32]),
+            sig: String::new(),
+        }
+    }
+
+    #[test]
+    fn keypair_roundtrip() {
+        let (sk, vk) = generate_coordinator_keypair();
+        let sk2 = signing_key_from_hex(&hex::encode(sk.to_bytes())).unwrap();
+        let vk2 = verifying_key_from_hex(&hex::encode(vk.to_bytes())).unwrap();
+        assert_eq!(sk.to_bytes(), sk2.to_bytes());
+        assert_eq!(vk.to_bytes(), vk2.to_bytes());
+    }
+
+    #[test]
+    fn grant_sign_verify_roundtrip() {
+        let (coord_sk, coord_vk) = generate_coordinator_keypair();
+        let network_id = Uuid::new_v4();
+        let grant = sign_grant(
+            &coord_sk,
+            sample_grant(network_id, "aa".repeat(32).as_str(), MemberRole::Member),
+        )
+        .unwrap();
+        verify_grant(&coord_vk, &grant, 1).unwrap();
+    }
+
+    #[test]
+    fn grant_rejects_forged_sig() {
+        let (coord_sk, coord_vk) = generate_coordinator_keypair();
+        let (_, other_vk) = generate_coordinator_keypair();
+        let network_id = Uuid::new_v4();
+        let mut grant = sign_grant(
+            &coord_sk,
+            sample_grant(network_id, "bb".repeat(32).as_str(), MemberRole::Member),
+        )
+        .unwrap();
+        grant.sig = hex::encode([0u8; 64]);
+        assert!(verify_grant(&coord_vk, &grant, 1).is_err());
+        assert!(verify_grant(&other_vk, &grant, 1).is_err());
+    }
+
+    #[test]
+    fn grant_rejects_low_epoch() {
+        let (coord_sk, coord_vk) = generate_coordinator_keypair();
+        let network_id = Uuid::new_v4();
+        let grant = sign_grant(
+            &coord_sk,
+            sample_grant(network_id, "cc".repeat(32).as_str(), MemberRole::Member),
+        )
+        .unwrap();
+        assert!(verify_grant(&coord_vk, &grant, 2).is_err());
+    }
+
+    #[test]
+    fn member_record_roundtrip() {
+        let (coord_sk, coord_vk) = generate_coordinator_keypair();
+        let endpoint_vk = SigningKey::generate(&mut rand::rng()).verifying_key();
+        let network_id = Uuid::new_v4();
+        let grant = sign_grant(
+            &coord_sk,
+            sample_grant(
+                network_id,
+                &hex::encode(endpoint_vk.to_bytes()),
+                MemberRole::Member,
+            ),
+        )
+        .unwrap();
+        let record = SignedMemberRecord {
+            schema_version: 1,
+            network_id,
+            endpoint_id: hex::encode(endpoint_vk.to_bytes()),
+            hostname: "alice".into(),
+            ipv4: "100.64.0.2".parse().unwrap(),
+            collision_index: 0,
+            tags: vec!["tag".into()],
+            status: "active".into(),
+            ssh_host_key: None,
+            sequence: 1,
+            joined_at: Utc::now(),
+            grant,
+            endpoint_sig: String::new(),
+            coordinator: false,
+        };
+        let signed = sign_member_record(&coord_sk, record).unwrap();
+        verify_member_record(&coord_vk, &signed, 1).unwrap();
+    }
+
+    #[test]
+    fn member_record_rejects_tampered_grant() {
+        let (coord_sk, coord_vk) = generate_coordinator_keypair();
+        let endpoint_vk = SigningKey::generate(&mut rand::rng()).verifying_key();
+        let network_id = Uuid::new_v4();
+        let grant = sign_grant(
+            &coord_sk,
+            sample_grant(
+                network_id,
+                &hex::encode(endpoint_vk.to_bytes()),
+                MemberRole::Member,
+            ),
+        )
+        .unwrap();
+        let mut record = SignedMemberRecord {
+            schema_version: 1,
+            network_id,
+            endpoint_id: hex::encode(endpoint_vk.to_bytes()),
+            hostname: "bob".into(),
+            ipv4: "100.64.0.3".parse().unwrap(),
+            collision_index: 0,
+            tags: vec![],
+            status: "active".into(),
+            ssh_host_key: None,
+            sequence: 1,
+            joined_at: Utc::now(),
+            grant,
+            endpoint_sig: String::new(),
+            coordinator: false,
+        };
+        let signed = sign_member_record(&coord_sk, record.clone()).unwrap();
+        record.grant.network_epoch = 99;
+        assert!(verify_member_record(&coord_vk, &signed, 1).is_ok());
+        assert!(verify_member_record(&coord_vk, &record, 1).is_err());
+    }
+
+    #[test]
+    fn genesis_roundtrip() {
+        let (sk, vk) = generate_coordinator_keypair();
+        let genesis = Genesis {
+            network_id: Uuid::new_v4(),
+            network_name: "home".into(),
+            coordinator_endpoint_id: "dd".repeat(32),
+            coordinator_verifying_key: hex::encode(vk.to_bytes()),
+            created_at: Utc::now(),
+            sig: String::new(),
+        };
+        let signed = sign_genesis(&sk, genesis).unwrap();
+        verify_genesis(&vk, &signed).unwrap();
+    }
+
+    #[test]
+    fn epoch_roundtrip() {
+        let (sk, vk) = generate_coordinator_keypair();
+        let epoch = EpochRecord {
+            network_epoch: 2,
+            sig: String::new(),
+        };
+        let signed = sign_epoch(&sk, epoch).unwrap();
+        verify_epoch(&vk, &signed).unwrap();
+    }
+
+    #[test]
+    fn revocation_roundtrip() {
+        let (sk, vk) = generate_coordinator_keypair();
+        let revocation = Revocation {
+            endpoint_id: "ee".repeat(32),
+            network_epoch: 2,
+            reason: "kicked".into(),
+            sig: String::new(),
+        };
+        let signed = sign_revocation(&sk, revocation).unwrap();
+        verify_revocation(&vk, &signed).unwrap();
+    }
+
+    #[test]
+    fn content_encrypt_roundtrip() {
+        let key = hex::encode([0x42; 32]);
+        let plaintext = b"hello tunnet direct";
+        let enc = encrypt_content(&key, plaintext).unwrap();
+        let dec = decrypt_content(&key, &enc).unwrap();
+        assert_eq!(dec, plaintext);
+    }
+
+    #[test]
+    fn content_decrypt_rejects_wrong_key() {
+        let key = hex::encode([0x42; 32]);
+        let wrong = hex::encode([0x43; 32]);
+        let enc = encrypt_content(&key, b"secret").unwrap();
+        assert!(decrypt_content(&wrong, &enc).is_err());
+    }
+}

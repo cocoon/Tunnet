@@ -307,10 +307,17 @@ impl ConnPool {
         Ok(conn)
     }
 
-    /// Send on the latency ALPN (ICMP / interactive). Own CWND vs bulk tunnel.
     pub async fn send_latency(&self, peer: EndpointId, packet: Bytes) -> anyhow::Result<()> {
-        let conn = self.get_latency(peer).await?;
-        send_datagram(&conn, packet).await
+        if self.has_live(peer) {
+            return self.send_or_buffer(peer, packet).await;
+        }
+        match self.get_latency(peer).await {
+            Ok(conn) => send_datagram(&conn, packet).await,
+            Err(e) => {
+                tracing::debug!(%peer, ?e, "latency dial failed; trying bulk");
+                self.send_or_buffer(peer, packet).await
+            }
+        }
     }
 
     /// Close every default-ALPN peer connection (e.g. data plane down).

@@ -1,6 +1,8 @@
 #[cfg(feature = "direct")]
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(feature = "direct")]
+use std::sync::Mutex;
 #[cfg(any(feature = "managed", feature = "direct"))]
 use std::time::Duration;
 
@@ -9,7 +11,7 @@ use anyhow::Context;
 use arc_swap::ArcSwap;
 use iroh::Endpoint;
 #[cfg(any(feature = "managed", feature = "direct"))]
-use iroh::{SecretKey, endpoint::presets};
+use iroh::SecretKey;
 #[cfg(any(feature = "managed", feature = "direct"))]
 use tunnet_common::{TUNNEL_ALPN, TUNNEL_LATENCY_ALPN};
 #[cfg(feature = "direct")]
@@ -23,10 +25,15 @@ use crate::acl_hook::AclHook;
 #[cfg(feature = "managed")]
 use crate::control::{SignedClient, basic_metadata};
 #[cfg(feature = "direct")]
+use crate::direct::PresenceTable;
+#[cfg(feature = "direct")]
 use crate::direct::{
     AUTH_ALPN, AuthCache, DirectAuthHook, DocsBootstrap, DocsMembership, MembershipEntry,
-    derive_ipv4, firewall_to_policy, spawn_discovery, spawn_seed_auth,
+    NetworkGrant, derive_ipv4, firewall_to_policy, signing_key_from_hex, spawn_discovery,
+    spawn_seed_auth,
 };
+#[cfg(any(feature = "managed", feature = "direct"))]
+use crate::direct::{ConnectivityOptions, apply_connectivity, endpoint_builder};
 use crate::identity::AgentIdentity;
 use crate::iroh_pool::ConnPool;
 use crate::routing::RoutingTable;
@@ -47,6 +54,10 @@ use crate::sync::{
 };
 #[cfg(feature = "tunnel")]
 use crate::tunnel::TunnelManager;
+#[cfg(feature = "direct")]
+use ed25519_dalek::SigningKey;
+#[cfg(feature = "direct")]
+use iroh_docs::protocol::Docs;
 
 /// Callback when CP requests killing an SSH session (`session_id`).
 pub type KillSshHook = Arc<dyn Fn(&str) + Send + Sync>;
@@ -87,6 +98,8 @@ pub struct DirectNetworkRuntime {
     pub firewall: crate::direct::FirewallEngine,
     pub spoof_tracker: crate::direct::SpoofTracker,
     pub state: DirectState,
+    pub discovery: crate::direct::DiscoveryHandle,
+    pub presence: Option<Arc<PresenceTable>>,
 }
 
 #[derive(Clone)]
@@ -106,8 +119,9 @@ pub struct CoreNodeConfig {
     pub agent_config_hooks: Option<AgentConfigHooks>,
     /// Shared flag updated by posture status; gates ACL rules with `srcPosture`.
     pub src_posture_ok: Option<Arc<arc_swap::ArcSwap<bool>>>,
-    /// Enable mDNS LAN address lookup (Direct default: true).
-    pub enable_mdns: bool,
+    /// Endpoint connectivity (relay preset, DHT, mDNS).
+    #[cfg(any(feature = "managed", feature = "direct"))]
+    pub connectivity: ConnectivityOptions,
     /// Advertise/run shared iroh-gossip (Managed needs this for presence + service relay).
     pub enable_gossip: bool,
     /// Keep all peer connections open (Managed default: true; Direct default: false = on-demand).
@@ -129,7 +143,8 @@ impl Default for CoreNodeConfig {
             posture_hooks: None,
             agent_config_hooks: None,
             src_posture_ok: None,
-            enable_mdns: true,
+            #[cfg(any(feature = "managed", feature = "direct"))]
+            connectivity: ConnectivityOptions::default(),
             enable_gossip: true,
             keep_alive: true,
             effective_config: None,
@@ -171,8 +186,14 @@ pub struct CoreNode {
     /// Per-network Direct runtime (empty in Managed).
     #[cfg(feature = "direct")]
     pub direct: HashMap<Uuid, DirectNetworkRuntime>,
-    /// Shared agent Gossip (Managed). Direct uses [`DocsMembership::gossip`] instead.
+    /// Shared agent Gossip (Managed + Direct).
     pub gossip: Option<iroh_gossip::net::Gossip>,
+    /// Unified iroh-docs engine (Direct).
+    #[cfg(feature = "direct")]
+    pub docs_engine: Option<Docs>,
+    /// Live presence tables keyed by network id (populated by agent runtime).
+    #[cfg(feature = "direct")]
+    pub presence_tables: Arc<Mutex<HashMap<Uuid, Arc<PresenceTable>>>>,
 }
 
 impl CoreNode {
@@ -187,8 +208,43 @@ impl CoreNode {
     }
 
     #[cfg(feature = "direct")]
-    pub fn spoof_for(&self, network_id: Uuid) -> Option<&crate::direct::SpoofTracker> {
-        self.direct.get(&network_id).map(|r| &r.spoof_tracker)
+    pub fn presence_for(&self, network_id: Uuid) -> Option<&Arc<PresenceTable>> {
+        self.direct
+            .get(&network_id)
+            .and_then(|r| r.presence.as_ref())
+    }
+
+    #[cfg(feature = "direct")]
+    pub fn peer_presence_online(&self, endpoint_hex: &str) -> Option<bool> {
+        let now = chrono::Utc::now().timestamp();
+        let tables = self.presence_tables.lock().ok()?;
+        if tables.is_empty() {
+            return None;
+        }
+        for table in tables.values() {
+            if table.is_online(endpoint_hex, now) {
+                return Some(true);
+            }
+        }
+        Some(false)
+    }
+
+    #[cfg(feature = "direct")]
+    pub fn peer_presence_last_seen(&self, endpoint_hex: &str) -> Option<u64> {
+        let now = chrono::Utc::now().timestamp();
+        self.presence_tables
+            .lock()
+            .ok()?
+            .values()
+            .filter_map(|t| t.last_seen_secs_ago(endpoint_hex, now))
+            .min()
+    }
+
+    #[cfg(feature = "direct")]
+    pub fn register_presence_table(&self, network_id: Uuid, table: Arc<PresenceTable>) {
+        if let Ok(mut tables) = self.presence_tables.lock() {
+            tables.insert(network_id, table);
+        }
     }
 
     /// Docs for the primary Direct network (explicit network_id, never arbitrary first).
@@ -315,10 +371,11 @@ impl CoreNode {
         );
 
         let secret = SecretKey::from_bytes(&identity.secret_bytes);
-        let endpoint = Endpoint::builder(presets::N0)
+        let builder = endpoint_builder(&cfg.connectivity)
             .secret_key(secret)
             .alpns(alpns)
-            .hooks(AclHook::new(acl.clone()))
+            .hooks(AclHook::new(acl.clone()));
+        let endpoint = apply_connectivity(builder, &cfg.connectivity)
             .bind()
             .await
             .context("bind iroh endpoint")?;
@@ -433,6 +490,10 @@ impl CoreNode {
             #[cfg(feature = "direct")]
             direct: HashMap::new(),
             gossip,
+            #[cfg(feature = "direct")]
+            docs_engine: None,
+            #[cfg(feature = "direct")]
+            presence_tables: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -479,12 +540,11 @@ impl CoreNode {
         }
 
         let secret = SecretKey::from_bytes(&identity.secret_bytes);
-        let builder = Endpoint::builder(presets::N0)
+        let builder = endpoint_builder(&cfg.connectivity)
             .secret_key(secret)
             .alpns(alpns)
             .hooks(DirectAuthHook::new(acl.clone(), auth.clone()));
-        let builder = crate::direct::apply_mdns(builder, cfg.enable_mdns);
-        let endpoint = builder
+        let endpoint = apply_connectivity(builder, &cfg.connectivity)
             .bind()
             .await
             .context("bind iroh endpoint (direct)")?;
@@ -514,16 +574,32 @@ impl CoreNode {
             .await
             .map_err(|e| anyhow::anyhow!("open shared FsStore: {e}"))?;
 
+        warn_legacy_docs_dirs(&paths, &networks);
+
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
+        let docs_dir = paths.dir.join("docs");
+        std::fs::create_dir_all(&docs_dir)?;
+        let docs_engine = Docs::persistent(docs_dir)
+            .spawn(endpoint.clone(), (*blobs).clone(), gossip.clone())
+            .await
+            .context("spawn unified Docs engine")?;
+
         #[cfg(feature = "send")]
-        let send = SendManager::from_store(
-            blobs.clone(),
-            pool.clone(),
-            routes.clone(),
-            acl.clone(),
-            my_id_hex.clone(),
-        )
-        .await
-        .context("open send manager")?;
+        let send = {
+            let mgr = SendManager::from_store(
+                blobs.clone(),
+                pool.clone(),
+                routes.clone(),
+                acl.clone(),
+                my_id_hex.clone(),
+            )
+            .await
+            .context("open send manager")?;
+            if let Some(key) = primary.content_key.clone() {
+                mgr.set_content_key(Some(key));
+            }
+            mgr
+        };
 
         let mut direct_runtimes = HashMap::new();
         let mut updated_networks = Vec::new();
@@ -550,16 +626,42 @@ impl CoreNode {
                 tags: vec![],
                 joined_at: chrono::Utc::now(),
                 coordinator: direct.coordinator,
-                status: "online".into(),
+                status: "active".into(),
                 ssh_host_key: None,
             };
 
+            let endpoint_signing_key = SigningKey::from_bytes(&identity.secret_bytes);
+            let coordinator_signing_key = direct
+                .coordinator_signing_key
+                .as_ref()
+                .map(|h| signing_key_from_hex(h))
+                .transpose()
+                .with_context(|| {
+                    format!(
+                        "parse coordinator signing key for '{}'",
+                        direct.network_name
+                    )
+                })?;
+            let coordinator_verifying_key =
+                direct.coordinator_verifying_key.clone().unwrap_or_default();
+            let content_key = direct.content_key.clone().unwrap_or_default();
+            let network_grant: Option<NetworkGrant> = direct
+                .network_grant
+                .as_ref()
+                .and_then(|g| serde_json::from_str(g).ok());
+
             let (docs, new_ticket, new_ns) = DocsMembership::bootstrap(DocsBootstrap {
-                endpoint: endpoint.clone(),
+                docs: docs_engine.clone(),
+                gossip: gossip.clone(),
                 paths: &paths,
                 direct: &direct,
                 self_endpoint_id: &my_id_hex,
                 self_entry,
+                endpoint_signing_key,
+                coordinator_signing_key,
+                coordinator_verifying_key,
+                content_key: content_key.clone(),
+                network_grant: network_grant.clone(),
                 blobs: blobs.clone(),
                 routes: routes.clone(),
                 acl: acl.clone(),
@@ -597,13 +699,13 @@ impl CoreNode {
                     seeds.push(m.endpoint_id);
                 }
             }
-            let _discovery =
+            let discovery =
                 spawn_discovery(direct.topic_hash.clone(), my_id_hex.clone(), seeds.clone());
             spawn_seed_auth(
                 endpoint.clone(),
                 auth.clone(),
                 direct.network_id,
-                direct.network_secret.clone(),
+                network_grant,
                 my_id_hex.clone(),
                 seeds,
             );
@@ -615,6 +717,8 @@ impl CoreNode {
                     firewall,
                     spoof_tracker,
                     state: direct.clone(),
+                    discovery,
+                    presence: None,
                 },
             );
             updated_networks.push(direct);
@@ -634,7 +738,7 @@ impl CoreNode {
         let contact = crate::direct::contact_id_from_endpoint(&endpoint.id());
         tracing::info!(%contact, networks = direct_runtimes.len(), "direct contact id");
 
-        let _ = cfg;
+        let _ = cfg.agent_version;
         Ok(Self {
             identity,
             persisted: PersistedState::Direct {
@@ -661,25 +765,15 @@ impl CoreNode {
             control_link: None,
             direct_auth: Some(auth),
             direct: direct_runtimes,
-            // Direct features use DocsMembership::gossip() (primary network).
-            gossip: None,
+            gossip: Some(gossip),
+            docs_engine: Some(docs_engine),
+            presence_tables: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
     /// Shared Gossip for presence / service-relay topics.
-    /// Direct: primary network docs gossip. Managed: agent-owned gossip.
     pub fn shared_gossip(&self) -> Option<iroh_gossip::net::Gossip> {
-        if let Some(g) = &self.gossip {
-            return Some(g.clone());
-        }
-        #[cfg(feature = "direct")]
-        {
-            self.primary_docs().map(|d| d.gossip())
-        }
-        #[cfg(not(feature = "direct"))]
-        {
-            None
-        }
+        self.gossip.clone()
     }
 
     pub fn endpoint_id_hex(&self) -> String {
@@ -727,4 +821,33 @@ fn build_alpns(cfg: &CoreNodeConfig, direct: bool, enable_gossip: bool) -> Vec<V
         alpns.push(iroh_gossip::ALPN.to_vec());
     }
     alpns
+}
+
+#[cfg(feature = "direct")]
+fn warn_legacy_docs_dirs(paths: &StatePaths, networks: &[DirectState]) {
+    let unified = paths.dir.join("docs");
+    let unified_nonempty = unified.exists()
+        && std::fs::read_dir(&unified)
+            .ok()
+            .and_then(|mut d| d.next())
+            .is_some();
+    if unified_nonempty {
+        return;
+    }
+    for net in networks {
+        let legacy = paths.docs_dir(net.network_id);
+        if legacy.exists()
+            && std::fs::read_dir(&legacy)
+                .ok()
+                .and_then(|mut d| d.next())
+                .is_some()
+        {
+            tracing::warn!(
+                network = %net.network_name,
+                legacy = %legacy.display(),
+                unified = %unified.display(),
+                "per-network docs store detected while unified docs/ is empty; re-join with doc ticket if import fails"
+            );
+        }
+    }
 }

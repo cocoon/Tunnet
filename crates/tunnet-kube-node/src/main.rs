@@ -200,7 +200,7 @@ async fn main() -> anyhow::Result<()> {
                 kind,
                 agent_version: env!("CARGO_PKG_VERSION"),
                 advertise_datagram_alpn: false,
-                enable_mdns: false,
+                connectivity: tunnet_core::direct::ConnectivityOptions::managed_default(),
                 ..Default::default()
             },
         )

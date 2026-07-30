@@ -6,8 +6,10 @@ use anyhow::Context;
 use clap::Args;
 use tunnet_core::direct::admin::{PendingJoin, push_pending};
 use tunnet_core::direct::{
-    AUTH_ALPN, DocsMembership, MembershipEntry, decode_invite, derive_ipv4, load_approved,
-    network_id_from_topic, run_psk_handshake_client, save_approved, topic_from_name_secret,
+    AUTH_ALPN, AuthClientMode, ConnectivityOptions, ConnectivityProfile, DocsMembership,
+    MemberRole, MembershipEntry, NetworkGrant, apply_connectivity, decode_invite, derive_ipv4,
+    endpoint_builder, generate_coordinator_keypair, load_approved, network_id_from_topic,
+    run_auth_client, save_approved, sign_grant, topic_from_name_secret,
 };
 use tunnet_core::{
     AgentIdentity, DirectState, PersistedState, SealPolicy, StatePaths, load_agent, persist_agent,
@@ -204,22 +206,27 @@ pub async fn run_create(args: CreateArgs, state_dir: Option<&str>) -> anyhow::Re
         anyhow::bail!("invalid network name (3-32 lowercase alphanumeric/hyphen)");
     }
 
-    let network_secret = match args.secret {
+    let join_secret = match args.secret {
         Some(s) => {
             if s.len() < 8 {
                 anyhow::bail!("--secret must be at least 8 characters");
             }
-            s
+            hex::encode(s.as_bytes())
         }
         None => {
             let secret_bytes: [u8; 32] = rand::random();
             let s = hex::encode(secret_bytes);
-            println!("Generated network secret (save it): {s}");
+            println!("Generated join secret (save it): {s}");
             s
         }
     };
 
-    let topic_hash = topic_from_name_secret(&network_name, &network_secret);
+    let (coord_sk, coord_vk) = generate_coordinator_keypair();
+    let coord_vk_hex = hex::encode(coord_vk.to_bytes());
+    let coord_sk_hex = hex::encode(coord_sk.to_bytes());
+    let content_key = hex::encode(rand::random::<[u8; 32]>());
+
+    let topic_hash = topic_from_name_secret(&network_name, &join_secret);
     let network_id = network_id_from_topic(&topic_hash);
     let policy = SealPolicy::from_env_and_flag(args.no_encrypt_state);
 
@@ -242,9 +249,25 @@ pub async fn run_create(args: CreateArgs, state_dir: Option<&str>) -> anyhow::Re
     let my_id = identity.endpoint_id_hex();
     let assigned_ipv4 = derive_ipv4(&my_id, 0);
 
+    let network_id_for_grant = network_id;
+    let self_grant = sign_grant(
+        &coord_sk,
+        NetworkGrant {
+            network_id: network_id_for_grant,
+            endpoint_id: my_id.clone(),
+            role: MemberRole::Coordinator,
+            network_epoch: 0,
+            issued_at: chrono::Utc::now(),
+            expires_at: chrono::Utc::now() + chrono::Duration::days(3650),
+            content_key: content_key.clone(),
+            sig: String::new(),
+        },
+    )?;
+    let grant_json = serde_json::to_string(&self_grant)?;
+
     networks.push(DirectState {
         network_name: network_name.clone(),
-        network_secret: network_secret.clone(),
+        join_secret: join_secret.clone(),
         topic_hash,
         network_id,
         coordinator: true,
@@ -253,8 +276,13 @@ pub async fn run_create(args: CreateArgs, state_dir: Option<&str>) -> anyhow::Re
         collision_index: 0,
         hostname: hostname.clone(),
         coordinator_endpoint_id: Some(my_id.clone()),
+        coordinator_verifying_key: Some(coord_vk_hex),
+        network_epoch: 0,
         doc_ticket: None,
         namespace_id: None,
+        coordinator_signing_key: Some(coord_sk_hex),
+        network_grant: Some(grant_json),
+        content_key: Some(content_key),
         auto_accept_firewall: false,
         created_at: chrono::Utc::now(),
     });
@@ -319,12 +347,19 @@ pub async fn run_join(args: JoinArgs, state_dir: Option<&str>) -> anyhow::Result
 
     // Dial coordinator and prove PSK.
     let secret = iroh::SecretKey::from_bytes(&identity.secret_bytes);
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
-        .secret_key(secret)
-        .alpns(vec![AUTH_ALPN.to_vec()])
-        .bind()
-        .await
-        .context("bind join endpoint")?;
+    let connectivity = ConnectivityOptions {
+        profile: ConnectivityProfile::ServerlessDht,
+        enable_mdns: false,
+    };
+    let endpoint = apply_connectivity(
+        endpoint_builder(&connectivity)
+            .secret_key(secret)
+            .alpns(vec![AUTH_ALPN.to_vec()]),
+        &connectivity,
+    )
+    .bind()
+    .await
+    .context("bind join endpoint")?;
 
     let join_result = async {
         match tokio::time::timeout(std::time::Duration::from_secs(10), endpoint.online()).await {
@@ -340,9 +375,17 @@ pub async fn run_join(args: JoinArgs, state_dir: Option<&str>) -> anyhow::Result
             .connect(coord, AUTH_ALPN)
             .await
             .context("connect to coordinator")?;
-        run_psk_handshake_client(&conn, network_id, &invite.secret, &my_id)
-            .await
-            .context("PSK auth with coordinator")?;
+        run_auth_client(
+            &conn,
+            AuthClientMode::Invite {
+                network_id,
+                invite_id: invite.invite_id.clone(),
+                join_secret_hex: invite.join_secret.clone(),
+            },
+            &my_id,
+        )
+        .await
+        .context("invite auth with coordinator")?;
 
         // Send join request over the same connection.
         let (mut send, mut recv) = conn.open_bi().await.context("open join stream")?;
@@ -391,17 +434,25 @@ pub async fn run_join(args: JoinArgs, state_dir: Option<&str>) -> anyhow::Result
             .context(
                 "coordinator did not return a doc_ticket (is `tunnetd` up on the coordinator?)",
             )?;
-        Ok::<_, anyhow::Error>(doc_ticket)
+        let network_grant = resp
+            .get("network_grant")
+            .map(|v| serde_json::to_string(v).unwrap_or_default())
+            .filter(|s| !s.is_empty());
+        let content_key = resp
+            .get("content_key")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        Ok::<_, anyhow::Error>((doc_ticket, network_grant, content_key))
     }
     .await;
 
     endpoint.close().await;
-    let doc_ticket = join_result?;
+    let (doc_ticket, network_grant, content_key) = join_result?;
 
     let mut networks = existing_networks;
     networks.push(DirectState {
         network_name: network_name.clone(),
-        network_secret: invite.secret,
+        join_secret: invite.join_secret,
         topic_hash: invite.topic,
         network_id,
         coordinator: false,
@@ -410,8 +461,13 @@ pub async fn run_join(args: JoinArgs, state_dir: Option<&str>) -> anyhow::Result
         collision_index,
         hostname: hostname.clone(),
         coordinator_endpoint_id: Some(invite.coordinator),
+        coordinator_verifying_key: Some(invite.coordinator_verifying_key),
+        network_epoch: 0,
         doc_ticket: Some(doc_ticket),
         namespace_id: None,
+        coordinator_signing_key: None,
+        network_grant,
+        content_key,
         auto_accept_firewall: args.auto_accept_firewall,
         created_at: chrono::Utc::now(),
     });
@@ -524,9 +580,19 @@ pub async fn handle_join_request_bytes(
         ip = derive_ipv4(&endpoint_id, ci);
     }
 
-    // Ensure joiner is in auth cache via a status write from coordinator (optional).
-    // Joiner will write its own peer keys after import; we only issue the ticket.
-    let ticket = docs.share_write_ticket().await?;
+    let entry = MembershipEntry {
+        endpoint_id: endpoint_id.clone(),
+        hostname: hostname.clone(),
+        ipv4: ip,
+        collision_index: ci,
+        tags: vec![],
+        joined_at: chrono::Utc::now(),
+        coordinator: false,
+        status: "active".into(),
+        ssh_host_key: None,
+    };
+    let (grant, content_key) = docs.admit_peer(&entry).await?;
+    let ticket = docs.share_read_ticket().await?;
 
     // Drop from approved list once ticket issued.
     if pre_approved {
@@ -542,12 +608,14 @@ pub async fn handle_join_request_bytes(
         let _ = tunnet_core::direct::admin::save_invite_ids(paths, direct.network_id, &ids);
     }
 
-    let _ = (hostname,); // joiner publishes hostname itself via docs
+    let _ = (hostname,);
     Ok(serde_json::to_vec(&serde_json::json!({
         "accepted": true,
         "ipv4": ip.to_string(),
         "collision_index": ci,
         "doc_ticket": ticket,
+        "network_grant": grant,
+        "content_key": content_key,
     }))?)
 }
 pub async fn run_upgrade(args: UpgradeArgs, state_dir: Option<&str>) -> anyhow::Result<()> {

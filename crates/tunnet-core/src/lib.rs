@@ -47,6 +47,8 @@ pub use acl_hook::AclHook;
 #[cfg(feature = "managed")]
 pub use control::{ManagementClient, SignedClient, UnauthedClient};
 pub use identity::AgentIdentity;
+#[cfg(feature = "direct")]
+pub use iroh_docs::protocol::Docs;
 pub use iroh_pool::ConnPool;
 #[cfg(feature = "direct")]
 pub use node::DirectNetworkRuntime;

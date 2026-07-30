@@ -8,12 +8,14 @@ use serde::{Deserialize, Serialize};
 pub struct InviteCode {
     /// Topic hash (hex).
     pub topic: String,
-    /// Network secret (hex).
-    pub secret: String,
+    /// Join secret (hex) - bootstrap only, not ongoing transport auth.
+    pub join_secret: String,
     /// Network display name.
     pub network_name: String,
     /// Coordinator endpoint id (hex).
     pub coordinator: String,
+    /// Coordinator ed25519 verifying key (hex).
+    pub coordinator_verifying_key: String,
     pub expires_at: DateTime<Utc>,
     #[serde(default)]
     pub reusable: bool,
@@ -47,17 +49,19 @@ pub fn decode_invite(code: &str) -> anyhow::Result<InviteCode> {
 impl InviteCode {
     pub fn new(
         topic: String,
-        secret: String,
+        join_secret: String,
         network_name: String,
         coordinator: String,
+        coordinator_verifying_key: String,
         expires: Duration,
         reusable: bool,
     ) -> Self {
         Self {
             topic,
-            secret,
+            join_secret,
             network_name,
             coordinator,
+            coordinator_verifying_key,
             expires_at: Utc::now() + expires,
             reusable,
             invite_id: hex::encode(rand::random::<[u8; 16]>()),
@@ -76,6 +80,7 @@ mod tests {
             "bb".repeat(32),
             "home".into(),
             "cc".repeat(32),
+            "dd".repeat(32),
             Duration::hours(24),
             false,
         );
@@ -83,5 +88,9 @@ mod tests {
         let decoded = decode_invite(&code).unwrap();
         assert_eq!(decoded.network_name, "home");
         assert_eq!(decoded.invite_id, inv.invite_id);
+        assert_eq!(
+            decoded.coordinator_verifying_key,
+            inv.coordinator_verifying_key
+        );
     }
 }

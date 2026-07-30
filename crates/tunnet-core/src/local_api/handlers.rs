@@ -100,10 +100,8 @@ pub(crate) async fn reload_config(state: &LocalApiState) -> anyhow::Result<Strin
     let dns = cfg.dns_for_network(&network);
     if let Some(docs) = state.node.primary_docs() {
         docs.set_dns(dns.clone());
-        if let Some(auth) = state.node.direct_auth.as_ref() {
-            let policy = (**state.node.acl.bundle.load()).clone();
-            docs.apply_to_routes(&state.node.routes, &state.node.acl, auth, &policy);
-        }
+        let policy = (**state.node.acl.bundle.load()).clone();
+        docs.apply_to_routes(&state.node.routes, &state.node.acl, &policy);
     } else {
         let peers: Vec<_> = state
             .node
@@ -339,17 +337,21 @@ pub(crate) fn peer_lites(state: &LocalApiState) -> Vec<PeerLite> {
             let snap = pool.peer_snapshot(p.endpoint);
             let (bytes_in, bytes_out) = pool.peer_bytes(p.endpoint);
             let latency_ms = state.peer_rtt.get(&p.endpoint_hex).map(|v| *v);
+            let presence_online = state.node.peer_presence_online(&p.endpoint_hex);
+            let presence_last_seen = state.node.peer_presence_last_seen(&p.endpoint_hex);
             let last_seen = if snap.last_activity_secs_ago == u64::MAX {
-                None
+                presence_last_seen
             } else {
                 Some(snap.last_activity_secs_ago)
             };
+            let pool_online = snap.live || pool.has_live(p.endpoint);
+            let online = pool_online || presence_online.unwrap_or(false);
             PeerLite {
                 ip: p.ip.to_string(),
                 hostname: p.hostname.clone(),
                 endpoint_id: p.endpoint_hex.clone(),
                 tags: p.tags.clone(),
-                online: Some(snap.live || pool.has_live(p.endpoint)),
+                online: Some(online),
                 latency_ms,
                 os: None,
                 conn_state: Some(snap.state),
@@ -952,9 +954,13 @@ pub(crate) fn direct_invite(
     let expires = crate::direct::admin::parse_expires(expires)?;
     let invite = crate::direct::InviteCode::new(
         direct.topic_hash.clone(),
-        direct.network_secret.clone(),
+        direct.join_secret.clone(),
         direct.network_name.clone(),
         state.node.endpoint_id_hex(),
+        direct
+            .coordinator_verifying_key
+            .clone()
+            .context("coordinator verifying key missing")?,
         expires,
         reusable,
     );
@@ -1030,7 +1036,13 @@ pub(crate) async fn direct_kick(
 ) -> anyhow::Result<String> {
     let direct = require_direct_coord(state, network)?;
     if let Some(rt) = state.node.direct.get(&direct.network_id) {
-        rt.docs.kick_peer(peer_id).await?;
+        if let Some(auth) = &state.node.direct_auth {
+            rt.docs.kick_peer(peer_id, auth).await?;
+        } else {
+            rt.docs
+                .kick_peer(peer_id, &crate::direct::AuthCache::new())
+                .await?;
+        }
         rt.docs.rebuild_from_doc().await.ok();
         Ok(format!("Kicked {peer_id}"))
     } else {

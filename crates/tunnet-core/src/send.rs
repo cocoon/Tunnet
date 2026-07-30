@@ -122,6 +122,7 @@ struct SendInner {
     routes: RoutingTable,
     acl: AclEngine,
     self_endpoint_id: String,
+    content_key: Mutex<Option<String>>,
     config: Mutex<SendConfig>,
     transfers: Mutex<HashMap<String, TransferRecord>>,
     /// Outbound sender tags kept until TTL after completion.
@@ -170,6 +171,7 @@ impl SendManager {
                 routes,
                 acl,
                 self_endpoint_id,
+                content_key: Mutex::new(None),
                 config: Mutex::new(SendConfig::default()),
                 transfers: Mutex::new(HashMap::new()),
                 retained_tags: Mutex::new(Vec::new()),
@@ -204,6 +206,14 @@ impl SendManager {
     pub fn set_config(&self, cfg: SendConfig) {
         std::fs::create_dir_all(&cfg.inbox_path).ok();
         *self.inner.config.lock() = cfg;
+    }
+
+    pub fn set_content_key(&self, key: Option<String>) {
+        *self.inner.content_key.lock() = key;
+    }
+
+    fn content_key(&self) -> Option<String> {
+        self.inner.content_key.lock().clone()
     }
 
     pub fn list_active(&self) -> Vec<TransferRecord> {
@@ -886,6 +896,7 @@ impl SendManager {
         let inbox = self.inner.config.lock().inbox_path.clone();
         std::fs::create_dir_all(&inbox)?;
         let safe_name = sanitize_file_name(&offer.file_name);
+        let content_key = self.content_key();
         if offer.is_directory || offer.format == SendBlobFormat::HashSeq {
             let dest_dir = unique_path(inbox.join(&safe_name));
             std::fs::create_dir_all(&dest_dir)?;
@@ -897,20 +908,42 @@ impl SendManager {
                 if let Some(parent) = target.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                self.inner
-                    .store
-                    .export(*file_hash, &target)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("export {name}: {e}"))?;
+                if let Some(ref key) = content_key {
+                    let enc = self
+                        .inner
+                        .store
+                        .get_bytes(*file_hash)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("get encrypted blob {name}: {e}"))?;
+                    let plain = crate::direct::grants::decrypt_content(key, &enc)?;
+                    tokio::fs::write(&target, &plain).await?;
+                } else {
+                    self.inner
+                        .store
+                        .export(*file_hash, &target)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("export {name}: {e}"))?;
+                }
             }
             Ok(dest_dir)
         } else {
             let target = unique_path(inbox.join(&safe_name));
-            self.inner
-                .store
-                .export(hash, &target)
-                .await
-                .map_err(|e| anyhow::anyhow!("export: {e}"))?;
+            if let Some(ref key) = content_key {
+                let enc = self
+                    .inner
+                    .store
+                    .get_bytes(hash)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("get encrypted blob: {e}"))?;
+                let plain = crate::direct::grants::decrypt_content(key, &enc)?;
+                tokio::fs::write(&target, &plain).await?;
+            } else {
+                self.inner
+                    .store
+                    .export(hash, &target)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("export: {e}"))?;
+            }
             Ok(target)
         }
     }
@@ -921,6 +954,7 @@ impl SendManager {
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".into());
+        let content_key = self.content_key();
 
         if meta.is_dir() {
             let mut collection = Collection::default();
@@ -931,6 +965,7 @@ impl SendManager {
                 &self.inner.store,
                 &mut collection,
                 &mut total_size,
+                content_key.as_deref(),
             )
             .await?;
             let tag = collection
@@ -945,12 +980,27 @@ impl SendManager {
                 is_directory: true,
             })
         } else {
-            let tag = self
-                .inner
-                .store
-                .add_path(path)
-                .await
-                .map_err(|e| anyhow::anyhow!("add_path: {e}"))?;
+            let tag = if let Some(ref key) = content_key {
+                let plain = tokio::fs::read(path).await?;
+                let enc = crate::direct::grants::encrypt_content(key, &plain)?;
+                let tmp =
+                    std::env::temp_dir().join(format!("tunnet-send-{}", uuid::Uuid::new_v4()));
+                tokio::fs::write(&tmp, &enc).await?;
+                let tag = self
+                    .inner
+                    .store
+                    .add_path(&tmp)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("add_path encrypted: {e}"))?;
+                let _ = tokio::fs::remove_file(&tmp).await;
+                tag
+            } else {
+                self.inner
+                    .store
+                    .add_path(path)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("add_path: {e}"))?
+            };
             Ok(ImportedBlob {
                 hash: tag.hash,
                 format: SendBlobFormat::Blob,
@@ -982,7 +1032,7 @@ impl SendManager {
         }
     }
 
-    /// Serve an inbound blobs ALPN connection.
+    /// Serve an inbound blobs ALPN connection (ACL-gated).
     pub async fn handle_blobs_connection(&self, conn: Connection) {
         let peer_hex = format!("{}", conn.remote_id());
         if !self.inner.acl.allow_inbound_peer(&peer_hex) {
@@ -990,15 +1040,6 @@ impl SendManager {
             conn.close(1u32.into(), b"policy_deny");
             return;
         }
-        self.accept_blobs(conn).await;
-    }
-
-    /// Blobs accept without ACL (Direct PSK-authed peers / iroh-docs sync).
-    pub async fn handle_blobs_connection_trusted(&self, conn: Connection) {
-        self.accept_blobs(conn).await;
-    }
-
-    async fn accept_blobs(&self, conn: Connection) {
         if let Err(e) = self.inner.blobs.accept(conn).await {
             tracing::debug!(?e, "blobs accept ended");
         }
@@ -1019,13 +1060,22 @@ async fn collect_dir(
     store: &FsStore,
     collection: &mut Collection,
     total_size: &mut u64,
+    content_key: Option<&str>,
 ) -> anyhow::Result<()> {
     let mut rd = tokio::fs::read_dir(dir).await?;
     while let Some(entry) = rd.next_entry().await? {
         let path = entry.path();
         let ft = entry.file_type().await?;
         if ft.is_dir() {
-            Box::pin(collect_dir(root, &path, store, collection, total_size)).await?;
+            Box::pin(collect_dir(
+                root,
+                &path,
+                store,
+                collection,
+                total_size,
+                content_key,
+            ))
+            .await?;
         } else if ft.is_file() {
             let rel = path
                 .strip_prefix(root)
@@ -1034,11 +1084,25 @@ async fn collect_dir(
                 .replace('\\', "/");
             let meta = entry.metadata().await?;
             *total_size += meta.len();
-            let tag = store
-                .add_path(&path)
-                .await
-                .map_err(|e| anyhow::anyhow!("add {}: {e}", path.display()))?;
-            collection.push(rel, tag.hash); // name is already String
+            let tag = if let Some(key) = content_key {
+                let plain = tokio::fs::read(&path).await?;
+                let enc = crate::direct::grants::encrypt_content(key, &plain)?;
+                let tmp =
+                    std::env::temp_dir().join(format!("tunnet-send-{}", uuid::Uuid::new_v4()));
+                tokio::fs::write(&tmp, &enc).await?;
+                let tag = store
+                    .add_path(&tmp)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("add encrypted {}: {e}", path.display()))?;
+                let _ = tokio::fs::remove_file(&tmp).await;
+                tag
+            } else {
+                store
+                    .add_path(&path)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("add {}: {e}", path.display()))?
+            };
+            collection.push(rel, tag.hash);
         }
     }
     Ok(())

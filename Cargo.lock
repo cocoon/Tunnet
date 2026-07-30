@@ -3219,6 +3219,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "iroh-mainline-address-lookup"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1fd07cb8b4af54ccf367fe79516484c544ea3e4b1984cdd2b9aaf3bacaa80f2"
+dependencies = [
+ "derive_more 2.1.1",
+ "iroh",
+ "iroh-base",
+ "iroh-dns",
+ "n0-error",
+ "n0-future",
+ "n0-mainline",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "iroh-mdns-address-lookup"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3285,7 +3303,7 @@ dependencies = [
  "iroh-base",
  "iroh-dns",
  "iroh-metrics",
- "lru 0.18.0",
+ "lru",
  "n0-error",
  "n0-future",
  "noq",
@@ -3799,12 +3817,6 @@ dependencies = [
 
 [[package]]
 name = "lru"
-version = "0.16.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
-
-[[package]]
-name = "lru"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a860605968fce16869fd239cf4237a82f3ac470723415db603b0e8b6c8d4fb9"
@@ -3823,28 +3835,6 @@ name = "mac-addr"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3d25b0e0b648a86960ac23b7ad4abb9717601dec6f66c165f5b037f3f03065f"
-
-[[package]]
-name = "mainline"
-version = "7.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6dfad9601b9117218868271c05403853593d4817e7abeab5c95e11eee16382bb"
-dependencies = [
- "crc",
- "document-features",
- "dyn-clone",
- "ed25519-dalek 3.0.0-rc.0",
- "flume",
- "futures-lite",
- "getrandom 0.4.3",
- "lru 0.16.4",
- "serde",
- "serde_bencode",
- "serde_bytes",
- "sha1_smol",
- "thiserror 2.0.18",
- "tracing",
-]
 
 [[package]]
 name = "matchers"
@@ -4073,6 +4063,28 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-time",
+]
+
+[[package]]
+name = "n0-mainline"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d976b09e7ed101cc2571d9423584e3c3eea38afad32fc305c1beae0a4eeadcde"
+dependencies = [
+ "crc",
+ "dyn-clone",
+ "ed25519-dalek 3.0.0-rc.0",
+ "futures-core",
+ "lru",
+ "n0-error",
+ "noq-udp",
+ "rand 0.10.2",
+ "serde",
+ "serde_bencode",
+ "serde_bytes",
+ "sha1_smol",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -8090,9 +8102,9 @@ dependencies = [
  "iroh-blobs",
  "iroh-docs",
  "iroh-gossip",
+ "iroh-mainline-address-lookup",
  "iroh-mdns-address-lookup",
  "libc",
- "mainline",
  "mdns-sd",
  "parking_lot",
  "rand 0.10.2",

@@ -55,9 +55,19 @@ impl SealTier {
 /// Per-network sealed fields.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NetworkSecrets {
-    pub network_secret: String,
+    /// Join/bootstrap secret (hex). Not used for ongoing transport auth.
+    pub join_secret: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc_ticket: Option<String>,
+    /// Coordinator ed25519 signing key seed (hex). Present only on coordinator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_signing_key: Option<String>,
+    /// Serialized [`crate::direct::NetworkGrant`] JSON for this endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_grant: Option<String>,
+    /// Network content encryption key (32-byte hex).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_key: Option<String>,
 }
 
 /// In-memory secrets held after unlock.
@@ -439,8 +449,11 @@ mod tests {
             networks: BTreeMap::from([(
                 nid,
                 NetworkSecrets {
-                    network_secret: "deadbeef".into(),
+                    join_secret: "deadbeef".into(),
                     doc_ticket: Some("ticket".into()),
+                    coordinator_signing_key: None,
+                    network_grant: None,
+                    content_key: None,
                 },
             )]),
             auth: None,
@@ -461,7 +474,7 @@ mod tests {
         assert_eq!(t, SealTier::Plaintext);
         assert_eq!(loaded.identity_seed, secrets.identity_seed);
         let ns = loaded.networks.get(&nid).unwrap();
-        assert_eq!(ns.network_secret, "deadbeef");
+        assert_eq!(ns.join_secret, "deadbeef");
         assert_eq!(ns.doc_ticket.as_deref(), Some("ticket"));
         let _ = policy;
     }

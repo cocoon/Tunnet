@@ -1,6 +1,6 @@
 //! Wait until the Local Management API endpoint accepts connections.
 //!
-//! SCM / systemd "running" is not enough — clients need the named pipe / socket.
+//! SCM / systemd "running" is not enough - clients need the named pipe / socket.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

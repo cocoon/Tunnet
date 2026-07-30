@@ -11,7 +11,6 @@ mod daemon;
 mod dataplane;
 mod dgram_pump;
 mod forward;
-mod gossip_presence;
 mod ingress;
 mod ip;
 mod magic_dns;

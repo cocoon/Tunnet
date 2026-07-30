@@ -15,7 +15,7 @@ readme = "README.md"
 [features]
 default = ["managed", "direct", "send", "serve", "tunnel", "dns", "recording", "local_api"]
 managed = ["dep:tokio-tungstenite"]
-direct = ["dep:iroh-docs", "dep:iroh-blobs", "dep:mainline", "dep:iroh-mdns-address-lookup", "dep:mdns-sd", "dep:bs58"]
+direct = ["dep:iroh-docs", "dep:iroh-blobs", "dep:iroh-mainline-address-lookup", "dep:iroh-mdns-address-lookup", "dep:mdns-sd", "dep:bs58"]
 send = ["dep:iroh-blobs"]
 serve = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
 tunnel = ["dep:axum", "dep:httparse"]
@@ -70,7 +70,7 @@ blake3.workspace = true
 toml.workspace = true
 bs58 = { workspace = true, optional = true }
 iroh-mdns-address-lookup = { workspace = true, optional = true }
-mainline = { version = "7", optional = true }
+iroh-mainline-address-lookup = { workspace = true, optional = true }
 
 rustls = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }

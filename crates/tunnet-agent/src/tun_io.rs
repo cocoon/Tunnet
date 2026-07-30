@@ -120,22 +120,14 @@ pub async fn run_outbound(deps: OutboundDeps) -> anyhow::Result<()> {
         tokio::spawn(async move {
             while let Some((peer, payload)) = rx.recv().await {
                 let n = payload.len() as u64;
-                let result = match pool.send_latency(peer, payload.clone()).await {
-                    Ok(()) => Ok(()),
-                    Err(e) => {
-                        // Older peers may not advertise tunnel-lat - fall back to bulk.
-                        tracing::debug!(%peer, ?e, "latency path unavailable; using bulk");
-                        pool.send_or_buffer(peer, payload).await
-                    }
-                };
-                match result {
+                match pool.send_latency(peer, payload).await {
                     Ok(()) => {
                         metrics.packets_inc("out");
                         metrics.bytes_add("out", n);
                         pool.record_bytes_out(peer, n);
                     }
                     Err(e) => {
-                        tracing::debug!(%peer, ?e, "latency send failed");
+                        tracing::debug!(%peer, ?e, "icmp/interactive send failed");
                         metrics.dropped_inc("send_failed_prio");
                     }
                 }
