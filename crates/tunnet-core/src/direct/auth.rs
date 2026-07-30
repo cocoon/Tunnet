@@ -4,8 +4,9 @@
 //! or an invite bootstrap proof (HMAC over join secret). The claimed `network_id`
 //! is bound into the proof so the server verifies against that network only.
 //!
-//! [`DirectAuthHook`] blocks non-auth ALPNs until the peer is authenticated for at
-//! least one joined network or already allowed by ACL.
+//! [`DirectAuthHook`] blocks data-plane ALPNs until the peer holds a verified grant
+//! (or ACL). Docs / Gossip / Blobs are the membership bootstrap plane and are
+//! allowed without AuthCache — trust for those is signed records + content keys.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -26,9 +27,15 @@ use uuid::Uuid;
 use crate::acl::AclEngine;
 
 use super::grants::{NetworkGrant, verify_grant, verifying_key_from_hex};
+use super::{DOCS_ALPN, GOSSIP_ALPN};
 
 /// Wire version: grant-based auth with invite bootstrap.
 pub const AUTH_ALPN: &[u8] = b"tunnet/direct-auth/3";
+
+/// ALPNs that must work before Grant AUTH so membership can sync.
+fn is_bootstrap_alpn(alpn: &[u8]) -> bool {
+    alpn == AUTH_ALPN || alpn == DOCS_ALPN || alpn == GOSSIP_ALPN || alpn == iroh_blobs::ALPN
+}
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -116,7 +123,7 @@ impl EndpointHooks for DirectAuthHook {
         alpn: &'a [u8],
     ) -> BeforeConnectOutcome {
         let peer_hex = format!("{}", remote_addr.id);
-        if alpn == AUTH_ALPN {
+        if is_bootstrap_alpn(alpn) {
             return BeforeConnectOutcome::Accept;
         }
         if self.auth.contains(&peer_hex) || self.acl.allow_outbound_peer(&peer_hex) {
@@ -133,7 +140,7 @@ impl EndpointHooks for DirectAuthHook {
         }
         let peer_hex = format!("{}", conn.remote_id());
         let alpn = conn.alpn();
-        if alpn == AUTH_ALPN {
+        if is_bootstrap_alpn(alpn) {
             return AfterHandshakeOutcome::Accept;
         }
         if self.auth.contains(&peer_hex) || self.acl.allow_inbound_peer(&peer_hex) {

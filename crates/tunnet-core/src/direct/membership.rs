@@ -121,6 +121,9 @@ struct DocsInner {
     paths: StatePaths,
     firewall: Option<crate::direct::FirewallEngine>,
     dns: Arc<ArcSwap<DnsConfig>>,
+    /// Shared with [`crate::direct::spawn_seed_auth`] so membership updates refresh dials.
+    seed_peers: Arc<Mutex<Vec<String>>>,
+    coordinator_endpoint_id: Option<String>,
 }
 
 /// Inputs for [`DocsMembership::bootstrap`].
@@ -144,6 +147,7 @@ pub struct DocsBootstrap<'a> {
     pub firewall: Option<crate::direct::FirewallEngine>,
     pub dns: DnsConfig,
     pub join_index: u64,
+    pub seed_peers: Arc<Mutex<Vec<String>>>,
 }
 
 impl DocsMembership {
@@ -224,6 +228,7 @@ impl DocsMembership {
             firewall,
             dns,
             join_index,
+            seed_peers,
         } = cfg;
         paths.ensure_network_dirs(direct.network_id)?;
 
@@ -290,6 +295,8 @@ impl DocsMembership {
                 paths: paths.clone_paths(),
                 firewall,
                 dns: Arc::new(ArcSwap::from_pointee(dns)),
+                seed_peers: seed_peers.clone(),
+                coordinator_endpoint_id: direct.coordinator_endpoint_id.clone(),
             }),
         };
 
@@ -305,6 +312,7 @@ impl DocsMembership {
 
         membership.rebuild_from_doc().await?;
         membership.apply_to_routes(&routes, &acl, &policy);
+        membership.refresh_seed_peers();
         if let Err(e) = membership.sync_firewall_policy().await {
             tracing::debug!(?e, "initial firewall policy sync");
         }
@@ -334,6 +342,7 @@ impl DocsMembership {
                                     continue;
                                 }
                                 bg.apply_to_routes(&routes_bg, &acl_bg, &policy_bg);
+                                bg.refresh_seed_peers();
                                 if let Err(e) = bg.sync_firewall_policy().await {
                                     tracing::debug!(?e, "docs firewall policy sync");
                                 }
@@ -487,9 +496,14 @@ impl DocsMembership {
     }
 
     /// Coordinator admits a joiner: issue grant + signed member record.
+    ///
+    /// Inserts the joiner into [`AuthCache`] so the data plane can dial immediately
+    /// (Invite AUTH already succeeded on this connection; Grant AUTH would race the
+    /// joiner restart).
     pub async fn admit_peer(
         &self,
         entry: &MembershipEntry,
+        auth: &AuthCache,
     ) -> anyhow::Result<(NetworkGrant, String)> {
         let grant = self.issue_grant(
             &entry.endpoint_id,
@@ -512,6 +526,7 @@ impl DocsMembership {
             .members
             .lock()
             .insert(entry.endpoint_id.clone(), entry.clone());
+        auth.insert(entry.endpoint_id.clone(), self.inner.network_id);
         Ok((grant, self.inner.content_key.clone()))
     }
 
@@ -736,6 +751,25 @@ impl DocsMembership {
         {
             tracing::debug!(?e, "known_hosts sync skipped");
         }
+    }
+
+    /// Keep Grant AUTH seed dials in sync with verified membership.
+    pub fn refresh_seed_peers(&self) {
+        let mut seeds: Vec<String> = self
+            .snapshot_members()
+            .into_iter()
+            .map(|m| m.endpoint_id)
+            .filter(|id| id != &self.inner.self_endpoint_id)
+            .collect();
+        if let Some(coord) = &self.inner.coordinator_endpoint_id
+            && coord != &self.inner.self_endpoint_id
+            && !seeds.iter().any(|s| s == coord)
+        {
+            seeds.push(coord.clone());
+        }
+        seeds.sort();
+        seeds.dedup();
+        *self.inner.seed_peers.lock() = seeds;
     }
 
     pub fn set_dns(&self, dns: DnsConfig) {

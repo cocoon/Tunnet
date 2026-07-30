@@ -100,12 +100,16 @@ fn post_auth_deny(reason: &str) -> Vec<u8> {
     .unwrap_or_else(|_| b"{\"accepted\":false,\"reason\":\"internal\"}".to_vec())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn try_handle_post_auth(
     conn: &iroh::endpoint::Connection,
     state_dir: &std::path::Path,
     docs: Option<&DocsMembership>,
     self_endpoint_id: &str,
     network_id: uuid::Uuid,
+    auth: &tunnet_core::direct::auth::AuthCache,
+    routes: &tunnet_core::RoutingTable,
+    acl: &tunnet_core::AclEngine,
 ) -> anyhow::Result<()> {
     let paths = StatePaths {
         dir: state_dir.to_path_buf(),
@@ -150,7 +154,7 @@ pub async fn try_handle_post_auth(
 
     let resp = match msg_type {
         "join_request" if direct.coordinator => {
-            handle_join_request_bytes(&paths, direct, docs, &body).await?
+            handle_join_request_bytes(&paths, direct, docs, auth, routes, acl, &body).await?
         }
         "join_request" => post_auth_deny("not_coordinator"),
         "connect_request" => {
@@ -496,6 +500,9 @@ pub async fn handle_join_request_bytes(
     paths: &StatePaths,
     direct: &DirectState,
     docs: Option<&DocsMembership>,
+    auth: &tunnet_core::direct::auth::AuthCache,
+    routes: &tunnet_core::RoutingTable,
+    acl: &tunnet_core::AclEngine,
     body: &[u8],
 ) -> anyhow::Result<Vec<u8>> {
     let req: serde_json::Value = serde_json::from_slice(body)?;
@@ -591,7 +598,10 @@ pub async fn handle_join_request_bytes(
         status: "active".into(),
         ssh_host_key: None,
     };
-    let (grant, content_key) = docs.admit_peer(&entry).await?;
+    let (grant, content_key) = docs.admit_peer(&entry, auth).await?;
+    docs.refresh_seed_peers();
+    let policy = (**acl.bundle.load()).clone();
+    docs.apply_to_routes(routes, acl, &policy);
     let ticket = docs.share_read_ticket().await?;
 
     // Drop from approved list once ticket issued.

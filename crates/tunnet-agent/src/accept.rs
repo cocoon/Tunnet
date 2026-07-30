@@ -55,8 +55,8 @@ pub struct AcceptDeps {
 pub fn spawn(deps: AcceptDeps) -> Router {
     let tunnel = TunnelHandler {
         tun: deps.tun,
-        routes: deps.routes,
-        acl: deps.acl,
+        routes: deps.routes.clone(),
+        acl: deps.acl.clone(),
         firewalls: deps.firewalls,
         spoofs: deps.spoofs,
         dgram_pool: deps.dgram_pool,
@@ -71,13 +71,13 @@ pub fn spawn(deps: AcceptDeps) -> Router {
         self_endpoint_id: deps.self_endpoint_id.clone(),
         state_dir: deps.state_dir,
         docs: deps.docs.clone(),
+        routes: deps.routes,
+        acl: deps.acl,
     };
     let docs = DocsHandler {
-        direct_auth: deps.direct_auth.clone(),
         shared_docs: deps.shared_docs,
     };
     let gossip = GossipHandler {
-        direct_auth: deps.direct_auth.clone(),
         agent_gossip: deps.agent_gossip,
     };
     let recording = RecordingHandler {
@@ -90,7 +90,11 @@ pub fn spawn(deps: AcceptDeps) -> Router {
     let send = SendOfferHandler {
         send: deps.send.clone(),
     };
-    let blobs = BlobsHandler { send: deps.send };
+    // Direct membership sync needs blobs before ACL/AuthCache exist.
+    let blobs = BlobsHandler {
+        send: deps.send,
+        direct_bootstrap: deps.direct_auth.is_some(),
+    };
 
     let mut builder = Router::builder(deps.endpoint);
     builder = builder.accept(TUNNEL_ALPN, tunnel.clone());
@@ -214,6 +218,8 @@ struct AuthHandler {
     self_endpoint_id: String,
     state_dir: PathBuf,
     docs: HashMap<Uuid, DocsMembership>,
+    routes: RoutingTable,
+    acl: AclEngine,
 }
 
 impl fmt::Debug for AuthHandler {
@@ -239,6 +245,9 @@ impl ProtocolHandler for AuthHandler {
                     docs_ref,
                     &self.self_endpoint_id,
                     network_id,
+                    &auth,
+                    &self.routes,
+                    &self.acl,
                 )
                 .await
                 {
@@ -257,7 +266,6 @@ impl ProtocolHandler for AuthHandler {
 
 #[derive(Clone)]
 struct DocsHandler {
-    direct_auth: Option<AuthCache>,
     shared_docs: Option<Docs>,
 }
 
@@ -270,23 +278,21 @@ impl fmt::Debug for DocsHandler {
 impl ProtocolHandler for DocsHandler {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let peer = format!("{}", conn.remote_id());
-        if let Some(auth) = &self.direct_auth
-            && auth.contains(&peer)
-            && let Some(docs) = &self.shared_docs
-        {
+        // Membership sync must work before Grant AUTH (bootstrap plane).
+        // Record trust is cryptographic; AuthCache gates the data plane only.
+        if let Some(docs) = &self.shared_docs {
             if let Err(e) = docs.accept(conn).await {
-                tracing::debug!(?e, "docs accept ended");
+                tracing::debug!(%peer, ?e, "docs accept ended");
             }
             return Ok(());
         }
-        tracing::debug!(%peer, "DOCS_ALPN skipped (peer not authenticated)");
+        tracing::debug!(%peer, "DOCS_ALPN skipped (no shared Docs)");
         Ok(())
     }
 }
 
 #[derive(Clone)]
 struct GossipHandler {
-    direct_auth: Option<AuthCache>,
     agent_gossip: Option<iroh_gossip::net::Gossip>,
 }
 
@@ -299,15 +305,10 @@ impl fmt::Debug for GossipHandler {
 impl ProtocolHandler for GossipHandler {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let peer = format!("{}", conn.remote_id());
-        if let Some(auth) = &self.direct_auth
-            && !auth.contains(&peer)
-        {
-            tracing::debug!(%peer, "GOSSIP_ALPN skipped (peer not authenticated)");
-            return Ok(());
-        }
+        // Gossip carries docs live updates + presence; allow before Grant AUTH.
         if let Some(g) = &self.agent_gossip {
             if let Err(e) = g.handle_connection(conn).await {
-                tracing::debug!(?e, "gossip accept ended");
+                tracing::debug!(%peer, ?e, "gossip accept ended");
             }
             return Ok(());
         }
@@ -376,6 +377,8 @@ impl ProtocolHandler for SendOfferHandler {
 #[derive(Clone)]
 struct BlobsHandler {
     send: SendManager,
+    /// When true, skip ACL so iroh-docs content can sync before membership/AuthCache.
+    direct_bootstrap: bool,
 }
 
 impl fmt::Debug for BlobsHandler {
@@ -386,7 +389,11 @@ impl fmt::Debug for BlobsHandler {
 
 impl ProtocolHandler for BlobsHandler {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
-        self.send.handle_blobs_connection(conn).await;
+        if self.direct_bootstrap {
+            self.send.handle_blobs_connection_bootstrap(conn).await;
+        } else {
+            self.send.handle_blobs_connection(conn).await;
+        }
         Ok(())
     }
 }

@@ -645,10 +645,48 @@ impl CoreNode {
             let coordinator_verifying_key =
                 direct.coordinator_verifying_key.clone().unwrap_or_default();
             let content_key = direct.content_key.clone().unwrap_or_default();
-            let network_grant: Option<NetworkGrant> = direct
-                .network_grant
-                .as_ref()
-                .and_then(|g| serde_json::from_str(g).ok());
+            let network_grant: Option<NetworkGrant> = match &direct.network_grant {
+                Some(g) => match serde_json::from_str(g) {
+                    Ok(grant) => Some(grant),
+                    Err(e) => {
+                        if direct.coordinator {
+                            tracing::error!(
+                                network = %direct.network_name,
+                                ?e,
+                                "failed to parse network_grant; Grant AUTH disabled for this network"
+                            );
+                            None
+                        } else {
+                            anyhow::bail!(
+                                "Direct network '{}': corrupt network_grant ({e}); re-join with a fresh invite",
+                                direct.network_name
+                            );
+                        }
+                    }
+                },
+                None => {
+                    if !direct.coordinator {
+                        anyhow::bail!(
+                            "Direct network '{}': missing network_grant; re-join with a fresh invite",
+                            direct.network_name
+                        );
+                    }
+                    tracing::warn!(
+                        network = %direct.network_name,
+                        "coordinator missing network_grant; seed AUTH will not run"
+                    );
+                    None
+                }
+            };
+
+            let mut seeds = Vec::new();
+            if let Some(coord) = &direct.coordinator_endpoint_id {
+                seeds.push(coord.clone());
+            }
+            // Membership may already know peers after bootstrap; refresh below.
+            seeds.sort();
+            seeds.dedup();
+            let seed_peers = std::sync::Arc::new(parking_lot::Mutex::new(seeds.clone()));
 
             let (docs, new_ticket, new_ns) = DocsMembership::bootstrap(DocsBootstrap {
                 docs: docs_engine.clone(),
@@ -670,6 +708,7 @@ impl CoreNode {
                 firewall: Some(firewall.clone()),
                 dns: crate::load_dns(&paths),
                 join_index: join_index as u64,
+                seed_peers: seed_peers.clone(),
             })
             .await
             .with_context(|| {
@@ -690,24 +729,20 @@ impl CoreNode {
             }
             direct.assigned_ipv4 = net_ipv4;
 
-            let mut seeds = Vec::new();
-            if let Some(coord) = &direct.coordinator_endpoint_id {
-                seeds.push(coord.clone());
-            }
-            for m in docs.snapshot_members() {
-                if m.endpoint_id != my_id_hex {
-                    seeds.push(m.endpoint_id);
-                }
-            }
-            let discovery =
-                spawn_discovery(direct.topic_hash.clone(), my_id_hex.clone(), seeds.clone());
+            docs.refresh_seed_peers();
+            let discovery_seeds = seed_peers.lock().clone();
+            let discovery = spawn_discovery(
+                direct.topic_hash.clone(),
+                my_id_hex.clone(),
+                discovery_seeds,
+            );
             spawn_seed_auth(
                 endpoint.clone(),
                 auth.clone(),
                 direct.network_id,
                 network_grant,
                 my_id_hex.clone(),
-                seeds,
+                seed_peers,
             );
 
             direct_runtimes.insert(

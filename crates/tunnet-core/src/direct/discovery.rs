@@ -75,24 +75,24 @@ pub fn spawn_seed_auth(
     network_id: Uuid,
     network_grant: Option<super::grants::NetworkGrant>,
     self_endpoint_hex: String,
-    seed_peers: Vec<String>,
+    seed_peers: Arc<Mutex<Vec<String>>>,
 ) {
     let Some(grant) = network_grant else {
+        tracing::warn!(%network_id, "seed AUTH skipped (no network_grant)");
         return;
     };
-    let seeds: Vec<String> = seed_peers
-        .into_iter()
-        .filter(|p| p != &self_endpoint_hex)
-        .collect();
-    if seeds.is_empty() {
-        return;
-    }
 
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(20));
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        tick.tick().await;
+        // Dial immediately, then retry on the interval.
         loop {
+            let seeds: Vec<String> = seed_peers
+                .lock()
+                .iter()
+                .filter(|p| *p != &self_endpoint_hex)
+                .cloned()
+                .collect();
             for seed in &seeds {
                 if auth.contains_network(seed, network_id) {
                     continue;

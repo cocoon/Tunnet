@@ -1044,6 +1044,14 @@ impl SendManager {
             tracing::debug!(?e, "blobs accept ended");
         }
     }
+
+    /// Direct-mode docs bootstrap: blobs must sync before ACL/AuthCache exist.
+    /// Content is still encrypted with the per-network content key.
+    pub async fn handle_blobs_connection_bootstrap(&self, conn: Connection) {
+        if let Err(e) = self.inner.blobs.accept(conn).await {
+            tracing::debug!(?e, "blobs accept ended");
+        }
+    }
 }
 
 struct ImportedBlob {
