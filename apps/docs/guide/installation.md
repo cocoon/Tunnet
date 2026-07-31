@@ -73,5 +73,5 @@ Binaries land in `target/release/`. For the management API and dashboard, also r
 
 - **Linux** - root (or `CAP_NET_ADMIN`) for the TUN interface.
 - **macOS** - admin privileges for the TUN interface.
-- **Windows** - Administrator privileges and the [Wintun](https://www.wintun.net/) driver.
+- **Windows** - Administrator privileges.
 - **Containers / CI** - pass `--no-encrypt-state` (or `TUNNET_NO_ENCRYPT_STATE=1`) if platform secret sealing is unavailable.

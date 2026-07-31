@@ -37,8 +37,7 @@ pub fn ensure_wintun_present(state_dir: Option<&str>) -> anyhow::Result<()> {
     }
     anyhow::bail!(
         "wintun.dll not found (looked for {} and {}).\n\
-         Copy wintun.dll next to tunnetd.exe before starting the service.\n\
-         Download: https://www.wintun.net/",
+         Reinstall Tunnet or run `tunnet service install` to restore bundled binaries.",
         staged.display(),
         beside.display()
     );

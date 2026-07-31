@@ -165,10 +165,8 @@ jobs:
           resolve_wintun() {
             [ -n "$wintun_arch" ] || return 1
             for path in \
-              "third_party/wintun/bin/${wintun_arch}/wintun.dll" \
-              "crates/tunnet-agent/resources/wintun/${wintun_arch}/wintun.dll" \
-              "crates/tunnet-agent/wintun.dll" \
-              "target/${target}/release/wintun.dll"
+              "target/${target}/release/wintun.dll" \
+              "crates/tunnet-agent/resources/wintun/${wintun_arch}/wintun.dll"
             do
               if [ -f "$path" ]; then
                 echo "$path"
@@ -178,22 +176,11 @@ jobs:
             return 1
           }
 
-          ensure_wintun() {
-            [ -n "$wintun_arch" ] || return 0
-            if resolve_wintun >/dev/null; then
-              return 0
-            fi
-            echo "Downloading wintun.dll (${wintun_arch})…"
-            curl -fsSL -o wintun.zip "https://www.wintun.net/builds/wintun-0.14.1.zip"
-            unzip -q wintun.zip "wintun/bin/${wintun_arch}/wintun.dll"
-            mkdir -p "third_party/wintun/bin/${wintun_arch}"
-            cp "wintun/bin/${wintun_arch}/wintun.dll" "third_party/wintun/bin/${wintun_arch}/wintun.dll"
-          }
-
           package_variant() {
             local variant="$1"
             shift
             local staging="${variant}-${version}-${target}"
+            local archive=""
             mkdir -p "$staging"
 
             for bin in "$@"; do
@@ -204,8 +191,11 @@ jobs:
             done
 
             if [ "$variant" = "tunnet-headless" ] || [ "$variant" = "tunnet" ]; then
-              ensure_wintun
-              if wintun_src="$(resolve_wintun)"; then
+              if [ -n "$wintun_arch" ]; then
+                wintun_src="$(resolve_wintun)" || {
+                  echo "::error::wintun.dll not found for ${wintun_arch} (expected in target/${target}/release/ or crates/tunnet-agent/resources/wintun/)"
+                  exit 1
+                }
                 cp "$wintun_src" "$staging/wintun.dll"
               fi
             fi
@@ -213,21 +203,26 @@ jobs:
             cp LICENSE README.md "$staging/" 2>/dev/null || true
 
             if [[ "$target" == *windows* ]]; then
-              7z a "${staging}.zip" "$staging"
-              echo "${staging}.zip"
+              7z a -bb0 "${staging}.zip" "$staging" >/dev/null
+              archive="${staging}.zip"
             else
               tar czf "${staging}.tar.gz" "$staging"
-              echo "${staging}.tar.gz"
+              archive="${staging}.tar.gz"
             fi
+            assets+=("$archive")
           }
 
           assets=()
-          assets+=("$(package_variant tunnet-headless tunnet tunnetd)")
-          assets+=("$(package_variant tunnet-server tunnet-control tunnet-relay)")
-          assets+=("$(package_variant tunnet tunnet tunnetd)")
+          package_variant tunnet-headless tunnet tunnetd
+          package_variant tunnet-server tunnet-control tunnet-relay
+          package_variant tunnet tunnet tunnetd
 
           checksums=()
           for asset in "${assets[@]}"; do
+            if [ ! -f "$asset" ]; then
+              echo "::error::expected release asset missing: $asset"
+              exit 1
+            fi
             sha256sum "$asset" > "${asset}.sha256"
             checksums+=("${asset}.sha256")
           done
@@ -308,13 +303,11 @@ jobs:
 
           cp "$extracted/tunnet.exe" "$dest/tunnet-${triple}.exe"
           cp "$extracted/tunnetd.exe" "$dest/tunnetd-${triple}.exe"
-          if [ -f "$extracted/wintun.dll" ]; then
-            cp "$extracted/wintun.dll" "$dest/wintun.dll"
-          else
-            curl -fsSL -o wintun.zip "https://www.wintun.net/builds/wintun-0.14.1.zip"
-            unzip -q wintun.zip "wintun/bin/amd64/wintun.dll"
-            cp "wintun/bin/amd64/wintun.dll" "$dest/wintun.dll"
+          if [ ! -f "$extracted/wintun.dll" ]; then
+            echo "::error::wintun.dll missing from Windows release archive"
+            exit 1
           fi
+          cp "$extracted/wintun.dll" "$dest/wintun.dll"
 
           # Enable sidecar bundling for release builds only (keeps local tauri
           # dev working when binaries are locked by a running service).
