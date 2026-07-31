@@ -1,0 +1,36 @@
+[package]
+name = "tunnet-desktop"
+version.workspace = true
+description = "Tunnet Desktop"
+authors = ["orielhaim"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "tunnet_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+anyhow.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls", "stream"] }
+futures-util.workspace = true
+tokio-util = { workspace = true, features = ["io"] }
+zip = "2"
+winreg = "0.56.0"
+
+tunnet-client.workspace = true
+tunnet-service.workspace = true
+tunnet-common.workspace = true
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-autostart = "2.5.1"
+tauri-plugin-single-instance = "2.4.3"

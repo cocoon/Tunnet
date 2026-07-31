@@ -34,7 +34,7 @@ env:
 jobs:
   validate:
     name: Validate version
-    runs-on: [self-host-linux]
+    runs-on: [ubuntu-latest]
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
@@ -101,16 +101,16 @@ jobs:
           - host: windows-latest
             target: aarch64-pc-windows-msvc
             build: bun run build:native -- --target aarch64-pc-windows-msvc && bun run build:ts
-          - host: [self-host-linux]
+          - host: [ubuntu-latest]
             target: x86_64-unknown-linux-gnu
             build: TARGET_CC=clang TARGET_CXX=clang++ bun run build:native -- --target x86_64-unknown-linux-gnu --use-napi-cross && bun run build:ts
-          - host: [self-host-linux]
+          - host: [ubuntu-latest]
             target: aarch64-unknown-linux-gnu
             build: TARGET_CC=clang TARGET_CXX=clang++ bun run build:native -- --target aarch64-unknown-linux-gnu --use-napi-cross && bun run build:ts
-          - host: [self-host-linux]
+          - host: [ubuntu-latest]
             target: x86_64-unknown-linux-musl
             build: bun run build:native -- --target x86_64-unknown-linux-musl -x && bun run build:ts
-          - host: [self-host-linux]
+          - host: [ubuntu-latest]
             target: aarch64-unknown-linux-musl
             build: bun run build:native -- --target aarch64-unknown-linux-musl -x && bun run build:ts
     steps:
@@ -165,7 +165,7 @@ jobs:
     name: Publish SDK (npm)
     needs: [validate, build-sdk]
     if: needs.validate.outputs.dry-run != 'true'
-    runs-on: [self-host-linux]
+    runs-on: [ubuntu-latest]
     defaults:
       run:
         working-directory: crates/tunnet-node-napi

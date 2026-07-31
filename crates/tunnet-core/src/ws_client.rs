@@ -10,7 +10,9 @@ use parking_lot::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tunnet_common::{
-    HDR_ENDPOINT_ID, HDR_SIGNATURE, HDR_TIMESTAMP, signing,
+    HDR_ENDPOINT_ID, HDR_SIGNATURE, HDR_TIMESTAMP,
+    local_api::LocalEvent,
+    signing,
     ws::{ClientMsg, ServerMsg},
 };
 
@@ -47,6 +49,7 @@ struct ControlPlaneLinkInner {
     last_change_ms: AtomicU64,
     reconnects: AtomicU64,
     last_error: Mutex<Option<String>>,
+    events: Mutex<Option<tokio::sync::broadcast::Sender<LocalEvent>>>,
 }
 
 /// Snapshot for IPC / CLI status.
@@ -72,7 +75,18 @@ impl ControlPlaneLink {
                 last_change_ms: AtomicU64::new(0),
                 reconnects: AtomicU64::new(0),
                 last_error: Mutex::new(None),
+                events: Mutex::new(None),
             }),
+        }
+    }
+
+    pub fn set_events_tx(&self, tx: tokio::sync::broadcast::Sender<LocalEvent>) {
+        *self.inner.events.lock() = Some(tx);
+    }
+
+    fn emit_event(&self, event: LocalEvent) {
+        if let Some(tx) = self.inner.events.lock().as_ref() {
+            let _ = tx.send(event);
         }
     }
 
@@ -89,15 +103,20 @@ impl ControlPlaneLink {
         if had_prior {
             self.inner.reconnects.fetch_add(1, Ordering::SeqCst);
         }
+        self.emit_event(LocalEvent::ControlConnected);
     }
 
     pub fn mark_disconnected(&self, error: Option<String>) {
         let now = now_unix_ms();
+        let was_connected = self.inner.connected.load(Ordering::SeqCst);
         self.inner.connected.store(false, Ordering::SeqCst);
         self.inner.connected_since_ms.store(0, Ordering::SeqCst);
         self.inner.last_change_ms.store(now, Ordering::SeqCst);
         if let Some(e) = error {
             *self.inner.last_error.lock() = Some(e);
+        }
+        if was_connected {
+            self.emit_event(LocalEvent::ControlDisconnected);
         }
     }
 

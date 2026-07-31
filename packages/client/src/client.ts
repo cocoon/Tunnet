@@ -3,6 +3,7 @@ import {
   defaultApiPath,
   networkQuery,
   parseApiFailure,
+  parseEventsSse,
   parsePingSse,
   readApiJson,
 } from "./transport";
@@ -33,12 +34,18 @@ import type {
   DirectPolicySetRequest,
   DnsStatusInfo,
   LocalEnrollRequest,
+  LocalEvent,
+  MetaInfo,
   NetcheckInfo,
   NetworkCreateRequest,
   NetworkJoinRequest,
   NetworkLeaveRequest,
+  NetworkSummary,
+  NetworksResponse,
   NetworkUpgradeRequest,
+  NodeSummary,
   OkResponse,
+  PeersResponse,
   PingEvent,
   ResetRequest,
   RouteAddedResponse,
@@ -57,7 +64,6 @@ import type {
   SshCastResponse,
   SshRecordingsResponse,
   SshSessionsResponse,
-  StatusInfo,
   TransferInfo,
   TransfersResponse,
   TunnelInfo,
@@ -84,16 +90,94 @@ export class TunnetClient {
   // Status / networking
   // -----------------------------------------------------------------------
 
-  status(peers = false): Promise<StatusInfo> {
-    return readApiJson(this.path, `/v1/status?peers=${peers}`);
+  meta(): Promise<MetaInfo> {
+    return readApiJson(this.path, "/v1/meta");
+  }
+
+  node(): Promise<NodeSummary> {
+    return readApiJson(this.path, "/v1/node");
+  }
+
+  networks(): Promise<NetworksResponse> {
+    return readApiJson(this.path, "/v1/networks");
+  }
+
+  network(networkId: string): Promise<NetworkSummary> {
+    return readApiJson(
+      this.path,
+      `/v1/networks/${encodeURIComponent(networkId)}`,
+    );
+  }
+
+  networkPeers(networkId: string): Promise<PeersResponse> {
+    return readApiJson(
+      this.path,
+      `/v1/networks/${encodeURIComponent(networkId)}/peers`,
+    );
+  }
+
+  networkRoutes(networkId: string): Promise<RoutesInfo> {
+    return readApiJson(
+      this.path,
+      `/v1/networks/${encodeURIComponent(networkId)}/routes`,
+    );
+  }
+
+  networkFirewall(networkId: string): Promise<DirectFirewallResponse> {
+    return readApiJson(
+      this.path,
+      `/v1/networks/${encodeURIComponent(networkId)}/firewall`,
+    );
+  }
+
+  networkJoinRequests(networkId: string): Promise<DirectPendingResponse> {
+    return readApiJson(
+      this.path,
+      `/v1/networks/${encodeURIComponent(networkId)}/join-requests`,
+    );
+  }
+
+  networkJoinAccept(networkId: string, peerId: string): Promise<OkResponse> {
+    return readApiJson(
+      this.path,
+      `/v1/networks/${encodeURIComponent(networkId)}/join-requests/${encodeURIComponent(peerId)}/accept`,
+      { method: "POST", body: {} },
+    );
+  }
+
+  networkJoinDeny(networkId: string, peerId: string): Promise<OkResponse> {
+    return readApiJson(
+      this.path,
+      `/v1/networks/${encodeURIComponent(networkId)}/join-requests/${encodeURIComponent(peerId)}/deny`,
+      { method: "POST", body: {} },
+    );
+  }
+
+  async *events(): AsyncGenerator<LocalEvent> {
+    let response: Awaited<ReturnType<typeof apiFetch>>;
+    try {
+      response = await apiFetch(this.path, "/v1/events");
+    } catch {
+      throw new TunnetApiError("daemon_not_running", "");
+    }
+
+    if (response.status < 200 || response.status >= 300) {
+      const text = await response.text();
+      throw parseApiFailure(response.status, text, "GET", "/v1/events");
+    }
+
+    yield* parseEventsSse(response.body);
   }
 
   dns(): Promise<DnsStatusInfo> {
     return readApiJson(this.path, "/v1/dns");
   }
 
-  routes(): Promise<RoutesInfo> {
-    return readApiJson(this.path, "/v1/routes");
+  routes(networkId?: string): Promise<RoutesInfo> {
+    const query = networkId
+      ? `?network_id=${encodeURIComponent(networkId)}`
+      : "";
+    return readApiJson(this.path, `/v1/routes${query}`);
   }
 
   routesAdd(cidr: string, description?: string): Promise<RouteAddedResponse> {

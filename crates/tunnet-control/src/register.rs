@@ -336,6 +336,12 @@ pub async fn register_device(
         network_name,
         status: final_status,
         snapshot: snap,
+        management_url: std::env::var("MANAGEMENT_URL")
+            .ok()
+            .filter(|s| !s.is_empty()),
+        dashboard_url: std::env::var("DASHBOARD_URL")
+            .ok()
+            .filter(|s| !s.is_empty()),
     })
 }
 

@@ -14,7 +14,7 @@ Direct mode stores network membership in an [iroh-docs](https://github.com/n0-co
 
 Peer discovery uses the Mainline DHT. A topic is derived from the network name and secret. Peers publish their iroh endpoint IDs to this topic and discover each other.
 
-Transport authentication uses a pre-shared key (PSK). Before accepting any application-level connection, peers perform a PSK handshake to prove they know the network secret. This prevents unauthorized machines from communicating even if they discover the peer addresses.
+Transport authentication uses **signed grants**, **epochs**, and **revocations** stored in the membership document (or an **invite bootstrap** for the first join). Before accepting application-level ALPN connections, peers verify a coordinator-issued grant at the current network epoch, or a valid invite proof. Revoked peers are rejected even if they still know the join secret. This prevents unauthorized machines from communicating even if they discover peer addresses.
 
 Public settings (firewall, DNS, keep-alive, open mode) live in [`tunnet.toml`](/guide/configuration) under `[direct.<name>]`. Network secrets are sealed in `state.enc`.
 

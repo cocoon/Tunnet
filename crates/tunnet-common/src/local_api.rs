@@ -11,7 +11,29 @@ use std::net::Ipv4Addr;
 use serde::{Deserialize, Serialize};
 
 /// Local Management API major version (URL prefix `/v1/`).
-pub const API_VERSION: u32 = 1;
+pub const API_VERSION: u32 = 2;
+
+// ---------------------------------------------------------------------------
+// Permissions (capability strings for auth)
+// ---------------------------------------------------------------------------
+
+pub mod permissions {
+    pub const STATUS_READ: &str = "status.read";
+    pub const EVENTS_READ: &str = "events.read";
+    pub const DNS_READ: &str = "dns.read";
+    pub const ROUTES_READ: &str = "routes.read";
+    pub const DIAG_READ: &str = "diag.read";
+    pub const DATA_PLANE_WRITE: &str = "data_plane.write";
+    pub const SEND: &str = "send";
+    pub const SSH: &str = "ssh";
+    pub const SERVE: &str = "serve";
+    pub const TUNNEL: &str = "tunnel";
+    pub const NETWORK_INVITE: &str = "network.invite";
+    pub const NETWORK_ADMIT: &str = "network.admit";
+    pub const FIREWALL_WRITE: &str = "firewall.write";
+    pub const POLICY_WRITE: &str = "policy.write";
+    pub const LIFECYCLE: &str = "lifecycle";
+}
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -64,7 +86,213 @@ pub struct OkResponse {
 }
 
 // ---------------------------------------------------------------------------
-// SSE events
+// Local UI policy (managed-mode desktop / tray restrictions)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct LocalUiPolicy {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub allow_disconnect: bool,
+    #[serde(default = "default_true")]
+    pub allow_serve: bool,
+    #[serde(default = "default_true")]
+    pub allow_tunnel: bool,
+    #[serde(default = "default_true")]
+    pub allow_self_tags: bool,
+}
+
+impl Default for LocalUiPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allow_disconnect: true,
+            allow_serve: true,
+            allow_tunnel: true,
+            allow_self_tags: true,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Node / network summary (v2 status model)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeModeApi {
+    Idle,
+    Direct,
+    Managed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PeerSummary {
+    pub network_id: String,
+    pub ip: String,
+    pub hostname: String,
+    pub endpoint_id: String,
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os: Option<String>,
+    /// connected | suspended | reconnecting
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conn_state: Option<String>,
+    /// direct | relay | unknown
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_in: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_out: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_secs_ago: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_alive: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_host_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct NetworkSummary {
+    pub network_id: String,
+    pub network_name: String,
+    /// direct | managed
+    pub mode: String,
+    pub ip: String,
+    /// coordinator | member | managed
+    pub role: String,
+    pub peers_total: usize,
+    pub peers_online: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dashboard_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firewall_drops: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conntrack_entries: Option<usize>,
+    pub relay_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_in_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_alive: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<ControlPlaneStatusInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct NodeSummary {
+    pub endpoint_id: String,
+    pub hostname: String,
+    pub mode: NodeModeApi,
+    pub daemon_version: String,
+    pub api_version: u32,
+    pub data_plane_up: bool,
+    pub uptime_secs: u64,
+    pub snapshot_version: u64,
+    pub networks: Vec<NetworkSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_demand: Option<OnDemandStatusInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<ControlPlaneStatusInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct MetaInfo {
+    pub api_version: u32,
+    pub daemon_version: String,
+    pub mode: NodeModeApi,
+    pub features: Vec<String>,
+    pub permissions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct NetworksResponse {
+    pub networks: Vec<NetworkSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PeersResponse {
+    pub peers: Vec<PeerSummary>,
+}
+
+/// Server-sent events emitted on `GET /v1/events`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LocalEvent {
+    DaemonReady,
+    DaemonModeChanged {
+        mode: NodeModeApi,
+    },
+    DataPlaneChanged {
+        up: bool,
+    },
+    NetworkAdded {
+        network_id: String,
+    },
+    NetworkRemoved {
+        network_id: String,
+    },
+    PeerOnline {
+        network_id: String,
+        endpoint_id: String,
+    },
+    PeerOffline {
+        network_id: String,
+        endpoint_id: String,
+    },
+    PeerPathChanged {
+        network_id: String,
+        endpoint_id: String,
+        path: String,
+    },
+    PeerMetrics {
+        network_id: String,
+        endpoint_id: String,
+        latency_ms: f64,
+    },
+    DirectJoinRequested {
+        network_id: String,
+        peer_id: String,
+    },
+    TransferCreated {
+        id: String,
+    },
+    TransferProgress {
+        id: String,
+        bytes: u64,
+    },
+    TransferCompleted {
+        id: String,
+    },
+    ControlConnected,
+    ControlDisconnected,
+    UpdateAvailable {
+        version: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// SSE events (ping)
 // ---------------------------------------------------------------------------
 
 /// Server-sent events emitted by `GET /v1/ping` (one probe per round, then summary).
@@ -78,13 +306,6 @@ pub enum PingEvent {
 // ---------------------------------------------------------------------------
 // Query / path parameters
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct StatusParams {
-    #[serde(default)]
-    pub peers: bool,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -137,6 +358,10 @@ pub struct LocalEnrollRequest {
     pub expires_in: Option<String>,
     #[serde(default)]
     pub no_encrypt_state: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dashboard_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -687,81 +912,6 @@ pub struct SshRecordingInfo {
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_sha256: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct PeerLite {
-    pub ip: String,
-    pub hostname: String,
-    pub endpoint_id: String,
-    pub tags: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub online: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub latency_ms: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub os: Option<String>,
-    /// connected | suspended | reconnecting
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conn_state: Option<String>,
-    /// direct | relay | unknown
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bytes_in: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bytes_out: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_seen_secs_ago: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub keep_alive: Option<bool>,
-    /// OpenSSH public host key line when advertised by the peer.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ssh_host_key: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct StatusInfo {
-    pub ip: String,
-    pub hostname: String,
-    pub network_name: String,
-    pub network_id: String,
-    pub organization_id: String,
-    pub endpoint_id: String,
-    pub peers_total: usize,
-    pub peers_online: usize,
-    pub relay_status: String,
-    pub uptime_secs: u64,
-    pub agent_version: String,
-    pub snapshot_version: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub peers: Option<Vec<PeerLite>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data_plane_up: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub keep_alive: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub firewall_drops: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conntrack_entries: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_demand: Option<OnDemandStatusInfo>,
-    /// RFC3339 timestamp when this machine is deleted after inactivity.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<String>,
-    /// Seconds until `expires_at`, when auto-expiry is enabled.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_in_secs: Option<u64>,
-    /// Control plane base URL (Managed). Loopback here on a VM means enroll is broken.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub control_url: Option<String>,
-    /// Live WebSocket link to the control plane (Managed only).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub control: Option<ControlPlaneStatusInfo>,
 }
 
 /// Control-plane WebSocket connectivity for Managed agents.

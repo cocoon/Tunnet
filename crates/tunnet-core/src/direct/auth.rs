@@ -6,7 +6,7 @@
 //!
 //! [`DirectAuthHook`] blocks data-plane ALPNs until the peer holds a verified grant
 //! (or ACL). Docs / Gossip / Blobs are the membership bootstrap plane and are
-//! allowed without AuthCache — trust for those is signed records + content keys.
+//! allowed without AuthCache - trust for those is signed records + content keys.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

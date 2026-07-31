@@ -5,14 +5,19 @@ use std::time::Duration;
 
 use anyhow::Context;
 use tokio::sync::mpsc;
+use tunnet_common::local_api::permissions::{
+    DATA_PLANE_WRITE, EVENTS_READ, LIFECYCLE, SERVE, STATUS_READ, TUNNEL,
+};
 use tunnet_common::local_api::{
-    ApiError, ApiErrorCode, ControlPlaneStatusInfo, DiagInfo, DirectFirewallPendingResponse,
-    DirectFirewallResponse, DirectFirewallRuleInfo, DirectPendingInfo, DirectPolicyResponse,
-    DnsStatusInfo, ExitNodeRouteInfo, HostnameRouteInfo, NetcheckInfo, NetcheckItem, OkResponse,
-    OnDemandStatusInfo, PeerLite, PingEvent, PingProbe, PingSummary, RoutesInfo, ServeInfo,
-    SshRecordingInfo, SshSessionInfo, StatusInfo, SubnetRouteInfo, TransferInfo, TunnelInfo,
+    API_VERSION, ApiError, ApiErrorCode, ControlPlaneStatusInfo, DiagInfo,
+    DirectFirewallPendingResponse, DirectFirewallResponse, DirectFirewallRuleInfo,
+    DirectPendingInfo, DirectPolicyResponse, DnsStatusInfo, ExitNodeRouteInfo, HostnameRouteInfo,
+    LocalEvent, MetaInfo, NetcheckInfo, NetcheckItem, NetworkSummary, NodeModeApi, NodeSummary,
+    OkResponse, OnDemandStatusInfo, PeerSummary, PingEvent, PingProbe, PingSummary, RoutesInfo,
+    ServeInfo, SshRecordingInfo, SshSessionInfo, SubnetRouteInfo, TransferInfo, TunnelInfo,
 };
 
+use super::auth::PeerIdentity;
 use super::state::LocalApiState;
 use crate::node::CoreNode;
 
@@ -324,7 +329,78 @@ pub(crate) async fn stop_tunnel(state: &LocalApiState, port: u16) -> anyhow::Res
     Ok(info)
 }
 
-pub(crate) fn peer_lites(state: &LocalApiState) -> Vec<PeerLite> {
+pub(crate) fn parse_network_id(s: &str) -> Result<uuid::Uuid, ApiError> {
+    uuid::Uuid::parse_str(s).map_err(|e| {
+        api_err(
+            ApiErrorCode::InvalidRequest,
+            format!("invalid network_id: {e}"),
+        )
+    })
+}
+
+pub(crate) fn node_mode(state: &LocalApiState) -> NodeModeApi {
+    if state.node.persisted.is_direct() {
+        NodeModeApi::Direct
+    } else if state.node.persisted.is_managed() {
+        NodeModeApi::Managed
+    } else {
+        NodeModeApi::Idle
+    }
+}
+
+fn control_plane_status(state: &LocalApiState) -> Option<ControlPlaneStatusInfo> {
+    #[cfg(feature = "managed")]
+    {
+        state.node.control_link.as_ref().map(|link| {
+            let s = link.snapshot();
+            ControlPlaneStatusInfo {
+                url: s.url,
+                connected: s.connected,
+                connected_for_secs: s.connected_for_secs,
+                last_change_secs_ago: s.last_change_secs_ago,
+                reconnects: s.reconnects,
+                last_error: s.last_error,
+            }
+        })
+    }
+    #[cfg(not(feature = "managed"))]
+    {
+        None
+    }
+}
+
+fn expiry_fields(state: &LocalApiState) -> (Option<String>, Option<u64>) {
+    if let Some(snap) = crate::state::load_snapshot_cache(&state.node.paths)
+        && let Some(at) = snap.expires_at
+        && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&at)
+    {
+        let remaining = (dt.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds();
+        return (Some(at), Some(remaining.max(0) as u64));
+    }
+    (None, None)
+}
+
+fn firewall_stats_for_network(
+    state: &LocalApiState,
+    network_id: uuid::Uuid,
+) -> (Option<u64>, Option<usize>) {
+    state
+        .node
+        .firewall_for(network_id)
+        .map(|fw| {
+            let s = fw.stats();
+            (
+                Some(s.packets_denied + s.packets_rejected),
+                Some(s.conntrack_entries),
+            )
+        })
+        .unwrap_or((None, None))
+}
+
+pub(crate) fn peer_summaries(
+    state: &LocalApiState,
+    network_id: Option<uuid::Uuid>,
+) -> Vec<PeerSummary> {
     let pool = &state.node.tunnel_pool;
     let self_id = state.node.endpoint_id_hex();
     state
@@ -333,6 +409,7 @@ pub(crate) fn peer_lites(state: &LocalApiState) -> Vec<PeerLite> {
         .peers()
         .into_iter()
         .filter(|p| p.endpoint_hex != self_id)
+        .filter(|p| network_id.is_none_or(|nid| p.network_id == nid))
         .map(|p| {
             let snap = pool.peer_snapshot(p.endpoint);
             let (bytes_in, bytes_out) = pool.peer_bytes(p.endpoint);
@@ -346,7 +423,8 @@ pub(crate) fn peer_lites(state: &LocalApiState) -> Vec<PeerLite> {
             };
             let pool_online = snap.live || pool.has_live(p.endpoint);
             let online = pool_online || presence_online.unwrap_or(false);
-            PeerLite {
+            PeerSummary {
+                network_id: p.network_id.to_string(),
                 ip: p.ip.to_string(),
                 hostname: p.hostname.clone(),
                 endpoint_id: p.endpoint_hex.clone(),
@@ -366,80 +444,130 @@ pub(crate) fn peer_lites(state: &LocalApiState) -> Vec<PeerLite> {
         .collect()
 }
 
-pub(crate) fn build_status(state: &LocalApiState, include_peers: bool) -> StatusInfo {
-    let peers = peer_lites(state);
+pub(crate) fn build_network_summary(
+    state: &LocalApiState,
+    network_id: uuid::Uuid,
+) -> Result<NetworkSummary, ApiError> {
+    let peers = peer_summaries(state, Some(network_id));
     let peers_total = peers.len();
     let peers_online = peers.iter().filter(|p| p.online.unwrap_or(false)).count();
-    let mode = if state.node.persisted.is_direct() {
-        "direct"
-    } else {
-        "managed"
-    };
-    let relay_status = if mode == "direct" {
-        "n/a"
-    } else if state.tunnels.list().is_empty() {
-        "disconnected"
-    } else {
-        "connected"
-    };
-    // Mesh datagram pool owns on-demand / keep-alive path state.
     let pool = &state.node.tunnel_pool;
-    let od = pool.on_demand_stats();
-    let (firewall_drops, conntrack) = state
-        .node
-        .primary_firewall()
-        .map(|fw| {
-            let s = fw.stats();
-            (
-                Some(s.packets_denied + s.packets_rejected),
-                Some(s.conntrack_entries),
-            )
-        })
-        .unwrap_or((None, None));
-    let mut expires_at = None;
-    let mut expires_in_secs = None;
-    if let Some(snap) = crate::state::load_snapshot_cache(&state.node.paths)
-        && let Some(at) = snap.expires_at
-        && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&at)
-    {
-        let remaining = (dt.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds();
-        expires_at = Some(at);
-        expires_in_secs = Some(remaining.max(0) as u64);
+    let (expires_at, expires_in_secs) = expiry_fields(state);
+    let control = control_plane_status(state);
+
+    if let Some(managed) = state.node.persisted.as_managed() {
+        if managed.network_id != network_id {
+            return Err(api_err(
+                ApiErrorCode::NotFound,
+                format!("network {network_id} not found"),
+            ));
+        }
+        let relay_status = if state.tunnels.list().is_empty() {
+            "disconnected"
+        } else {
+            "connected"
+        };
+        let (firewall_drops, conntrack_entries) = firewall_stats_for_network(state, network_id);
+        return Ok(NetworkSummary {
+            network_id: network_id.to_string(),
+            network_name: managed.network_name.clone(),
+            mode: "managed".into(),
+            ip: state.node.self_ipv4.to_string(),
+            role: "managed".into(),
+            peers_total,
+            peers_online,
+            organization_id: Some(managed.organization_id.clone()),
+            control_url: Some(managed.control_url.clone()),
+            management_url: managed.management_url.clone(),
+            dashboard_url: managed.dashboard_url.clone(),
+            firewall_drops,
+            conntrack_entries,
+            relay_status: relay_status.into(),
+            expires_at,
+            expires_in_secs,
+            keep_alive: Some(pool.keep_alive_global()),
+            control: control.clone(),
+        });
     }
-    StatusInfo {
-        ip: state.node.self_ipv4.to_string(),
-        hostname: state.hostname.clone(),
-        network_name: state
-            .node
-            .persisted
-            .primary_network_name()
-            .unwrap_or("default")
-            .to_string(),
-        network_id: state
-            .node
-            .persisted
-            .primary_network_id()
-            .unwrap_or(uuid::Uuid::nil())
-            .to_string(),
-        organization_id: state
-            .node
-            .persisted
-            .as_managed()
-            .map(|m| m.organization_id.clone())
-            .unwrap_or_default(),
-        endpoint_id: state.node.endpoint_id_hex(),
+
+    let direct = state
+        .node
+        .persisted
+        .require_direct_network_id(network_id)
+        .map_err(|e| api_err(ApiErrorCode::NotFound, e.to_string()))?;
+    let (firewall_drops, conntrack_entries) = firewall_stats_for_network(state, network_id);
+    let role = if direct.coordinator {
+        "coordinator"
+    } else {
+        "member"
+    };
+    Ok(NetworkSummary {
+        network_id: network_id.to_string(),
+        network_name: direct.network_name.clone(),
+        mode: "direct".into(),
+        ip: direct.assigned_ipv4.to_string(),
+        role: role.into(),
         peers_total,
         peers_online,
-        relay_status: relay_status.into(),
-        uptime_secs: state.uptime_secs(),
-        agent_version: state.agent_version.clone(),
-        snapshot_version: **state.node.version.load(),
-        peers: include_peers.then_some(peers),
-        mode: Some(mode.into()),
-        data_plane_up: Some(state.data_plane.is_up()),
-        keep_alive: Some(pool.keep_alive_global()),
+        organization_id: None,
+        control_url: None,
+        management_url: None,
+        dashboard_url: None,
         firewall_drops,
-        conntrack_entries: conntrack,
+        conntrack_entries,
+        relay_status: "n/a".into(),
+        expires_at,
+        expires_in_secs,
+        keep_alive: Some(pool.keep_alive_global()),
+        control: None,
+    })
+}
+
+pub(crate) fn build_node_summary(state: &LocalApiState) -> NodeSummary {
+    let pool = &state.node.tunnel_pool;
+    let od = pool.on_demand_stats();
+    let control = control_plane_status(state);
+    let networks: Vec<NetworkSummary> = match &state.node.persisted {
+        crate::state::PersistedState::Managed(m) => {
+            vec![
+                build_network_summary(state, m.network_id).unwrap_or_else(|_| NetworkSummary {
+                    network_id: m.network_id.to_string(),
+                    network_name: m.network_name.clone(),
+                    mode: "managed".into(),
+                    ip: state.node.self_ipv4.to_string(),
+                    role: "managed".into(),
+                    peers_total: 0,
+                    peers_online: 0,
+                    organization_id: Some(m.organization_id.clone()),
+                    control_url: Some(m.control_url.clone()),
+                    management_url: m.management_url.clone(),
+                    dashboard_url: m.dashboard_url.clone(),
+                    firewall_drops: None,
+                    conntrack_entries: None,
+                    relay_status: "disconnected".into(),
+                    expires_at: None,
+                    expires_in_secs: None,
+                    keep_alive: None,
+                    control: control.clone(),
+                }),
+            ]
+        }
+        crate::state::PersistedState::Direct { networks: dirs } => dirs
+            .iter()
+            .filter_map(|d| build_network_summary(state, d.network_id).ok())
+            .collect(),
+    };
+
+    NodeSummary {
+        endpoint_id: state.node.endpoint_id_hex(),
+        hostname: state.hostname.clone(),
+        mode: node_mode(state),
+        daemon_version: state.agent_version.clone(),
+        api_version: API_VERSION,
+        data_plane_up: state.data_plane.is_up(),
+        uptime_secs: state.uptime_secs(),
+        snapshot_version: **state.node.version.load(),
+        networks,
         on_demand: Some(OnDemandStatusInfo {
             reconnect_attempts: od.reconnect_attempts,
             reconnect_success: od.reconnect_success,
@@ -447,33 +575,78 @@ pub(crate) fn build_status(state: &LocalApiState, include_peers: bool) -> Status
             packets_buffered: od.packets_buffered,
             packets_dropped_timeout: od.packets_dropped_timeout,
         }),
-        expires_at,
-        expires_in_secs,
-        control_url: state
-            .node
-            .persisted
-            .as_managed()
-            .map(|m| m.control_url.clone()),
-        control: {
-            #[cfg(feature = "managed")]
-            {
-                state.node.control_link.as_ref().map(|link| {
-                    let s = link.snapshot();
-                    ControlPlaneStatusInfo {
-                        url: s.url,
-                        connected: s.connected,
-                        connected_for_secs: s.connected_for_secs,
-                        last_change_secs_ago: s.last_change_secs_ago,
-                        reconnects: s.reconnects,
-                        last_error: s.last_error,
-                    }
-                })
+        control,
+    }
+}
+
+pub(crate) fn build_meta(state: &LocalApiState, peer: &PeerIdentity) -> MetaInfo {
+    let mut permissions: Vec<String> = peer
+        .capabilities()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+    if let Some(managed) = state.node.persisted.as_managed() {
+        let ui = &managed.local_ui;
+        if !ui.enabled {
+            permissions.retain(|p| p == STATUS_READ || p == EVENTS_READ);
+        } else {
+            if !ui.allow_disconnect {
+                permissions.retain(|p| p != DATA_PLANE_WRITE);
             }
-            #[cfg(not(feature = "managed"))]
-            {
-                None
+            if !ui.allow_serve {
+                permissions.retain(|p| p != SERVE);
             }
-        },
+            if !ui.allow_tunnel {
+                permissions.retain(|p| p != TUNNEL);
+            }
+        }
+    }
+
+    MetaInfo {
+        api_version: API_VERSION,
+        daemon_version: state.agent_version.clone(),
+        mode: node_mode(state),
+        features: vec![
+            "node".into(),
+            "networks".into(),
+            "events".into(),
+            "dns".into(),
+            "routes".into(),
+            "diag".into(),
+        ],
+        permissions,
+    }
+}
+
+pub(crate) fn idle_node_summary(daemon_version: &str) -> NodeSummary {
+    NodeSummary {
+        endpoint_id: String::new(),
+        hostname: String::new(),
+        mode: NodeModeApi::Idle,
+        daemon_version: daemon_version.to_string(),
+        api_version: API_VERSION,
+        data_plane_up: false,
+        uptime_secs: 0,
+        snapshot_version: 0,
+        networks: vec![],
+        on_demand: None,
+        control: None,
+    }
+}
+
+pub(crate) fn idle_meta(daemon_version: &str, peer: &PeerIdentity) -> MetaInfo {
+    MetaInfo {
+        api_version: API_VERSION,
+        daemon_version: daemon_version.to_string(),
+        mode: NodeModeApi::Idle,
+        features: vec!["node".into(), "events".into()],
+        permissions: peer
+            .capabilities()
+            .into_iter()
+            .filter(|p| *p == STATUS_READ || *p == EVENTS_READ || *p == LIFECYCLE)
+            .map(str::to_string)
+            .collect(),
     }
 }
 
@@ -493,13 +666,12 @@ pub(crate) fn build_dns_status(state: &LocalApiState) -> DnsStatusInfo {
     }
 }
 
-pub(crate) fn build_routes(state: &LocalApiState) -> RoutesInfo {
+pub(crate) fn build_routes(state: &LocalApiState, network_id: uuid::Uuid) -> RoutesInfo {
     let self_id = state.node.endpoint_id_hex();
     let snap = crate::state::load_snapshot_cache(&state.node.paths);
-    let membership = snap.as_ref().and_then(|s| {
-        let nid = state.node.persisted.primary_network_id()?;
-        s.memberships.iter().find(|m| m.network_id == nid)
-    });
+    let membership = snap
+        .as_ref()
+        .and_then(|s| s.memberships.iter().find(|m| m.network_id == network_id));
 
     let mut subnet_routes = Vec::new();
     let mut hostname_routes = Vec::new();
@@ -944,6 +1116,49 @@ pub(crate) fn require_direct_coord<'a>(
     Ok(d)
 }
 
+pub(crate) fn direct_requests_for_network(
+    state: &LocalApiState,
+    network_id: uuid::Uuid,
+) -> anyhow::Result<Vec<DirectPendingInfo>> {
+    let direct = state.node.persisted.require_direct_network_id(network_id)?;
+    let list = crate::direct::admin::load_pending(&state.node.paths, direct.network_id)?;
+    Ok(list
+        .into_iter()
+        .map(|p| DirectPendingInfo {
+            endpoint_id: p.endpoint_id,
+            hostname: p.hostname,
+            ipv4: p.ipv4.to_string(),
+            collision_index: p.collision_index,
+        })
+        .collect())
+}
+
+pub(crate) fn direct_accept_for_network(
+    state: &LocalApiState,
+    network_id: uuid::Uuid,
+    peer_id: &str,
+) -> anyhow::Result<String> {
+    let direct = state.node.persisted.require_direct_network_id(network_id)?;
+    direct_accept(state, Some(&direct.network_name), peer_id)
+}
+
+pub(crate) fn direct_deny_for_network(
+    state: &LocalApiState,
+    network_id: uuid::Uuid,
+    peer_id: &str,
+) -> anyhow::Result<String> {
+    let direct = state.node.persisted.require_direct_network_id(network_id)?;
+    direct_deny(state, Some(&direct.network_name), peer_id)
+}
+
+pub(crate) fn direct_firewall_for_network(
+    state: &LocalApiState,
+    network_id: uuid::Uuid,
+) -> anyhow::Result<DirectFirewallResponse> {
+    let direct = state.node.persisted.require_direct_network_id(network_id)?;
+    direct_firewall_show(state, Some(&direct.network_name))
+}
+
 pub(crate) fn direct_invite(
     state: &LocalApiState,
     network: Option<&str>,
@@ -1006,6 +1221,10 @@ pub(crate) fn direct_accept(
         approved.push(pending.endpoint_id.clone());
         crate::direct::save_approved(&state.node.paths, &approved)?;
     }
+    state.emit(LocalEvent::PeerOnline {
+        network_id: network_id.to_string(),
+        endpoint_id: pending.endpoint_id.clone(),
+    });
     Ok(format!(
         "Approved {}. Peer should re-run join while this agent is running.",
         pending.endpoint_id
@@ -1035,7 +1254,8 @@ pub(crate) async fn direct_kick(
     peer_id: &str,
 ) -> anyhow::Result<String> {
     let direct = require_direct_coord(state, network)?;
-    if let Some(rt) = state.node.direct.get(&direct.network_id) {
+    let network_id = direct.network_id;
+    let result = if let Some(rt) = state.node.direct.get(&network_id) {
         if let Some(auth) = &state.node.direct_auth {
             rt.docs.kick_peer(peer_id, auth).await?;
         } else {
@@ -1044,13 +1264,16 @@ pub(crate) async fn direct_kick(
                 .await?;
         }
         rt.docs.rebuild_from_doc().await.ok();
-        Ok(format!("Kicked {peer_id}"))
+        format!("Kicked {peer_id}")
     } else {
-        crate::direct::admin::queue_kick(&state.node.paths, direct.network_id, peer_id)?;
-        Ok(format!(
-            "Queued kick for {peer_id} (docs not ready; will apply shortly)"
-        ))
-    }
+        crate::direct::admin::queue_kick(&state.node.paths, network_id, peer_id)?;
+        format!("Queued kick for {peer_id} (docs not ready; will apply shortly)")
+    };
+    state.emit(LocalEvent::PeerOffline {
+        network_id: network_id.to_string(),
+        endpoint_id: peer_id.to_string(),
+    });
+    Ok(result)
 }
 
 pub(crate) fn direct_firewall_show(

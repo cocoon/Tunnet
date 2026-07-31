@@ -17,7 +17,7 @@ on:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    runs-on: [self-host-linux]
+    runs-on: [ubuntu-latest]
     permissions:
       security-events: write
       packages: read

@@ -23,7 +23,11 @@ pub fn service_log_path() -> PathBuf {
     system_state_dir().join("service.log")
 }
 
-pub fn ensure_wintun_present() -> anyhow::Result<()> {
+pub fn ensure_wintun_present(state_dir: Option<&str>) -> anyhow::Result<()> {
+    let staged = crate::paths::installed_bin_dir(state_dir).join("wintun.dll");
+    if staged.is_file() {
+        return Ok(());
+    }
     let beside = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("wintun.dll")))
@@ -32,9 +36,10 @@ pub fn ensure_wintun_present() -> anyhow::Result<()> {
         return Ok(());
     }
     anyhow::bail!(
-        "wintun.dll not found (looked for {}).\n\
+        "wintun.dll not found (looked for {} and {}).\n\
          Copy wintun.dll next to tunnetd.exe before starting the service.\n\
          Download: https://www.wintun.net/",
+        staged.display(),
         beside.display()
     );
 }
@@ -50,8 +55,6 @@ pub fn install(exe: &str, state_dir: Option<&str>) -> anyhow::Result<()> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
-
-    discard_legacy_user_state();
 
     let service_info = ServiceInfo {
         name: OsString::from(SERVICE_NAME),
@@ -96,24 +99,6 @@ pub fn install(exe: &str, state_dir: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn discard_legacy_user_state() {
-    let Ok(local) = std::env::var("LOCALAPPDATA") else {
-        return;
-    };
-    let user = PathBuf::from(local).join("tunnet");
-    let system = system_state_dir();
-    if user == system || !user.exists() {
-        return;
-    }
-    match std::fs::remove_dir_all(&user) {
-        Ok(()) => println!("Discarded legacy user state {}", user.display()),
-        Err(e) => eprintln!(
-            "warning: could not remove legacy user state {}: {e}",
-            user.display()
-        ),
-    }
-}
-
 pub fn uninstall() -> anyhow::Result<()> {
     let manager = open_scm_admin(ServiceManagerAccess::CONNECT)?;
     let service = manager
@@ -129,10 +114,7 @@ pub fn probe() -> Probe {
     match open_service(ServiceAccess::QUERY_STATUS) {
         Ok(service) => match service.query_status() {
             Ok(status) => {
-                let active = matches!(
-                    status.current_state,
-                    ServiceState::Running | ServiceState::StartPending
-                );
+                let active = matches!(status.current_state, ServiceState::Running);
                 let state = match status.current_state {
                     ServiceState::Stopped => "inactive",
                     ServiceState::StartPending => "starting",
@@ -306,6 +288,66 @@ fn open_service_admin(access: ServiceAccess) -> anyhow::Result<windows_service::
 }
 
 fn relaunch_elevated() -> anyhow::Result<()> {
+    let exe = std::env::current_exe().context("resolve current executable")?;
+    let out_file = std::env::temp_dir().join(format!("tunnet-elevated-{}.log", std::process::id()));
+    let _ = std::fs::File::create(&out_file);
+
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    args.insert(0, out_file.to_string_lossy().into_owned());
+    args.insert(0, "--tunnet-elevation-output".to_string());
+
+    let hint = format!(
+        "tunnet {}",
+        std::env::args()
+            .skip(1)
+            .map(quote_cmd_arg)
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+
+    let exit_code = shell_execute_elevated(&exe, &args, Some(&hint))?;
+
+    // Stream captured output from the elevated child (written via SetStdHandle).
+    let mut offset = 0u64;
+    let mut chunk = Vec::new();
+    let mut captured = Vec::new();
+    drain_capture_buf(&out_file, &mut offset, &mut chunk, &mut captured);
+    if !captured.is_empty() {
+        let mut stdout = std::io::stdout();
+        let _ = std::io::Write::write_all(&mut stdout, &captured);
+        let _ = std::io::Write::flush(&mut stdout);
+    }
+    let _ = std::fs::remove_file(&out_file);
+    std::process::exit(exit_code);
+}
+
+/// Launch `exe` with `args` via UAC (`runas`) and wait for exit.
+///
+/// Unlike [`ensure_process_elevated`], this does **not** exit the calling process - suitable for GUI hosts.
+pub fn run_elevated(
+    exe: &std::path::Path,
+    args: &[impl AsRef<std::ffi::OsStr>],
+) -> anyhow::Result<i32> {
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| a.as_ref().to_string_lossy().into_owned())
+        .collect();
+    let hint = format!(
+        "{} {}",
+        exe.display(),
+        args.iter()
+            .map(|a| quote_cmd_arg(a.clone()))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    shell_execute_elevated(exe, &args, Some(&hint))
+}
+
+fn shell_execute_elevated(
+    exe: &std::path::Path,
+    args: &[String],
+    hint: Option<&str>,
+) -> anyhow::Result<i32> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::{CloseHandle, HWND, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
@@ -313,16 +355,13 @@ fn relaunch_elevated() -> anyhow::Result<()> {
         SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
     };
 
-    let exe = std::env::current_exe().context("resolve current executable")?;
-    let out_file = std::env::temp_dir().join(format!("tunnet-elevated-{}.log", std::process::id()));
-    let _ = std::fs::File::create(&out_file);
-
-    let mut params: Vec<String> = std::env::args().skip(1).map(quote_cmd_arg).collect();
-    params.insert(0, quote_cmd_arg(out_file.to_string_lossy().into_owned()));
-    params.insert(0, "--tunnet-elevation-output".to_string());
-    let args_str = params.join(" ");
-    let hint_args: Vec<String> = std::env::args().skip(1).map(quote_cmd_arg).collect();
-    let hint = format!("tunnet {}", hint_args.join(" "));
+    let args_str = args
+        .iter()
+        .cloned()
+        .map(quote_cmd_arg)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let hint = hint.unwrap_or("elevated command");
 
     let verb: Vec<u16> = std::ffi::OsStr::new("runas")
         .encode_wide()
@@ -349,7 +388,6 @@ fn relaunch_elevated() -> anyhow::Result<()> {
 
     let ok = unsafe { ShellExecuteExW(&mut info) };
     if ok == 0 || info.hProcess.is_null() {
-        let _ = std::fs::remove_file(&out_file);
         anyhow::bail!(
             "UAC elevation failed or was cancelled.\n\
              Run manually in an elevated Command Prompt:\n  \
@@ -357,17 +395,12 @@ fn relaunch_elevated() -> anyhow::Result<()> {
         );
     }
 
-    let mut offset = 0u64;
-    let mut chunk = Vec::new();
-    let mut stdout = std::io::stdout();
     loop {
-        drain_capture(&out_file, &mut offset, &mut chunk, &mut stdout);
         let wait = unsafe { WaitForSingleObject(info.hProcess, 50) };
         if wait == WAIT_OBJECT_0 {
             break;
         }
     }
-    drain_capture(&out_file, &mut offset, &mut chunk, &mut stdout);
 
     let exit_code = unsafe {
         let mut exit_code: u32 = 1;
@@ -376,15 +409,14 @@ fn relaunch_elevated() -> anyhow::Result<()> {
         exit_code
     };
 
-    let _ = std::fs::remove_file(&out_file);
-    std::process::exit(exit_code as i32);
+    Ok(exit_code as i32)
 }
 
-fn drain_capture(
+fn drain_capture_buf(
     path: &std::path::Path,
     offset: &mut u64,
     chunk: &mut Vec<u8>,
-    stdout: &mut impl std::io::Write,
+    out: &mut Vec<u8>,
 ) {
     use std::io::{Read, Seek, SeekFrom};
 
@@ -396,8 +428,7 @@ fn drain_capture(
     }
     chunk.clear();
     if f.read_to_end(chunk).is_ok() && !chunk.is_empty() {
-        let _ = stdout.write_all(chunk);
-        let _ = stdout.flush();
+        out.extend_from_slice(chunk);
         *offset += chunk.len() as u64;
     }
 }

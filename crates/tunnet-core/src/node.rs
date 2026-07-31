@@ -602,161 +602,77 @@ impl CoreNode {
         };
 
         let mut direct_runtimes = HashMap::new();
-        let mut updated_networks = Vec::new();
+        // Runtime networks that bootstrapped; persisted list keeps skipped ones so leave works.
+        let mut persisted_networks = Vec::new();
         let mut any_secret_update = false;
+        let mut skipped = Vec::new();
 
         for (join_index, mut direct) in networks.into_iter().enumerate() {
-            let net_ipv4 = if direct.assigned_ipv4.is_unspecified() {
-                derive_ipv4(&my_id_hex, direct.collision_index)
-            } else {
-                direct.assigned_ipv4
-            };
-
-            let fw_cfg = crate::agent_config::load_firewall_for(&paths, &direct.network_name);
-            let policy = firewall_to_policy(&fw_cfg, &my_id_hex, net_ipv4);
-            let firewall =
-                crate::direct::FirewallEngine::from_config(&fw_cfg, net_ipv4, my_id_hex.clone());
-            let spoof_tracker = crate::direct::SpoofTracker::new();
-
-            let self_entry = MembershipEntry {
-                endpoint_id: my_id_hex.clone(),
-                hostname: direct.hostname.clone(),
-                ipv4: net_ipv4,
-                collision_index: direct.collision_index,
-                tags: vec![],
-                joined_at: chrono::Utc::now(),
-                coordinator: direct.coordinator,
-                status: "active".into(),
-                ssh_host_key: None,
-            };
-
-            let endpoint_signing_key = SigningKey::from_bytes(&identity.secret_bytes);
-            let coordinator_signing_key = direct
-                .coordinator_signing_key
-                .as_ref()
-                .map(|h| signing_key_from_hex(h))
-                .transpose()
-                .with_context(|| {
-                    format!(
-                        "parse coordinator signing key for '{}'",
-                        direct.network_name
-                    )
-                })?;
-            let coordinator_verifying_key =
-                direct.coordinator_verifying_key.clone().unwrap_or_default();
-            let content_key = direct.content_key.clone().unwrap_or_default();
-            let network_grant: Option<NetworkGrant> = match &direct.network_grant {
-                Some(g) => match serde_json::from_str(g) {
-                    Ok(grant) => Some(grant),
-                    Err(e) => {
-                        if direct.coordinator {
-                            tracing::error!(
-                                network = %direct.network_name,
-                                ?e,
-                                "failed to parse network_grant; Grant AUTH disabled for this network"
-                            );
-                            None
-                        } else {
-                            anyhow::bail!(
-                                "Direct network '{}': corrupt network_grant ({e}); re-join with a fresh invite",
-                                direct.network_name
-                            );
-                        }
-                    }
+            let network_name = direct.network_name.clone();
+            match bootstrap_one_direct_network(
+                BootstrapOneArgs {
+                    join_index,
+                    identity: &identity,
+                    my_id_hex: &my_id_hex,
+                    paths: &paths,
+                    docs_engine: &docs_engine,
+                    gossip: &gossip,
+                    blobs: &blobs,
+                    routes: &routes,
+                    acl: &acl,
+                    auth: &auth,
+                    endpoint: &endpoint,
                 },
-                None => {
-                    if !direct.coordinator {
-                        anyhow::bail!(
-                            "Direct network '{}': missing network_grant; re-join with a fresh invite",
-                            direct.network_name
-                        );
-                    }
-                    tracing::warn!(
-                        network = %direct.network_name,
-                        "coordinator missing network_grant; seed AUTH will not run"
-                    );
-                    None
-                }
-            };
-
-            let mut seeds = Vec::new();
-            if let Some(coord) = &direct.coordinator_endpoint_id {
-                seeds.push(coord.clone());
-            }
-            // Membership may already know peers after bootstrap; refresh below.
-            seeds.sort();
-            seeds.dedup();
-            let seed_peers = std::sync::Arc::new(parking_lot::Mutex::new(seeds.clone()));
-
-            let (docs, new_ticket, new_ns) = DocsMembership::bootstrap(DocsBootstrap {
-                docs: docs_engine.clone(),
-                gossip: gossip.clone(),
-                paths: &paths,
-                direct: &direct,
-                self_endpoint_id: &my_id_hex,
-                self_entry,
-                endpoint_signing_key,
-                coordinator_signing_key,
-                coordinator_verifying_key,
-                content_key: content_key.clone(),
-                network_grant: network_grant.clone(),
-                blobs: blobs.clone(),
-                routes: routes.clone(),
-                acl: acl.clone(),
-                auth: auth.clone(),
-                policy,
-                firewall: Some(firewall.clone()),
-                dns: crate::load_dns(&paths),
-                join_index: join_index as u64,
-                seed_peers: seed_peers.clone(),
-            })
+                &mut direct,
+            )
             .await
-            .with_context(|| {
-                format!(
-                    "bootstrap iroh-docs membership for '{}'",
-                    direct.network_name
-                )
-            })?;
-
-            if new_ticket.is_some() || new_ns.is_some() {
-                any_secret_update = true;
-                if let Some(t) = new_ticket {
-                    direct.doc_ticket = Some(t);
+            {
+                Ok(parts) => {
+                    if parts.secret_updated {
+                        any_secret_update = true;
+                    }
+                    direct_runtimes.insert(
+                        direct.network_id,
+                        DirectNetworkRuntime {
+                            docs: parts.docs,
+                            firewall: parts.firewall,
+                            spoof_tracker: parts.spoof_tracker,
+                            state: direct.clone(),
+                            discovery: parts.discovery,
+                            presence: None,
+                        },
+                    );
+                    persisted_networks.push(direct);
                 }
-                if let Some(ns) = new_ns {
-                    direct.namespace_id = Some(ns);
+                Err(e) => {
+                    tracing::error!(
+                        network = %network_name,
+                        error = %e,
+                        "skipping Direct network (leave it or re-join with a fresh invite)"
+                    );
+                    skipped.push(network_name);
+                    persisted_networks.push(direct);
                 }
             }
-            direct.assigned_ipv4 = net_ipv4;
+        }
 
-            docs.refresh_seed_peers();
-            let discovery_seeds = seed_peers.lock().clone();
-            let discovery = spawn_discovery(
-                direct.topic_hash.clone(),
-                my_id_hex.clone(),
-                discovery_seeds,
+        if direct_runtimes.is_empty() {
+            let detail = if skipped.is_empty() {
+                "no Direct networks joined".to_string()
+            } else {
+                format!(
+                    "all Direct networks failed to start ({}); leave or re-join with `tunnet leave` / a fresh invite",
+                    skipped.join(", ")
+                )
+            };
+            anyhow::bail!("{detail}");
+        }
+        if !skipped.is_empty() {
+            tracing::warn!(
+                skipped = %skipped.join(","),
+                active = direct_runtimes.len(),
+                "started with some Direct networks skipped"
             );
-            spawn_seed_auth(
-                endpoint.clone(),
-                auth.clone(),
-                direct.network_id,
-                network_grant,
-                my_id_hex.clone(),
-                seed_peers,
-            );
-
-            direct_runtimes.insert(
-                direct.network_id,
-                DirectNetworkRuntime {
-                    docs,
-                    firewall,
-                    spoof_tracker,
-                    state: direct.clone(),
-                    discovery,
-                    presence: None,
-                },
-            );
-            updated_networks.push(direct);
         }
 
         if any_secret_update {
@@ -764,7 +680,7 @@ impl CoreNode {
                 &paths,
                 &identity,
                 PersistedState::Direct {
-                    networks: updated_networks.clone(),
+                    networks: persisted_networks.clone(),
                 },
                 crate::secret_store::SealPolicy::from_env_and_flag(false),
             )?;
@@ -777,7 +693,7 @@ impl CoreNode {
         Ok(Self {
             identity,
             persisted: PersistedState::Direct {
-                networks: updated_networks,
+                networks: persisted_networks,
             },
             endpoint,
             pool,
@@ -885,4 +801,174 @@ fn warn_legacy_docs_dirs(paths: &StatePaths, networks: &[DirectState]) {
             );
         }
     }
+}
+
+#[cfg(feature = "direct")]
+struct BootstrapOneArgs<'a> {
+    join_index: usize,
+    identity: &'a AgentIdentity,
+    my_id_hex: &'a str,
+    paths: &'a StatePaths,
+    docs_engine: &'a Docs,
+    gossip: &'a iroh_gossip::net::Gossip,
+    blobs: &'a iroh_blobs::store::fs::FsStore,
+    routes: &'a RoutingTable,
+    acl: &'a AclEngine,
+    auth: &'a AuthCache,
+    endpoint: &'a Endpoint,
+}
+
+#[cfg(feature = "direct")]
+struct BootstrappedNetwork {
+    docs: DocsMembership,
+    firewall: crate::direct::FirewallEngine,
+    spoof_tracker: crate::direct::SpoofTracker,
+    discovery: crate::direct::DiscoveryHandle,
+    secret_updated: bool,
+}
+
+#[cfg(feature = "direct")]
+async fn bootstrap_one_direct_network(
+    args: BootstrapOneArgs<'_>,
+    direct: &mut DirectState,
+) -> anyhow::Result<BootstrappedNetwork> {
+    let net_ipv4 = if direct.assigned_ipv4.is_unspecified() {
+        derive_ipv4(args.my_id_hex, direct.collision_index)
+    } else {
+        direct.assigned_ipv4
+    };
+
+    let fw_cfg = crate::agent_config::load_firewall_for(args.paths, &direct.network_name);
+    let policy = firewall_to_policy(&fw_cfg, args.my_id_hex, net_ipv4);
+    let firewall =
+        crate::direct::FirewallEngine::from_config(&fw_cfg, net_ipv4, args.my_id_hex.to_string());
+    let spoof_tracker = crate::direct::SpoofTracker::new();
+
+    let self_entry = MembershipEntry {
+        endpoint_id: args.my_id_hex.to_string(),
+        hostname: direct.hostname.clone(),
+        ipv4: net_ipv4,
+        collision_index: direct.collision_index,
+        tags: vec![],
+        joined_at: chrono::Utc::now(),
+        coordinator: direct.coordinator,
+        status: "active".into(),
+        ssh_host_key: None,
+    };
+
+    let endpoint_signing_key = SigningKey::from_bytes(&args.identity.secret_bytes);
+    let coordinator_signing_key = direct
+        .coordinator_signing_key
+        .as_ref()
+        .map(|h| signing_key_from_hex(h))
+        .transpose()
+        .with_context(|| {
+            format!(
+                "parse coordinator signing key for '{}'",
+                direct.network_name
+            )
+        })?;
+    let coordinator_verifying_key = direct.coordinator_verifying_key.clone().unwrap_or_default();
+    let content_key = direct.content_key.clone().unwrap_or_default();
+    let network_grant: Option<NetworkGrant> = match &direct.network_grant {
+        Some(g) => match serde_json::from_str(g) {
+            Ok(grant) => Some(grant),
+            Err(e) => {
+                if direct.coordinator {
+                    tracing::error!(
+                        network = %direct.network_name,
+                        ?e,
+                        "failed to parse network_grant; Grant AUTH disabled for this network"
+                    );
+                    None
+                } else {
+                    anyhow::bail!("corrupt network_grant ({e}); re-join with a fresh invite");
+                }
+            }
+        },
+        None => {
+            if !direct.coordinator {
+                anyhow::bail!("missing network_grant; re-join with a fresh invite");
+            }
+            tracing::warn!(
+                network = %direct.network_name,
+                "coordinator missing network_grant; seed AUTH will not run"
+            );
+            None
+        }
+    };
+
+    let mut seeds = Vec::new();
+    if let Some(coord) = &direct.coordinator_endpoint_id {
+        seeds.push(coord.clone());
+    }
+    seeds.sort();
+    seeds.dedup();
+    let seed_peers = std::sync::Arc::new(parking_lot::Mutex::new(seeds.clone()));
+
+    let (docs, new_ticket, new_ns) = DocsMembership::bootstrap(DocsBootstrap {
+        docs: args.docs_engine.clone(),
+        gossip: args.gossip.clone(),
+        paths: args.paths,
+        direct,
+        self_endpoint_id: args.my_id_hex,
+        self_entry,
+        endpoint_signing_key,
+        coordinator_signing_key,
+        coordinator_verifying_key,
+        content_key: content_key.clone(),
+        network_grant: network_grant.clone(),
+        blobs: args.blobs.clone(),
+        routes: args.routes.clone(),
+        acl: args.acl.clone(),
+        auth: args.auth.clone(),
+        policy,
+        firewall: Some(firewall.clone()),
+        dns: crate::load_dns(args.paths),
+        join_index: args.join_index as u64,
+        seed_peers: seed_peers.clone(),
+    })
+    .await
+    .with_context(|| {
+        format!(
+            "bootstrap iroh-docs membership for '{}'",
+            direct.network_name
+        )
+    })?;
+
+    let mut secret_updated = false;
+    if new_ticket.is_some() || new_ns.is_some() {
+        secret_updated = true;
+        if let Some(t) = new_ticket {
+            direct.doc_ticket = Some(t);
+        }
+        if let Some(ns) = new_ns {
+            direct.namespace_id = Some(ns);
+        }
+    }
+    direct.assigned_ipv4 = net_ipv4;
+
+    docs.refresh_seed_peers();
+    let discovery_seeds = seed_peers.lock().clone();
+    let discovery = spawn_discovery(
+        direct.topic_hash.clone(),
+        args.my_id_hex.to_string(),
+        discovery_seeds,
+    );
+    spawn_seed_auth(
+        args.endpoint.clone(),
+        args.auth.clone(),
+        direct.network_id,
+        network_grant,
+        args.my_id_hex.to_string(),
+        seed_peers,
+    );
+
+    Ok(BootstrappedNetwork {
+        docs,
+        firewall,
+        spoof_tracker,
+        discovery,
+        secret_updated,
+    })
 }

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// System-wide state directory used by the Tunnet service.
 pub fn system_state_dir() -> PathBuf {
@@ -23,14 +23,24 @@ pub fn resolve_state_dir(state_dir: Option<&str>) -> PathBuf {
         .unwrap_or_else(system_state_dir)
 }
 
-/// Locate `tunnetd` next to the current executable (typically `tunnet`) or on `PATH`.
-pub fn resolve_daemon_exe() -> anyhow::Result<PathBuf> {
-    let name = if cfg!(windows) {
+fn daemon_name() -> &'static str {
+    if cfg!(windows) {
         "tunnetd.exe"
     } else {
         "tunnetd"
-    };
+    }
+}
 
+pub fn installed_bin_dir(state_dir: Option<&str>) -> PathBuf {
+    resolve_state_dir(state_dir).join("bin")
+}
+
+pub fn installed_daemon_exe(state_dir: Option<&str>) -> PathBuf {
+    installed_bin_dir(state_dir).join(daemon_name())
+}
+
+pub fn resolve_daemon_exe() -> anyhow::Result<PathBuf> {
+    let name = daemon_name();
     if let Ok(current) = std::env::current_exe()
         && let Some(dir) = current.parent()
     {
@@ -39,12 +49,88 @@ pub fn resolve_daemon_exe() -> anyhow::Result<PathBuf> {
             return Ok(beside);
         }
     }
-
     if let Some(path) = find_on_path(name) {
         return Ok(path);
     }
+    anyhow::bail!("could not find {name}; place it next to tunnet or on PATH")
+}
 
-    anyhow::bail!("could not find {name}; install tunnetd next to tunnet or on PATH")
+/// Whether the staged service binary differs from the build/install source.
+pub fn daemon_outdated(state_dir: Option<&str>) -> anyhow::Result<bool> {
+    let source = resolve_daemon_exe()?;
+    let dest = installed_daemon_exe(state_dir);
+    if !dest.is_file() {
+        return Ok(true);
+    }
+    Ok(!same_artifact(&source, &dest))
+}
+
+/// Install `tunnetd` (+ `wintun.dll` on Windows) under `{state}/bin`.
+///
+/// The service always runs this copy so `cargo build` can overwrite
+/// `target/debug/tunnetd.exe` without racing the running process.
+pub fn stage_daemon_exe(state_dir: Option<&str>) -> anyhow::Result<PathBuf> {
+    let source = {
+        let s = resolve_daemon_exe()?;
+        s.canonicalize().unwrap_or(s)
+    };
+    let dest_dir = installed_bin_dir(state_dir);
+    std::fs::create_dir_all(&dest_dir)
+        .map_err(|e| anyhow::anyhow!("create {}: {e}", dest_dir.display()))?;
+    let dest = installed_daemon_exe(state_dir);
+    atomic_copy(&source, &dest)?;
+
+    #[cfg(windows)]
+    if let Some(dir) = source.parent() {
+        let dll = dir.join("wintun.dll");
+        if dll.is_file() {
+            atomic_copy(&dll, &dest_dir.join("wintun.dll"))?;
+        }
+    }
+
+    Ok(dest)
+}
+
+fn atomic_copy(source: &Path, dest: &Path) -> anyhow::Result<()> {
+    if dest.is_file() && same_artifact(source, dest) {
+        return Ok(());
+    }
+    let tmp = dest.with_extension("staging");
+    std::fs::copy(source, &tmp)
+        .map_err(|e| anyhow::anyhow!("copy {} → {}: {e}", source.display(), tmp.display()))?;
+    #[cfg(windows)]
+    {
+        // On Windows, replace via remove+rename; ReplaceFile is overkill here.
+        if dest.exists() {
+            std::fs::remove_file(dest).map_err(|e| {
+                anyhow::anyhow!(
+                    "replace {}: {e} (stop the tunnet service first)",
+                    dest.display()
+                )
+            })?;
+        }
+        std::fs::rename(&tmp, dest)
+            .map_err(|e| anyhow::anyhow!("rename {} → {}: {e}", tmp.display(), dest.display()))?;
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(&tmp, dest)
+            .map_err(|e| anyhow::anyhow!("rename {} → {}: {e}", tmp.display(), dest.display()))?;
+    }
+    Ok(())
+}
+
+fn same_artifact(a: &Path, b: &Path) -> bool {
+    let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else {
+        return false;
+    };
+    if ma.len() != mb.len() {
+        return false;
+    }
+    match (ma.modified(), mb.modified()) {
+        (Ok(ta), Ok(tb)) => ta == tb,
+        _ => false,
+    }
 }
 
 fn find_on_path(name: &str) -> Option<PathBuf> {

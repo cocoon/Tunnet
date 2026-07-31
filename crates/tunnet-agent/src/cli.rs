@@ -32,6 +32,10 @@ pub struct EnrollArgs {
     pub expires_in: Option<String>,
     #[arg(long, env = "TUNNET_NO_ENCRYPT_STATE")]
     pub no_encrypt_state: bool,
+    #[arg(long, env = "TUNNET_MANAGEMENT_URL")]
+    pub management_url: Option<String>,
+    #[arg(long, env = "TUNNET_DASHBOARD_URL")]
+    pub dashboard_url: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -154,12 +158,24 @@ pub async fn run_enroll(args: EnrollArgs, state_dir: Option<&str>) -> anyhow::Re
         "enrollment successful"
     );
 
+    let management_url = args
+        .management_url
+        .or(resp.management_url)
+        .filter(|s| !s.is_empty());
+    let dashboard_url = args
+        .dashboard_url
+        .or(resp.dashboard_url)
+        .filter(|s| !s.is_empty());
+
     let persisted = PersistedState::Managed(ManagedState {
         control_url: args.control_url,
         network_name: resp.network_name.clone(),
         network_id: resp.network_id,
         organization_id: resp.organization_id,
         enrolled_at: chrono::Utc::now(),
+        management_url,
+        dashboard_url,
+        local_ui: tunnet_common::local_api::LocalUiPolicy::default(),
     });
     let policy = SealPolicy::from_env_and_flag(args.no_encrypt_state);
     let tier = persist_agent(&paths, &identity, persisted, policy)?;
@@ -226,6 +242,8 @@ async fn wait_for_approval(
                     network_name,
                     status: "active".into(),
                     snapshot: *snapshot,
+                    management_url: None,
+                    dashboard_url: None,
                 });
             }
         }

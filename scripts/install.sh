@@ -19,7 +19,7 @@ VERSION=""
 INSTALL_SERVICE="${TUNNET_NO_SERVICE:+0}"
 INSTALL_SERVICE="${INSTALL_SERVICE:-1}"
 VERIFY="${TUNNET_VERIFY:-1}"
-BINS="tunnet tunnetd tunnet-control tunnet-relay"
+BINS="tunnet tunnetd"
 GITHUB_API="${GITHUB_API:-https://api.github.com}"
 GITHUB_DOWNLOAD="${GITHUB_DOWNLOAD:-https://github.com}"
 
@@ -56,7 +56,7 @@ Options:
   --install-dir <d> Binary install directory (default: ${INSTALL_DIR})
   --no-service      Skip systemd / launchd service unit
   --no-verify       Skip attestation verification
-  --bins <list>     Space-separated binaries to install (default: all three)
+  --bins <list>     Space-separated binaries to install (default: tunnet tunnetd)
   -h, --help        Show this help
 
 Environment:
@@ -186,18 +186,33 @@ if command -v tunnet >/dev/null 2>&1; then
   fi
 fi
 
-ARCHIVE="tunnet-${VERSION}-${TARGET}.tar.gz"
-URL="${GITHUB_DOWNLOAD}/${REPO}/releases/download/${TAG}/${ARCHIVE}"
-CHECKSUM_URL="${URL}.sha256"
-
-info "Installing Tunnet ${TAG} (${TARGET})"
+ARCHIVE=""
+EXTRACTED=""
 
 TMP="$(mktemp -d)"
 # shellcheck disable=SC2064
 trap 'rm -rf "$TMP"' EXIT
 
+for candidate in \
+  "tunnet-headless-${VERSION}-${TARGET}" \
+  "tunnet-${VERSION}-${TARGET}"
+do
+  probe="${candidate}.tar.gz"
+  if $FETCH_TO_FILE "${TMP}/${probe}" "${GITHUB_DOWNLOAD}/${REPO}/releases/download/${TAG}/${probe}" 2>/dev/null; then
+    ARCHIVE="$probe"
+    EXTRACTED="$candidate"
+    break
+  fi
+done
+
+[ -n "$ARCHIVE" ] || die "no release archive found for ${TAG} (${TARGET})"
+
+URL="${GITHUB_DOWNLOAD}/${REPO}/releases/download/${TAG}/${ARCHIVE}"
+CHECKSUM_URL="${URL}.sha256"
+
+info "Installing Tunnet ${TAG} (${TARGET})"
+
 info "Downloading ${ARCHIVE}…"
-$FETCH_TO_FILE "${TMP}/${ARCHIVE}" "$URL" || die "download failed: ${URL}"
 
 if $FETCH_TO_FILE "${TMP}/${ARCHIVE}.sha256" "$CHECKSUM_URL" 2>/dev/null; then
   HASH="$(awk '{print $1}' "${TMP}/${ARCHIVE}.sha256" | head -n 1)"
@@ -228,7 +243,6 @@ fi
 
 cd "$TMP"
 tar xzf "$ARCHIVE"
-EXTRACTED="tunnet-${VERSION}-${TARGET}"
 [ -d "$EXTRACTED" ] || die "unexpected archive layout (missing ${EXTRACTED}/)"
 
 $SUDO mkdir -p "$INSTALL_DIR"
@@ -246,6 +260,11 @@ for bin in $BINS; do
 done
 
 [ "$INSTALLED_COUNT" -gt 0 ] || die "no binaries were installed"
+
+if [ -f "${EXTRACTED}/wintun.dll" ]; then
+  $SUDO install -m 644 "${EXTRACTED}/wintun.dll" "${INSTALL_DIR}/wintun.dll"
+  info "Installed wintun.dll -> ${INSTALL_DIR}/wintun.dll"
+fi
 
 if [ "$INSTALL_SERVICE" -eq 1 ] && [ -x "${INSTALL_DIR}/tunnet" ]; then
   if [ "$OS" = "linux" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then

@@ -18,7 +18,7 @@ This is not about replacing each tool with a worse version. It is about the comp
 
 ## Two modes for two worlds
 
-Not every use case needs an organization, a dashboard, or SSO. Sometimes you just want two machines to talk to each other. Tunnet's Direct mode creates a P2P network with no server whatsoever - membership is stored in an iroh-docs CRDT document, discovery uses the Mainline DHT, and transport auth proves knowledge of a pre-shared key.
+Not every use case needs an organization, a dashboard, or SSO. Sometimes you just want two machines to talk to each other. Tunnet's Direct mode creates a P2P network with no server whatsoever - membership is stored in an iroh-docs CRDT document, discovery uses the Mainline DHT, and transport auth uses signed grants before application protocols are accepted.
 
 When you outgrow Direct mode, `tunnet upgrade-to-managed` migrates your network to the full control plane without losing connectivity.
 

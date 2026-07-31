@@ -13,6 +13,7 @@ pub mod identity;
 pub mod inspect;
 pub mod iroh_pool;
 pub mod known_hosts;
+pub mod leave;
 pub mod local_api;
 #[cfg(feature = "direct")]
 pub mod mdns_relay;
@@ -50,6 +51,7 @@ pub use identity::AgentIdentity;
 #[cfg(feature = "direct")]
 pub use iroh_docs::protocol::Docs;
 pub use iroh_pool::ConnPool;
+pub use leave::leave_direct_network;
 #[cfg(feature = "direct")]
 pub use node::DirectNetworkRuntime;
 pub use node::{AgentConfigHooks, CoreNode, CoreNodeConfig, KillSshHook, PostureHooks};

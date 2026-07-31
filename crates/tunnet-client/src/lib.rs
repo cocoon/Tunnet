@@ -11,5 +11,7 @@ pub use client::{LocalApiClient, TunnetClient};
 pub use transport::{default_api_path, endpoint_reachable};
 
 pub use tunnet_common::local_api::{
-    ApiError, ApiErrorCode, PingEvent, PingProbe, PingSummary, StatusInfo, format_api_error,
+    ApiError, ApiErrorCode, DirectFirewallResponse, DirectPendingResponse, LocalEvent,
+    LocalUiPolicy, MetaInfo, NetworkSummary, NetworksResponse, NodeModeApi, NodeSummary,
+    PeerSummary, PeersResponse, PingEvent, PingProbe, PingSummary, RoutesInfo, format_api_error,
 };

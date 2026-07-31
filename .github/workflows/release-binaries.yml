@@ -33,7 +33,7 @@ env:
 jobs:
   validate:
     name: Validate version
-    runs-on: [self-host-linux]
+    runs-on: [ubuntu-latest]
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
@@ -88,15 +88,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - host: [self-host-linux]
+          - host: [ubuntu-latest]
             target: x86_64-unknown-linux-gnu
-          - host: [self-host-linux]
+          - host: [ubuntu-latest]
             target: aarch64-unknown-linux-gnu
             cross: true
-          - host: [self-host-linux]
+          - host: [ubuntu-latest]
             target: x86_64-unknown-linux-musl
             cross: true
-          - host: [self-host-linux]
+          - host: [ubuntu-latest]
             target: aarch64-unknown-linux-musl
             cross: true
           - host: macos-latest
@@ -149,45 +149,210 @@ jobs:
         id: package
         shell: bash
         run: |
+          set -euo pipefail
           version="${{ needs.validate.outputs.version }}"
           target="${{ matrix.target }}"
-          staging="tunnet-${version}-${target}"
-          mkdir -p "$staging"
-
           ext=""
           if [[ "$target" == *windows* ]]; then ext=".exe"; fi
 
-          for bin in tunnet tunnetd tunnet-control tunnet-relay; do
-            src="target/${target}/release/${bin}${ext}"
-            if [ -f "$src" ]; then cp "$src" "$staging/"; fi
-          done
-
-          cp LICENSE README.md "$staging/" 2>/dev/null || true
-
-          if [[ "$target" == *windows* ]]; then
-            7z a "${staging}.zip" "$staging"
-            echo "asset=${staging}.zip" >> "$GITHUB_OUTPUT"
-          else
-            tar czf "${staging}.tar.gz" "$staging"
-            echo "asset=${staging}.tar.gz" >> "$GITHUB_OUTPUT"
+          wintun_arch=""
+          if [[ "$target" == "x86_64-pc-windows-msvc" ]]; then
+            wintun_arch="amd64"
+          elif [[ "$target" == "aarch64-pc-windows-msvc" ]]; then
+            wintun_arch="arm64"
           fi
 
-      - name: Checksums
-        shell: bash
-        run: sha256sum "${{ steps.package.outputs.asset }}" > "${{ steps.package.outputs.asset }}.sha256"
+          resolve_wintun() {
+            [ -n "$wintun_arch" ] || return 1
+            for path in \
+              "third_party/wintun/bin/${wintun_arch}/wintun.dll" \
+              "crates/tunnet-agent/resources/wintun/${wintun_arch}/wintun.dll" \
+              "crates/tunnet-agent/wintun.dll" \
+              "target/${target}/release/wintun.dll"
+            do
+              if [ -f "$path" ]; then
+                echo "$path"
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          ensure_wintun() {
+            [ -n "$wintun_arch" ] || return 0
+            if resolve_wintun >/dev/null; then
+              return 0
+            fi
+            echo "Downloading wintun.dll (${wintun_arch})…"
+            curl -fsSL -o wintun.zip "https://www.wintun.net/builds/wintun-0.14.1.zip"
+            unzip -q wintun.zip "wintun/bin/${wintun_arch}/wintun.dll"
+            mkdir -p "third_party/wintun/bin/${wintun_arch}"
+            cp "wintun/bin/${wintun_arch}/wintun.dll" "third_party/wintun/bin/${wintun_arch}/wintun.dll"
+          }
+
+          package_variant() {
+            local variant="$1"
+            shift
+            local staging="${variant}-${version}-${target}"
+            mkdir -p "$staging"
+
+            for bin in "$@"; do
+              src="target/${target}/release/${bin}${ext}"
+              if [ -f "$src" ]; then
+                cp "$src" "$staging/"
+              fi
+            done
+
+            if [ "$variant" = "tunnet-headless" ] || [ "$variant" = "tunnet" ]; then
+              ensure_wintun
+              if wintun_src="$(resolve_wintun)"; then
+                cp "$wintun_src" "$staging/wintun.dll"
+              fi
+            fi
+
+            cp LICENSE README.md "$staging/" 2>/dev/null || true
+
+            if [[ "$target" == *windows* ]]; then
+              7z a "${staging}.zip" "$staging"
+              echo "${staging}.zip"
+            else
+              tar czf "${staging}.tar.gz" "$staging"
+              echo "${staging}.tar.gz"
+            fi
+          }
+
+          assets=()
+          assets+=("$(package_variant tunnet-headless tunnet tunnetd)")
+          assets+=("$(package_variant tunnet-server tunnet-control tunnet-relay)")
+          assets+=("$(package_variant tunnet tunnet tunnetd)")
+
+          checksums=()
+          for asset in "${assets[@]}"; do
+            sha256sum "$asset" > "${asset}.sha256"
+            checksums+=("${asset}.sha256")
+          done
+
+          {
+            echo "assets<<EOF"
+            printf '%s\n' "${assets[@]}"
+            echo "EOF"
+            echo "checksums<<EOF"
+            printf '%s\n' "${checksums[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.target }}
           path: |
-            ${{ steps.package.outputs.asset }}
-            ${{ steps.package.outputs.asset }}.sha256
+            tunnet-headless-${{ needs.validate.outputs.version }}-${{ matrix.target }}.*
+            tunnet-server-${{ needs.validate.outputs.version }}-${{ matrix.target }}.*
+            tunnet-${{ needs.validate.outputs.version }}-${{ matrix.target }}.*
+          if-no-files-found: error
+
+  build-desktop-windows:
+    name: Desktop - Windows NSIS
+    needs: [validate, build-binaries]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-pc-windows-msvc
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: binaries-x86_64-pc-windows-msvc
+          path: headless-artifact
+
+      - name: Stage sidecar binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.validate.outputs.version }}"
+          target="x86_64-pc-windows-msvc"
+          triple="x86_64-pc-windows-msvc"
+          dest="apps/desktop/src-tauri/binaries"
+          mkdir -p "$dest"
+
+          archive=""
+          for candidate in \
+            "headless-artifact/tunnet-headless-${version}-${target}.zip" \
+            "headless-artifact/tunnet-${version}-${target}.zip"
+          do
+            if [ -f "$candidate" ]; then
+              archive="$candidate"
+              break
+            fi
+          done
+          [ -n "$archive" ] || { echo "::error::headless Windows archive not found"; exit 1; }
+
+          unzip -q "$archive" -d headless-artifact
+          extracted=""
+          for dir in \
+            "headless-artifact/tunnet-headless-${version}-${target}" \
+            "headless-artifact/tunnet-${version}-${target}"
+          do
+            if [ -d "$dir" ]; then
+              extracted="$dir"
+              break
+            fi
+          done
+          [ -n "$extracted" ] || { echo "::error::unexpected archive layout"; exit 1; }
+
+          cp "$extracted/tunnet.exe" "$dest/tunnet-${triple}.exe"
+          cp "$extracted/tunnetd.exe" "$dest/tunnetd-${triple}.exe"
+          if [ -f "$extracted/wintun.dll" ]; then
+            cp "$extracted/wintun.dll" "$dest/wintun.dll"
+          else
+            curl -fsSL -o wintun.zip "https://www.wintun.net/builds/wintun-0.14.1.zip"
+            unzip -q wintun.zip "wintun/bin/amd64/wintun.dll"
+            cp "wintun/bin/amd64/wintun.dll" "$dest/wintun.dll"
+          fi
+
+          # Enable sidecar bundling for release builds only (keeps local tauri
+          # dev working when binaries are locked by a running service).
+          node <<'NODE'
+          const fs = require("fs");
+          const confPath = "apps/desktop/src-tauri/tauri.conf.json";
+          const conf = JSON.parse(fs.readFileSync(confPath, "utf8"));
+          conf.bundle = conf.bundle || {};
+          conf.bundle.externalBin = ["binaries/tunnet", "binaries/tunnetd"];
+          conf.bundle.resources = ["binaries/wintun.dll"];
+          fs.writeFileSync(confPath, JSON.stringify(conf, null, 2) + "\n");
+          NODE
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build NSIS installer
+        working-directory: apps/desktop
+        run: bun run tauri build
+
+      - name: Collect NSIS installer
+        shell: bash
+        run: |
+          mkdir -p nsis-out
+          find . -path '*/bundle/nsis/*.exe' -print -exec cp {} nsis-out/ \;
+          ls -la nsis-out/
+
+      - name: Upload desktop installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-windows-nsis
+          path: nsis-out/*.exe
           if-no-files-found: error
 
   package-installers:
     name: Package install scripts
     needs: [validate]
-    runs-on: [self-host-linux]
+    runs-on: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -212,9 +377,9 @@ jobs:
 
   github-release:
     name: GitHub Release (draft)
-    needs: [validate, build-binaries, package-installers]
+    needs: [validate, build-binaries, build-desktop-windows, package-installers]
     if: needs.validate.outputs.dry-run != 'true'
-    runs-on: [self-host-linux]
+    runs-on: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -229,6 +394,11 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
+          name: desktop-windows-nsis
+          path: artifacts
+
+      - uses: actions/download-artifact@v8
+        with:
           name: installers
           path: artifacts
 
@@ -240,7 +410,7 @@ jobs:
           {
             echo "## Installation"
             echo ""
-            echo "### Linux / macOS"
+            echo "### Linux / macOS (headless agent)"
             echo ""
             echo '```bash'
             echo "curl -fsSL https://github.com/${repo}/releases/latest/download/install.sh | sh"
@@ -251,6 +421,10 @@ jobs:
             echo '```powershell'
             echo "irm https://github.com/${repo}/releases/latest/download/install.ps1 | iex"
             echo '```'
+            echo ""
+            echo "### Windows Desktop (NSIS)"
+            echo ""
+            echo "Download the \`Tunnet_*_x64-setup.exe\` installer from the assets below."
           } > release-notes.md
 
       - uses: softprops/action-gh-release@v3
@@ -265,6 +439,7 @@ jobs:
             artifacts/*.tar.gz
             artifacts/*.zip
             artifacts/*.sha256
+            artifacts/*.exe
             artifacts/install.sh
             artifacts/install.ps1
 
@@ -272,7 +447,7 @@ jobs:
     name: Attestation
     needs: [validate, build-binaries, github-release]
     if: needs.validate.outputs.dry-run != 'true'
-    runs-on: [self-host-linux]
+    runs-on: [ubuntu-latest]
     steps:
       - uses: actions/download-artifact@v8
         with:

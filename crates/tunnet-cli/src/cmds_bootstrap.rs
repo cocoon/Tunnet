@@ -37,6 +37,10 @@ pub struct EnrollArgs {
     pub expires_in: Option<String>,
     #[arg(long, env = "TUNNET_NO_ENCRYPT_STATE")]
     pub no_encrypt_state: bool,
+    #[arg(long, env = "TUNNET_MANAGEMENT_URL")]
+    pub management_url: Option<String>,
+    #[arg(long, env = "TUNNET_DASHBOARD_URL")]
+    pub dashboard_url: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -73,6 +77,8 @@ pub async fn run_enroll(args: EnrollArgs, state_dir: Option<&str>) -> anyhow::Re
         labels,
         expires_in: args.expires_in,
         no_encrypt_state: args.no_encrypt_state,
+        management_url: args.management_url,
+        dashboard_url: args.dashboard_url,
     };
     let resp = match client.enroll(&body).await {
         Ok(resp) => resp,
@@ -124,9 +130,6 @@ pub async fn run_reset(args: ResetArgs, state_dir: Option<&str>) -> anyhow::Resu
     // Give the process a moment to release file handles.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // Discard leftover per-user state from older installs (never migrate it back).
-    discard_legacy_user_state();
-
     let mut wiped_any = false;
     for dir in &targets {
         if !dir.exists() {
@@ -141,44 +144,6 @@ pub async fn run_reset(args: ResetArgs, state_dir: Option<&str>) -> anyhow::Resu
         println!("Nothing to wipe.");
     }
     Ok(())
-}
-
-fn discard_legacy_user_state() {
-    let Some(user) = legacy_user_state_dir() else {
-        return;
-    };
-    if user == crate::state::StatePaths::system_dir() || !user.exists() {
-        return;
-    }
-    match std::fs::remove_dir_all(&user) {
-        Ok(()) => println!("Discarded legacy user state {}", user.display()),
-        Err(e) => eprintln!(
-            "warning: could not remove legacy user state {}: {e}",
-            user.display()
-        ),
-    }
-}
-
-fn legacy_user_state_dir() -> Option<std::path::PathBuf> {
-    #[cfg(windows)]
-    {
-        std::env::var("LOCALAPPDATA")
-            .ok()
-            .map(|b| std::path::PathBuf::from(b).join("tunnet"))
-    }
-    #[cfg(unix)]
-    {
-        if let Ok(xdg) = std::env::var("XDG_STATE_HOME") {
-            return Some(std::path::PathBuf::from(xdg).join("tunnet"));
-        }
-        std::env::var("HOME")
-            .ok()
-            .map(|h| std::path::PathBuf::from(h).join(".local/state/tunnet"))
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        None
-    }
 }
 
 pub async fn run_login(args: LoginArgs, state_dir: Option<&str>) -> anyhow::Result<()> {

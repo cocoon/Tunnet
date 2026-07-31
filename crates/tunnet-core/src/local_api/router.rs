@@ -12,6 +12,10 @@ use axum::{Json, Router};
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
+use tunnet_common::local_api::permissions::{
+    DATA_PLANE_WRITE, DIAG_READ, DNS_READ, EVENTS_READ, FIREWALL_WRITE, NETWORK_ADMIT,
+    NETWORK_INVITE, POLICY_WRITE, ROUTES_READ, SEND, SERVE, SSH, STATUS_READ, TUNNEL,
+};
 use tunnet_common::local_api::{
     ApiError, ApiErrorCode, AuthLoginRequest, DataPlaneStatus, DeviceExpiryRequest,
     DeviceLabelDeleteRequest, DeviceLabelPatchRequest, DeviceLabelRequest, DeviceTagAddRequest,
@@ -20,12 +24,13 @@ use tunnet_common::local_api::{
     DirectFirewallPendingResponse, DirectFirewallRemoveRequest, DirectFirewallResponse,
     DirectInviteRequest, DirectInviteResponse, DirectKeepAliveRequest, DirectNetworkRequest,
     DirectOverrideIpRequest, DirectPendingResponse, DirectPolicyResponse, DirectPolicySetRequest,
-    JsonPayload, LocalEnrollRequest, NetworkCreateRequest, NetworkJoinRequest, NetworkLeaveRequest,
-    NetworkUpgradeRequest, OkResponse, PolicyOpRequest, PostureCheckRequest, ResetRequest,
-    RouteAddRequest, RouteAddedResponse, SendAcceptRequest, SendFileRequest, SendRejectRequest,
+    JsonPayload, LocalEnrollRequest, MetaInfo, NetworkCreateRequest, NetworkJoinRequest,
+    NetworkLeaveRequest, NetworkUpgradeRequest, NetworksResponse, NodeSummary, OkResponse,
+    PeersResponse, PolicyOpRequest, PostureCheckRequest, ResetRequest, RouteAddRequest,
+    RouteAddedResponse, SendAcceptRequest, SendFileRequest, SendRejectRequest,
     SendSetConfigRequest, ServeStartRequest, ServesResponse, SshAuthPollRequest,
     SshAuthPollResponse, SshCastResponse, SshRecordingsParams, SshRecordingsResponse,
-    SshSessionsParams, SshSessionsResponse, StatusParams, TransfersResponse, TunnelOffRequest,
+    SshSessionsParams, SshSessionsResponse, TransfersResponse, TunnelOffRequest,
     TunnelStartRequest, TunnelsResponse, UpdateRequest, ValidateConfigRequest,
 };
 
@@ -37,7 +42,29 @@ type ApiState = Arc<LocalApiState>;
 
 pub fn app(state: ApiState) -> Router {
     Router::new()
-        .route("/v1/status", get(status))
+        .route("/v1/meta", get(meta))
+        .route("/v1/node", get(node_summary))
+        .route("/v1/networks", get(networks_list).post(network_create))
+        .route("/v1/networks/{network_id}", get(network_get))
+        .route("/v1/networks/{network_id}/peers", get(network_peers))
+        .route("/v1/networks/{network_id}/routes", get(network_routes))
+        .route(
+            "/v1/networks/{network_id}/join-requests",
+            get(network_join_requests),
+        )
+        .route(
+            "/v1/networks/{network_id}/join-requests/{peer_id}/accept",
+            post(network_join_accept),
+        )
+        .route(
+            "/v1/networks/{network_id}/join-requests/{peer_id}/deny",
+            post(network_join_deny),
+        )
+        .route(
+            "/v1/networks/{network_id}/firewall",
+            get(network_firewall_show),
+        )
+        .route("/v1/events", get(events_stream))
         .route("/v1/dns", get(dns))
         .route("/v1/routes", get(routes_list).post(routes_add))
         .route("/v1/ping/{peer}", get(ping))
@@ -108,7 +135,6 @@ pub fn app(state: ApiState) -> Router {
         )
         .route("/v1/direct/connect/rotate", post(direct_connect_rotate))
         .route("/v1/enroll", post(enroll))
-        .route("/v1/networks", post(network_create))
         .route("/v1/networks/join", post(network_join))
         .route("/v1/networks/leave", post(network_leave))
         .route("/v1/networks/upgrade", post(network_upgrade))
@@ -218,7 +244,7 @@ async fn validate_config(
     State(state): State<ApiState>,
     Json(body): Json<ValidateConfigRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(STATUS_READ)?;
     Ok(Json(state.bootstrap.validate_config(body).await?))
 }
 
@@ -227,7 +253,7 @@ async fn auth_login(
     State(state): State<ApiState>,
     Json(body): Json<AuthLoginRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(STATUS_READ)?;
     Ok(Json(state.bootstrap.auth_login(body).await?))
 }
 
@@ -235,7 +261,7 @@ async fn auth_logout(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(STATUS_READ)?;
     Ok(Json(state.bootstrap.auth_logout().await?))
 }
 
@@ -253,7 +279,7 @@ async fn device_set_labels(
     State(state): State<ApiState>,
     Json(body): Json<DeviceLabelRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(DATA_PLANE_WRITE)?;
     Ok(Json(state.bootstrap.device_set_labels(body).await?))
 }
 
@@ -262,7 +288,7 @@ async fn device_patch_labels(
     State(state): State<ApiState>,
     Json(body): Json<DeviceLabelPatchRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(DATA_PLANE_WRITE)?;
     Ok(Json(state.bootstrap.device_patch_labels(body).await?))
 }
 
@@ -271,7 +297,7 @@ async fn device_delete_label(
     State(state): State<ApiState>,
     Json(body): Json<DeviceLabelDeleteRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(DATA_PLANE_WRITE)?;
     Ok(Json(state.bootstrap.device_delete_label(body).await?))
 }
 
@@ -280,7 +306,7 @@ async fn device_add_tag(
     State(state): State<ApiState>,
     Json(body): Json<DeviceTagAddRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(DATA_PLANE_WRITE)?;
     Ok(Json(state.bootstrap.device_add_tag(body).await?))
 }
 
@@ -289,7 +315,7 @@ async fn device_remove_tag(
     State(state): State<ApiState>,
     Json(body): Json<DeviceTagRemoveRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(DATA_PLANE_WRITE)?;
     Ok(Json(state.bootstrap.device_remove_tag(body).await?))
 }
 
@@ -298,7 +324,7 @@ async fn device_set_expiry(
     State(state): State<ApiState>,
     Json(body): Json<DeviceExpiryRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(DATA_PLANE_WRITE)?;
     Ok(Json(state.bootstrap.device_set_expiry(body).await?))
 }
 
@@ -306,7 +332,7 @@ async fn device_info(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
 ) -> ApiResult<Json<JsonPayload>> {
-    peer.require_standard()?;
+    peer.require_cap(STATUS_READ)?;
     Ok(Json(state.bootstrap.device_info().await?))
 }
 
@@ -314,7 +340,7 @@ async fn posture_status(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
 ) -> ApiResult<Json<JsonPayload>> {
-    peer.require_standard()?;
+    peer.require_cap(DIAG_READ)?;
     Ok(Json(state.bootstrap.posture_status().await?))
 }
 
@@ -323,7 +349,7 @@ async fn posture_check(
     State(state): State<ApiState>,
     Json(body): Json<PostureCheckRequest>,
 ) -> ApiResult<Json<JsonPayload>> {
-    peer.require_standard()?;
+    peer.require_cap(DIAG_READ)?;
     Ok(Json(state.bootstrap.posture_check(body).await?))
 }
 
@@ -332,33 +358,164 @@ async fn policy_op(
     State(state): State<ApiState>,
     Json(body): Json<PolicyOpRequest>,
 ) -> ApiResult<Json<JsonPayload>> {
-    peer.require_standard()?;
+    peer.require_cap(POLICY_WRITE)?;
     Ok(Json(state.bootstrap.policy_op(body).await?))
 }
 
-async fn status(
+async fn meta(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
-    Query(q): Query<StatusParams>,
-) -> ApiResult<Json<tunnet_common::local_api::StatusInfo>> {
-    peer.require_standard()?;
-    Ok(Json(handlers::build_status(&state, q.peers)))
+) -> ApiResult<Json<MetaInfo>> {
+    peer.require_cap(STATUS_READ)?;
+    Ok(Json(handlers::build_meta(&state, &peer)))
+}
+
+async fn node_summary(
+    Extension(peer): Extension<PeerIdentity>,
+    State(state): State<ApiState>,
+) -> ApiResult<Json<NodeSummary>> {
+    peer.require_cap(STATUS_READ)?;
+    Ok(Json(handlers::build_node_summary(&state)))
+}
+
+async fn networks_list(
+    Extension(peer): Extension<PeerIdentity>,
+    State(state): State<ApiState>,
+) -> ApiResult<Json<NetworksResponse>> {
+    peer.require_cap(STATUS_READ)?;
+    let node = handlers::build_node_summary(&state);
+    Ok(Json(NetworksResponse {
+        networks: node.networks,
+    }))
+}
+
+async fn network_get(
+    Extension(peer): Extension<PeerIdentity>,
+    State(state): State<ApiState>,
+    Path(network_id): Path<String>,
+) -> ApiResult<Json<tunnet_common::local_api::NetworkSummary>> {
+    peer.require_cap(STATUS_READ)?;
+    let id = handlers::parse_network_id(&network_id)?;
+    Ok(Json(handlers::build_network_summary(&state, id)?))
+}
+
+async fn network_peers(
+    Extension(peer): Extension<PeerIdentity>,
+    State(state): State<ApiState>,
+    Path(network_id): Path<String>,
+) -> ApiResult<Json<PeersResponse>> {
+    peer.require_cap(STATUS_READ)?;
+    let id = handlers::parse_network_id(&network_id)?;
+    Ok(Json(PeersResponse {
+        peers: handlers::peer_summaries(&state, Some(id)),
+    }))
+}
+
+async fn network_routes(
+    Extension(peer): Extension<PeerIdentity>,
+    State(state): State<ApiState>,
+    Path(network_id): Path<String>,
+) -> ApiResult<Json<tunnet_common::local_api::RoutesInfo>> {
+    peer.require_cap(ROUTES_READ)?;
+    let id = handlers::parse_network_id(&network_id)?;
+    Ok(Json(handlers::build_routes(&state, id)))
+}
+
+async fn network_join_requests(
+    Extension(peer): Extension<PeerIdentity>,
+    State(state): State<ApiState>,
+    Path(network_id): Path<String>,
+) -> ApiResult<Json<DirectPendingResponse>> {
+    peer.require_cap(NETWORK_ADMIT)?;
+    let id = handlers::parse_network_id(&network_id)?;
+    let requests = handlers::direct_requests_for_network(&state, id).map_err(map_anyhow)?;
+    Ok(Json(DirectPendingResponse { requests }))
+}
+
+async fn network_join_accept(
+    Extension(peer): Extension<PeerIdentity>,
+    State(state): State<ApiState>,
+    Path((network_id, peer_id)): Path<(String, String)>,
+) -> ApiResult<Json<OkResponse>> {
+    peer.require_cap(NETWORK_ADMIT)?;
+    let id = handlers::parse_network_id(&network_id)?;
+    let message = handlers::direct_accept_for_network(&state, id, &peer_id).map_err(map_anyhow)?;
+    Ok(Json(result_ok(message)))
+}
+
+async fn network_join_deny(
+    Extension(peer): Extension<PeerIdentity>,
+    State(state): State<ApiState>,
+    Path((network_id, peer_id)): Path<(String, String)>,
+) -> ApiResult<Json<OkResponse>> {
+    peer.require_cap(NETWORK_ADMIT)?;
+    let id = handlers::parse_network_id(&network_id)?;
+    let message = handlers::direct_deny_for_network(&state, id, &peer_id).map_err(map_anyhow)?;
+    Ok(Json(result_ok(message)))
+}
+
+async fn network_firewall_show(
+    Extension(peer): Extension<PeerIdentity>,
+    State(state): State<ApiState>,
+    Path(network_id): Path<String>,
+) -> ApiResult<Json<DirectFirewallResponse>> {
+    peer.require_cap(STATUS_READ)?;
+    let id = handlers::parse_network_id(&network_id)?;
+    let info = handlers::direct_firewall_for_network(&state, id).map_err(map_anyhow)?;
+    Ok(Json(info))
+}
+
+async fn events_stream(
+    Extension(peer): Extension<PeerIdentity>,
+    State(state): State<ApiState>,
+) -> ApiResult<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>> {
+    peer.require_cap(EVENTS_READ)?;
+    let rx = state.events.subscribe();
+    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(ev) => {
+                    let data = serde_json::to_string(&ev).ok()?;
+                    return Some((Ok(Event::default().data(data)), rx));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 async fn dns(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
 ) -> ApiResult<Json<tunnet_common::local_api::DnsStatusInfo>> {
-    peer.require_standard()?;
+    peer.require_cap(DNS_READ)?;
     Ok(Json(handlers::build_dns_status(&state)))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RoutesQuery {
+    network_id: Option<String>,
 }
 
 async fn routes_list(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
+    Query(q): Query<RoutesQuery>,
 ) -> ApiResult<Json<tunnet_common::local_api::RoutesInfo>> {
-    peer.require_standard()?;
-    Ok(Json(handlers::build_routes(&state)))
+    peer.require_cap(ROUTES_READ)?;
+    let network_id = if let Some(id) = q.network_id {
+        handlers::parse_network_id(&id)?
+    } else {
+        state.node.persisted.primary_network_id().ok_or_else(|| {
+            handlers::api_err(
+                ApiErrorCode::InvalidRequest,
+                "multiple networks joined; pass ?network_id=<uuid>",
+            )
+        })?
+    };
+    Ok(Json(handlers::build_routes(&state, network_id)))
 }
 
 async fn routes_add(
@@ -366,7 +523,7 @@ async fn routes_add(
     State(state): State<ApiState>,
     Json(body): Json<RouteAddRequest>,
 ) -> ApiResult<Json<RouteAddedResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(DATA_PLANE_WRITE)?;
     let net: ipnet::Ipv4Net = body.cidr.parse().map_err(|e| {
         handlers::api_err(ApiErrorCode::InvalidRequest, format!("invalid cidr: {e}"))
     })?;
@@ -382,7 +539,7 @@ async fn ping(
     Path(peer_name): Path<String>,
     Query(q): Query<PingQuery>,
 ) -> ApiResult<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>> {
-    peer.require_standard()?;
+    peer.require_cap(DIAG_READ)?;
     let count = q.count.unwrap_or(4);
     let interval_ms = q.interval_ms.unwrap_or(1000);
     let (tx, rx) = mpsc::channel(16);
@@ -412,7 +569,7 @@ async fn diag(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
 ) -> ApiResult<Json<tunnet_common::local_api::DiagInfo>> {
-    peer.require_standard()?;
+    peer.require_cap(DIAG_READ)?;
     Ok(Json(handlers::build_diag(&state).await))
 }
 
@@ -420,7 +577,7 @@ async fn netcheck(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
 ) -> ApiResult<Json<tunnet_common::local_api::NetcheckInfo>> {
-    peer.require_standard()?;
+    peer.require_cap(DIAG_READ)?;
     Ok(Json(handlers::build_netcheck(&state).await))
 }
 
@@ -428,7 +585,7 @@ async fn reload(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(DATA_PLANE_WRITE)?;
     let message = handlers::reload_config(&state).await.map_err(map_anyhow)?;
     Ok(Json(result_ok(message)))
 }
@@ -437,7 +594,7 @@ async fn data_plane_status(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
 ) -> ApiResult<Json<DataPlaneStatus>> {
-    peer.require_standard()?;
+    peer.require_cap(STATUS_READ)?;
     Ok(Json(DataPlaneStatus {
         up: state.data_plane.is_up(),
     }))
@@ -447,7 +604,7 @@ async fn data_plane_up(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(DATA_PLANE_WRITE)?;
     state.data_plane.bring_up().await.map_err(map_anyhow)?;
     Ok(Json(result_ok("data plane up")))
 }
@@ -456,7 +613,7 @@ async fn data_plane_down(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(DATA_PLANE_WRITE)?;
     state.data_plane.bring_down().await.map_err(map_anyhow)?;
     Ok(Json(result_ok("data plane down")))
 }
@@ -465,7 +622,7 @@ async fn serves_list(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
 ) -> ApiResult<Json<ServesResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(SERVE)?;
     Ok(Json(ServesResponse {
         serves: state.serves.list(),
     }))
@@ -476,7 +633,7 @@ async fn serves_start(
     State(state): State<ApiState>,
     Json(body): Json<ServeStartRequest>,
 ) -> ApiResult<Json<tunnet_common::local_api::ServeInfo>> {
-    peer.require_standard()?;
+    peer.require_cap(SERVE)?;
     let info = handlers::start_serve(
         &state,
         body.port,
@@ -499,7 +656,7 @@ async fn serves_off(
     State(state): State<ApiState>,
     Path(port): Path<u16>,
 ) -> ApiResult<Json<tunnet_common::local_api::ServeInfo>> {
-    peer.require_standard()?;
+    peer.require_cap(SERVE)?;
     let info = state.serves.stop(port).await.map_err(map_anyhow)?;
     if let Some(tx) = state.serves.client_tx() {
         let _ = tx.try_send(tunnet_common::ws::ClientMsg::ServeStopped {
@@ -513,7 +670,7 @@ async fn tunnels_list(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
 ) -> ApiResult<Json<TunnelsResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(TUNNEL)?;
     Ok(Json(TunnelsResponse {
         tunnels: state.tunnels.list(),
     }))
@@ -524,7 +681,7 @@ async fn tunnels_start(
     State(state): State<ApiState>,
     Json(body): Json<TunnelStartRequest>,
 ) -> ApiResult<Json<tunnet_common::local_api::TunnelInfo>> {
-    peer.require_standard()?;
+    peer.require_cap(TUNNEL)?;
     let info = handlers::start_tunnel(
         &state,
         body.port,
@@ -544,7 +701,7 @@ async fn tunnels_off(
     State(state): State<ApiState>,
     Path(port): Path<u16>,
 ) -> ApiResult<Json<tunnet_common::local_api::TunnelInfo>> {
-    peer.require_standard()?;
+    peer.require_cap(TUNNEL)?;
     let _ = TunnelOffRequest { port };
     let info = handlers::stop_tunnel(&state, port)
         .await
@@ -557,7 +714,7 @@ async fn ssh_sessions(
     State(state): State<ApiState>,
     Query(q): Query<SshSessionsParams>,
 ) -> ApiResult<Json<SshSessionsResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(SSH)?;
     let sessions = handlers::list_ssh_sessions(&state, q.limit, q.status.as_deref())
         .await
         .map_err(map_anyhow)?;
@@ -569,7 +726,7 @@ async fn ssh_recordings(
     State(state): State<ApiState>,
     Query(q): Query<SshRecordingsParams>,
 ) -> ApiResult<Json<SshRecordingsResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(SSH)?;
     let recordings = handlers::list_ssh_recordings(&state, q.limit)
         .await
         .map_err(map_anyhow)?;
@@ -581,7 +738,7 @@ async fn ssh_cast(
     State(state): State<ApiState>,
     Path(session_id): Path<String>,
 ) -> ApiResult<Json<SshCastResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(SSH)?;
     let (session_id, cast_text, content_sha256) = handlers::get_ssh_cast(&state, &session_id)
         .await
         .map_err(map_anyhow)?;
@@ -597,7 +754,7 @@ async fn ssh_auth_poll(
     State(state): State<ApiState>,
     Json(body): Json<SshAuthPollRequest>,
 ) -> ApiResult<Json<SshAuthPollResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(SSH)?;
     let (status, proof_token) = handlers::poll_ssh_auth(&state, &body.challenge_token)
         .await
         .map_err(map_anyhow)?;
@@ -611,7 +768,7 @@ async fn transfers_list(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
 ) -> ApiResult<Json<TransfersResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(SEND)?;
     let mut transfers: Vec<_> = state
         .send
         .list_active()
@@ -629,7 +786,7 @@ async fn transfers_send(
     State(state): State<ApiState>,
     Json(body): Json<SendFileRequest>,
 ) -> ApiResult<Json<TransfersResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(SEND)?;
     let records = state
         .send
         .send_file(std::path::Path::new(&body.path), &body.target, body.message)
@@ -644,7 +801,7 @@ async fn transfers_history(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
 ) -> ApiResult<Json<TransfersResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(SEND)?;
     Ok(Json(TransfersResponse {
         transfers: state
             .send
@@ -661,7 +818,7 @@ async fn transfers_accept(
     Path(id): Path<String>,
     Json(_body): Json<Option<SendAcceptRequest>>,
 ) -> ApiResult<Json<tunnet_common::local_api::TransferInfo>> {
-    peer.require_standard()?;
+    peer.require_cap(SEND)?;
     let r = state.send.accept_pending(&id).await.map_err(map_anyhow)?;
     Ok(Json(handlers::transfer_info(r)))
 }
@@ -672,7 +829,7 @@ async fn transfers_reject(
     Path(id): Path<String>,
     Json(body): Json<Option<SendRejectRequest>>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(SEND)?;
     let reason = body.and_then(|b| b.reason);
     state
         .send
@@ -686,7 +843,7 @@ async fn send_config(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
 ) -> ApiResult<Json<tunnet_common::local_api::SendConfigInfo>> {
-    peer.require_standard()?;
+    peer.require_cap(SEND)?;
     let cfg = state.send.config();
     Ok(Json(tunnet_common::local_api::SendConfigInfo {
         consent: cfg.consent.as_str().into(),
@@ -700,7 +857,7 @@ async fn send_set_config(
     State(state): State<ApiState>,
     Json(body): Json<SendSetConfigRequest>,
 ) -> ApiResult<Json<tunnet_common::local_api::SendConfigInfo>> {
-    peer.require_standard()?;
+    peer.require_cap(SEND)?;
     let mut cfg = state.send.config();
     if let Some(c) = body.consent {
         match tunnet_common::send::SendConsentMode::parse(&c) {
@@ -733,7 +890,7 @@ async fn direct_invite(
     State(state): State<ApiState>,
     Json(body): Json<DirectInviteRequest>,
 ) -> ApiResult<Json<DirectInviteResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(NETWORK_INVITE)?;
     let code = handlers::direct_invite(
         &state,
         body.network.as_deref(),
@@ -749,7 +906,7 @@ async fn direct_requests(
     State(state): State<ApiState>,
     Query(q): Query<DirectNetworkRequest>,
 ) -> ApiResult<Json<DirectPendingResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(NETWORK_ADMIT)?;
     let requests = handlers::direct_requests(&state, q.network.as_deref()).map_err(map_anyhow)?;
     Ok(Json(DirectPendingResponse { requests }))
 }
@@ -760,7 +917,7 @@ async fn direct_accept(
     Path(peer_id): Path<String>,
     Query(q): Query<DirectNetworkRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(NETWORK_ADMIT)?;
     let message =
         handlers::direct_accept(&state, q.network.as_deref(), &peer_id).map_err(map_anyhow)?;
     Ok(Json(result_ok(message)))
@@ -772,7 +929,7 @@ async fn direct_deny(
     Path(peer_id): Path<String>,
     Query(q): Query<DirectNetworkRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(NETWORK_ADMIT)?;
     let message =
         handlers::direct_deny(&state, q.network.as_deref(), &peer_id).map_err(map_anyhow)?;
     Ok(Json(result_ok(message)))
@@ -784,7 +941,7 @@ async fn direct_kick(
     Path(peer_id): Path<String>,
     Query(q): Query<DirectNetworkRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(NETWORK_ADMIT)?;
     let message = handlers::direct_kick(&state, q.network.as_deref(), &peer_id)
         .await
         .map_err(map_anyhow)?;
@@ -796,7 +953,7 @@ async fn direct_firewall_show(
     State(state): State<ApiState>,
     Query(q): Query<DirectNetworkRequest>,
 ) -> ApiResult<Json<DirectFirewallResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(STATUS_READ)?;
     let info = handlers::direct_firewall_show(&state, q.network.as_deref()).map_err(map_anyhow)?;
     Ok(Json(info))
 }
@@ -806,7 +963,7 @@ async fn direct_firewall_off(
     State(state): State<ApiState>,
     Json(body): Json<DirectNetworkRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(FIREWALL_WRITE)?;
     let message =
         handlers::direct_firewall_off(&state, body.network.as_deref()).map_err(map_anyhow)?;
     Ok(Json(result_ok(message)))
@@ -817,7 +974,7 @@ async fn direct_firewall_add(
     State(state): State<ApiState>,
     Json(body): Json<DirectFirewallAddRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(FIREWALL_WRITE)?;
     let message = handlers::direct_firewall_add(
         &state,
         body.network.as_deref(),
@@ -837,7 +994,7 @@ async fn direct_firewall_remove(
     Path(index): Path<usize>,
     Query(q): Query<DirectNetworkRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(FIREWALL_WRITE)?;
     let _ = DirectFirewallRemoveRequest {
         network: q.network.clone(),
         index,
@@ -852,7 +1009,7 @@ async fn direct_firewall_reset(
     State(state): State<ApiState>,
     Json(body): Json<DirectNetworkRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(FIREWALL_WRITE)?;
     let message =
         handlers::direct_firewall_reset(&state, body.network.as_deref()).map_err(map_anyhow)?;
     Ok(Json(result_ok(message)))
@@ -863,7 +1020,7 @@ async fn direct_firewall_flush(
     State(state): State<ApiState>,
     Json(body): Json<DirectNetworkRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(FIREWALL_WRITE)?;
     let message =
         handlers::direct_firewall_flush(&state, body.network.as_deref()).map_err(map_anyhow)?;
     Ok(Json(result_ok(message)))
@@ -874,7 +1031,7 @@ async fn direct_firewall_pending(
     State(state): State<ApiState>,
     Query(q): Query<DirectNetworkRequest>,
 ) -> ApiResult<Json<DirectFirewallPendingResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(STATUS_READ)?;
     let info =
         handlers::direct_firewall_pending(&state, q.network.as_deref()).map_err(map_anyhow)?;
     Ok(Json(info))
@@ -885,7 +1042,7 @@ async fn direct_firewall_accept(
     State(state): State<ApiState>,
     Json(body): Json<DirectNetworkRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(FIREWALL_WRITE)?;
     let message =
         handlers::direct_firewall_accept(&state, body.network.as_deref()).map_err(map_anyhow)?;
     Ok(Json(result_ok(message)))
@@ -896,7 +1053,7 @@ async fn direct_firewall_reject(
     State(state): State<ApiState>,
     Json(body): Json<DirectNetworkRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(FIREWALL_WRITE)?;
     let message = handlers::direct_firewall_reject_suggestion(&state, body.network.as_deref())
         .map_err(map_anyhow)?;
     Ok(Json(result_ok(message)))
@@ -907,7 +1064,7 @@ async fn direct_policy_show(
     State(state): State<ApiState>,
     Query(q): Query<DirectNetworkRequest>,
 ) -> ApiResult<Json<DirectPolicyResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(STATUS_READ)?;
     let info = handlers::direct_policy_show(&state, q.network.as_deref())
         .await
         .map_err(map_anyhow)?;
@@ -919,7 +1076,7 @@ async fn direct_policy_set(
     State(state): State<ApiState>,
     Json(body): Json<DirectPolicySetRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(POLICY_WRITE)?;
     let message = handlers::direct_policy_set(&state, body.network.as_deref(), &body.toml)
         .await
         .map_err(map_anyhow)?;
@@ -931,7 +1088,7 @@ async fn direct_policy_clear(
     State(state): State<ApiState>,
     Query(q): Query<DirectNetworkRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(POLICY_WRITE)?;
     let message = handlers::direct_policy_clear(&state, q.network.as_deref())
         .await
         .map_err(map_anyhow)?;
@@ -943,7 +1100,7 @@ async fn direct_keep_alive(
     State(state): State<ApiState>,
     Json(body): Json<DirectKeepAliveRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(DATA_PLANE_WRITE)?;
     let message =
         handlers::direct_keep_alive(&state, &body.hostname, body.enable).map_err(map_anyhow)?;
     Ok(Json(result_ok(message)))
@@ -954,7 +1111,7 @@ async fn direct_override_ip(
     State(state): State<ApiState>,
     Json(body): Json<DirectOverrideIpRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(DATA_PLANE_WRITE)?;
     let message =
         handlers::direct_override_ip(&state, body.network.as_deref(), &body.peer, &body.ip)
             .map_err(map_anyhow)?;
@@ -966,7 +1123,7 @@ async fn direct_connect(
     State(state): State<ApiState>,
     Json(body): Json<DirectConnectRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(STATUS_READ)?;
     let message = crate::direct::connect::request_connect(&state, &body.contact_id)
         .await
         .map_err(map_anyhow)?;
@@ -978,7 +1135,7 @@ async fn direct_connect_allow(
     State(state): State<ApiState>,
     Json(body): Json<DirectConnectContactRequest>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(STATUS_READ)?;
     let message =
         crate::direct::connect::allow_contact(&state, &body.contact_id).map_err(map_anyhow)?;
     Ok(Json(result_ok(message)))
@@ -988,7 +1145,7 @@ async fn direct_connect_pending(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
 ) -> ApiResult<Json<DirectConnectPendingResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(STATUS_READ)?;
     let requests = crate::direct::connect::list_pending(&state).map_err(map_anyhow)?;
     Ok(Json(DirectConnectPendingResponse { requests }))
 }
@@ -998,7 +1155,7 @@ async fn direct_connect_accept(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(NETWORK_ADMIT)?;
     let message = crate::direct::connect::accept_pending(&state, &id)
         .await
         .map_err(map_anyhow)?;
@@ -1010,7 +1167,7 @@ async fn direct_connect_deny(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<OkResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(NETWORK_ADMIT)?;
     let message = crate::direct::connect::deny_pending(&state, &id).map_err(map_anyhow)?;
     Ok(Json(result_ok(message)))
 }
@@ -1019,7 +1176,7 @@ async fn direct_connect_rotate(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
 ) -> ApiResult<Json<DirectContactResponse>> {
-    peer.require_standard()?;
+    peer.require_cap(STATUS_READ)?;
     let contact_id = crate::direct::connect::rotate_identity(&state)
         .await
         .map_err(map_anyhow)?;

@@ -1,6 +1,6 @@
 # Quick Start - Direct Mode
 
-Direct mode creates a peer-to-peer mesh network with **no control plane, no server, no infrastructure**. Membership is stored in a CRDT document (iroh-docs), peer discovery uses the Mainline DHT, and transport auth proves knowledge of a pre-shared key.
+Direct mode creates a peer-to-peer mesh network with **no control plane, no server, no infrastructure**. Membership is stored in a CRDT document (iroh-docs), peer discovery uses the Mainline DHT, and transport auth uses signed grants (or invite bootstrap) before application protocols are accepted.
 
 This mode is ideal for individuals, small groups, or situations where you cannot or do not want to run any servers. One agent can join multiple Direct networks.
 
@@ -25,7 +25,7 @@ The machine creates a new Direct network, becomes its coordinator, writes `tunne
 tunnet invite my-network
 ```
 
-This outputs an invite code that encodes the iroh-docs document ID, a network topic, and the pre-shared key.
+This outputs an invite code that encodes the iroh-docs document ID, network topic, and bootstrap material for the first join.
 
 ## 3. Join from another machine
 
@@ -34,7 +34,7 @@ sudo tunnet join <INVITE_CODE>
 sudo tunnet service start
 ```
 
-The new peer connects via the DHT, proves it knows the PSK, and joins the membership document. Both machines get mesh IPs and can communicate.
+The new peer connects via the DHT, completes invite bootstrap, receives a signed grant from the coordinator, and joins the membership document. Both machines get mesh IPs and can communicate.
 
 ## 4. Verify
 

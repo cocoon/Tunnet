@@ -5,9 +5,7 @@ use std::path::{Path, PathBuf};
 
 /// Resolve the fixed Local Management API endpoint path / pipe marker.
 pub fn default_api_path() -> PathBuf {
-    if let Ok(override_path) =
-        std::env::var("TUNNET_API_PATH").or_else(|_| std::env::var("TUNNET_IPC_PATH"))
-    {
+    if let Ok(override_path) = std::env::var("TUNNET_API_PATH") {
         return PathBuf::from(override_path);
     }
     #[cfg(unix)]
@@ -35,9 +33,7 @@ fn unix_api_candidates() -> Vec<PathBuf> {
             paths.push(p);
         }
     };
-    if let Ok(override_path) =
-        std::env::var("TUNNET_API_PATH").or_else(|_| std::env::var("TUNNET_IPC_PATH"))
-    {
+    if let Ok(override_path) = std::env::var("TUNNET_API_PATH") {
         push(PathBuf::from(override_path));
     }
     if let Ok(dir) = std::env::var("TUNNET_RUNTIME_DIR") {

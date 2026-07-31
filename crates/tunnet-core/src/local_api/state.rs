@@ -3,6 +3,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use tunnet_common::local_api::LocalEvent;
+
 use crate::node::CoreNode;
 use crate::send::SendManager;
 use crate::serve::ServeManager;
@@ -27,10 +29,15 @@ pub struct LocalApiState {
     pub send: SendManager,
     pub data_plane: DataPlaneHandle,
     pub bootstrap: Arc<dyn BootstrapOps>,
+    pub events: tokio::sync::broadcast::Sender<LocalEvent>,
 }
 
 impl LocalApiState {
     pub fn uptime_secs(&self) -> u64 {
         self.started_at.elapsed().as_secs()
+    }
+
+    pub fn emit(&self, event: LocalEvent) {
+        let _ = self.events.send(event);
     }
 }

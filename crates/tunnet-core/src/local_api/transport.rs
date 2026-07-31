@@ -5,9 +5,7 @@ use std::path::{Path, PathBuf};
 
 /// Resolve the fixed Local Management API endpoint path / pipe marker.
 pub fn default_api_path() -> PathBuf {
-    if let Ok(override_path) =
-        std::env::var("TUNNET_API_PATH").or_else(|_| std::env::var("TUNNET_IPC_PATH"))
-    {
+    if let Ok(override_path) = std::env::var("TUNNET_API_PATH") {
         return PathBuf::from(override_path);
     }
     #[cfg(unix)]
@@ -42,9 +40,7 @@ pub fn unix_api_candidates() -> Vec<PathBuf> {
         }
     };
 
-    if let Ok(override_path) =
-        std::env::var("TUNNET_API_PATH").or_else(|_| std::env::var("TUNNET_IPC_PATH"))
-    {
+    if let Ok(override_path) = std::env::var("TUNNET_API_PATH") {
         push(PathBuf::from(override_path));
     }
     if let Ok(dir) = std::env::var("TUNNET_RUNTIME_DIR") {
@@ -58,9 +54,7 @@ pub fn unix_api_candidates() -> Vec<PathBuf> {
 /// Path used when *binding* the listener (single socket).
 #[cfg(unix)]
 fn unix_bind_path() -> PathBuf {
-    if let Ok(override_path) =
-        std::env::var("TUNNET_API_PATH").or_else(|_| std::env::var("TUNNET_IPC_PATH"))
-    {
+    if let Ok(override_path) = std::env::var("TUNNET_API_PATH") {
         return PathBuf::from(override_path);
     }
     if let Ok(dir) = std::env::var("TUNNET_RUNTIME_DIR") {
@@ -128,7 +122,7 @@ impl ApiListener {
                 std::fs::create_dir_all(parent)?;
             }
             let unix = tokio::net::UnixListener::bind(&path)?;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666));
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660));
             tracing::info!(path = %path.display(), "Local API listening (unix)");
             Ok((
                 Self {
@@ -182,12 +176,14 @@ impl ApiListener {
             let server = guard.take().ok_or_else(|| {
                 anyhow::anyhow!("Local API listener has no pending named pipe instance")
             })?;
-            // Create the next instance before serving this one so clients never miss a window.
-            let next = create_server_pipe(&name, false)?;
-            *guard = Some(next);
             drop(guard);
 
+            // Wait for the client on this instance first. Creating the next
+            // instance before connect() races clients onto an unserved pipe.
             server.connect().await?;
+
+            let next = create_server_pipe(&name, false)?;
+            *self.windows.pending.lock().await = Some(next);
             Ok(ApiStream::Windows(server))
         }
         #[cfg(not(any(unix, windows)))]
@@ -226,7 +222,7 @@ fn create_server_pipe(
     // SYSTEM + Administrators + Authenticated Users: full access.
     // GRGW alone is not enough for CreateFile(GENERIC_READ|GENERIC_WRITE) on
     // named pipes under Local System - user CLIs get Access Denied.
-    let sddl = w!("D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;AU)");
+    let sddl = w!("D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;IU)");
     let mut sd = PSECURITY_DESCRIPTOR::default();
     unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, &mut sd, None)

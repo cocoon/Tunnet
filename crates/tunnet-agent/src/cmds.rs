@@ -42,27 +42,23 @@ fn running_as_service() -> bool {
 
 pub async fn finish_after_config(
     state_dir: Option<&str>,
-    needs_process_restart: bool,
+    _needs_process_restart: bool,
 ) -> anyhow::Result<()> {
     if running_as_service() {
-        if needs_process_restart {
-            let dir = state_dir.map(str::to_owned);
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                match tokio::task::spawn_blocking(move || {
-                    tunnet_service::reload_after_config(dir.as_deref())
-                })
-                .await
-                {
-                    Ok(Err(e)) => tracing::error!(?e, "deferred service reload failed"),
-                    Err(e) => tracing::error!(?e, "deferred service reload task failed"),
-                    Ok(Ok(())) => {}
-                }
-            });
-            tracing::info!("config written; deferred service reload scheduled");
-        } else {
-            tracing::info!("config written; idle agent will load network state");
-        }
+        let dir = state_dir.map(str::to_owned);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            match tokio::task::spawn_blocking(move || {
+                tunnet_service::reload_after_config(dir.as_deref())
+            })
+            .await
+            {
+                Ok(Err(e)) => tracing::error!(?e, "deferred service reload failed"),
+                Err(e) => tracing::error!(?e, "deferred service reload task failed"),
+                Ok(Ok(())) => {}
+            }
+        });
+        tracing::info!("config written; deferred service reload scheduled");
         return Ok(());
     }
 

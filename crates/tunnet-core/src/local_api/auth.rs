@@ -1,5 +1,10 @@
 //! Peer identity and role checks for Local Management API connections.
 
+use tunnet_common::local_api::permissions::{
+    self, DATA_PLANE_WRITE, DIAG_READ, DNS_READ, EVENTS_READ, FIREWALL_WRITE, LIFECYCLE,
+    NETWORK_ADMIT, NETWORK_INVITE, POLICY_WRITE, ROUTES_READ, SEND, SERVE, SSH, STATUS_READ,
+    TUNNEL,
+};
 use tunnet_common::local_api::{ApiError, ApiErrorCode};
 
 /// OS-level identity of the connecting peer.
@@ -21,44 +26,89 @@ pub struct PeerIdentity {
 
 /// Authorization role derived from [`PeerIdentity`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    Elevated,
-    Standard,
-    Denied,
+pub enum LocalRole {
+    Observer,
+    Operator,
+    NetworkAdmin,
+    SystemAdmin,
+}
+
+impl LocalRole {
+    pub fn capabilities(&self) -> Vec<&'static str> {
+        let mut caps = vec![STATUS_READ, EVENTS_READ, DNS_READ, ROUTES_READ, DIAG_READ];
+        match self {
+            LocalRole::Observer => {}
+            LocalRole::Operator => {
+                caps.extend([DATA_PLANE_WRITE, SEND, SSH, SERVE, TUNNEL]);
+            }
+            LocalRole::NetworkAdmin => {
+                caps.extend([
+                    DATA_PLANE_WRITE,
+                    SEND,
+                    SSH,
+                    SERVE,
+                    TUNNEL,
+                    NETWORK_INVITE,
+                    NETWORK_ADMIT,
+                    FIREWALL_WRITE,
+                    POLICY_WRITE,
+                ]);
+            }
+            LocalRole::SystemAdmin => {
+                caps.extend([
+                    DATA_PLANE_WRITE,
+                    SEND,
+                    SSH,
+                    SERVE,
+                    TUNNEL,
+                    NETWORK_INVITE,
+                    NETWORK_ADMIT,
+                    FIREWALL_WRITE,
+                    POLICY_WRITE,
+                    LIFECYCLE,
+                ]);
+            }
+        }
+        caps
+    }
 }
 
 impl PeerIdentity {
-    pub fn role(&self) -> Role {
+    pub fn role(&self) -> LocalRole {
         if self.elevated || self.same_user {
-            // Owner of a user-mode daemon can perform lifecycle ops locally.
-            // Against a SYSTEM/root service, `same_user` only holds for the
-            // service account itself; interactive admins rely on `elevated`.
-            Role::Elevated
+            LocalRole::SystemAdmin
         } else {
-            Role::Standard
+            LocalRole::NetworkAdmin
         }
     }
 
-    /// Require at least a standard (authenticated) peer.
-    pub fn require_standard(&self) -> Result<(), ApiError> {
-        match self.role() {
-            Role::Elevated | Role::Standard => Ok(()),
-            Role::Denied => Err(ApiError {
-                code: ApiErrorCode::Denied,
-                message: "access denied".into(),
-            }),
-        }
+    pub fn capabilities(&self) -> Vec<&'static str> {
+        self.role().capabilities()
     }
 
-    /// Require elevated privileges or daemon ownership (enroll / reset / create).
-    pub fn require_elevated(&self) -> Result<(), ApiError> {
-        if self.elevated || self.same_user {
+    pub fn require_cap(&self, cap: &str) -> Result<(), ApiError> {
+        if self.capabilities().contains(&cap) {
             return Ok(());
         }
+        let message = if cap == permissions::LIFECYCLE {
+            elevated_required_message().into()
+        } else {
+            format!("missing capability: {cap}")
+        };
         Err(ApiError {
             code: ApiErrorCode::Denied,
-            message: elevated_required_message().into(),
+            message,
         })
+    }
+
+    /// Require at least `status.read`.
+    pub fn require_standard(&self) -> Result<(), ApiError> {
+        self.require_cap(STATUS_READ)
+    }
+
+    /// Require `lifecycle` (enroll / reset / create).
+    pub fn require_elevated(&self) -> Result<(), ApiError> {
+        self.require_cap(LIFECYCLE)
     }
 }
 
@@ -89,7 +139,7 @@ pub fn peer_identity_from_unix(stream: &tokio::net::UnixStream) -> PeerIdentity 
             }
         }
         Err(e) => {
-            tracing::warn!(?e, "failed to read SO_PEERCRED; treating as standard");
+            tracing::warn!(?e, "failed to read SO_PEERCRED; treating as observer");
             PeerIdentity {
                 uid: u32::MAX,
                 gid: u32::MAX,
@@ -115,7 +165,7 @@ pub fn peer_identity_from_windows(
         Err(e) => {
             tracing::warn!(
                 ?e,
-                "failed to classify named-pipe peer; treating as standard"
+                "failed to classify named-pipe peer; treating as observer"
             );
             PeerIdentity {
                 elevated: false,

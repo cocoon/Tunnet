@@ -4,7 +4,8 @@ use crate::state::{PersistedState, StatePaths};
 use anyhow::Context;
 use clap::Args;
 use tunnet_client::{
-    ApiErrorCode, PingEvent, PingProbe, PingSummary, StatusInfo, TunnetClient, format_api_error,
+    ApiErrorCode, NetworkSummary, NodeSummary, PeerSummary, PingEvent, PingProbe, PingSummary,
+    TunnetClient, format_api_error,
 };
 use tunnet_common::local_api::{ServeStartRequest, TunnelStartRequest};
 
@@ -229,10 +230,29 @@ pub async fn run_status(args: StatusArgs) -> anyhow::Result<()> {
 
     let mode = persisted.mode();
     if daemon_up {
-        match client.status(args.peers).await {
-            Ok(info) => {
+        match client.node().await {
+            Ok(node) => {
+                let peers_by_network = if args.peers {
+                    fetch_peers_by_network(&client, &node).await?
+                } else {
+                    std::collections::HashMap::new()
+                };
                 if out.json {
-                    let mut v = serde_json::to_value(&info)?;
+                    let mut v = serde_json::to_value(&node)?;
+                    if args.peers
+                        && let Some(obj) = v.as_object_mut()
+                        && let Some(networks) =
+                            obj.get_mut("networks").and_then(|n| n.as_array_mut())
+                    {
+                        for net in networks {
+                            if let Some(id) = net.get("network_id").and_then(|id| id.as_str())
+                                && let Some(peers) = peers_by_network.get(id)
+                                && let Some(net_obj) = net.as_object_mut()
+                            {
+                                net_obj.insert("peers".into(), serde_json::to_value(peers)?);
+                            }
+                        }
+                    }
                     if let Some(obj) = v.as_object_mut() {
                         obj.insert("mode".into(), serde_json::json!(mode));
                         obj.insert("daemon_running".into(), serde_json::json!(true));
@@ -248,12 +268,42 @@ pub async fn run_status(args: StatusArgs) -> anyhow::Result<()> {
                     }
                     return out.print_json(&v);
                 }
-                print_status(&out, &info, mode, true, &service);
+                print_status(&out, &node, &peers_by_network, mode, true, &service);
                 return Ok(());
             }
             Err(e) => {
-                // Pipe was open but HTTP failed - still report as not healthy.
-                tracing::debug!(?e, "Local API reachable but status failed");
+                let msg = e.to_string();
+                if out.json {
+                    return out.print_json(&serde_json::json!({
+                        "connected": true,
+                        "daemon_running": false,
+                        "api_reachable": true,
+                        "api_error": msg,
+                        "mode": mode,
+                        "service": {
+                            "installed": service.installed,
+                            "active": service.active,
+                            "state": service.state,
+                        },
+                    }));
+                }
+                let offline = offline_status(&paths, &persisted);
+                out.writeln(format!(
+                    "{} {}  {}  {}",
+                    out.online_dot(false),
+                    out.bold(&offline.hostname),
+                    out.cyan(&offline.ip),
+                    out.dim(&format!("· {}", offline.network_name))
+                ));
+                out.writeln(format!("  mode       {mode}"));
+                print_daemon_lines(&out, false, &service);
+                out.writeln(format!(
+                    "  state      {}",
+                    out.dim(&paths.dir.display().to_string())
+                ));
+                out.writeln(out.dim(&format!("  Local API error: {msg}")));
+                out.writeln(out.dim("  Fix: `tunnet service restart`"));
+                return Ok(());
             }
         }
     }
@@ -392,95 +442,131 @@ fn print_offline_status(
         out.dim(&state_dir.display().to_string())
     ));
     if service.active {
-        out.writeln(out.dim(
-            "  Windows/systemd says the service is up, but Local API is down - reinstall:\n\
-             `tunnet service uninstall` then `tunnet service install` && `tunnet service start`",
-        ));
+        out.writeln(
+            out.dim("  Service is up but Local API is down. Fix: `tunnet service restart`"),
+        );
     } else {
-        out.writeln(out.dim(
-            "  Start with `tunnet service start` (preferred) or run `tunnetd` in the foreground.",
-        ));
+        out.writeln(out.dim("  Start with `tunnet service start`."));
     }
 }
 
 fn print_status(
     out: &Output,
-    info: &StatusInfo,
+    node: &NodeSummary,
+    peers_by_network: &std::collections::HashMap<String, Vec<PeerSummary>>,
     mode: &str,
     agent_running: bool,
     service: &tunnet_service::ServiceProbe,
 ) {
     let online = out.online_dot(agent_running);
+    let primary = node.networks.first();
+    let primary_ip = primary.map(|n| n.ip.as_str()).unwrap_or("-");
+    let primary_name = primary
+        .map(|n| n.network_name.as_str())
+        .unwrap_or("no network");
     out.writeln(format!(
         "{} {}  {}  {}",
         online,
-        out.bold(&info.hostname),
-        out.cyan(&info.ip),
-        out.dim(&format!("· {}", info.network_name))
+        out.bold(&node.hostname),
+        out.cyan(primary_ip),
+        out.dim(&format!("· {primary_name}"))
     ));
     out.writeln(format!("  mode       {mode}"));
-    if let Some(up) = info.data_plane_up {
+    out.writeln(format!(
+        "  data plane {}",
+        if node.data_plane_up {
+            out.green("up")
+        } else {
+            out.dim("down")
+        }
+    ));
+    out.writeln(format!(
+        "  endpoint   {}",
+        out.dim(&output::short_endpoint(&node.endpoint_id))
+    ));
+
+    if let Some(cp) = &node.control {
+        print_control_plane(out, cp);
+    }
+
+    print_service_lines(out, service, agent_running);
+    out.writeln(format!(
+        "  uptime     {}  ·  daemon v{}  ·  snap {}",
+        output::format_uptime(node.uptime_secs),
+        node.daemon_version,
+        node.snapshot_version
+    ));
+
+    if let Some(od) = &node.on_demand {
         out.writeln(format!(
-            "  data plane {}",
-            if up { out.green("up") } else { out.dim("down") }
+            "  on-demand  {} ok / {} fail · {} buffered",
+            od.reconnect_success, od.reconnect_fail, od.packets_buffered
         ));
     }
-    if let Some(ka) = info.keep_alive {
+
+    for net in &node.networks {
+        out.writeln("");
+        print_network_section(out, net, peers_by_network.get(&net.network_id));
+    }
+}
+
+fn print_control_plane(out: &Output, cp: &tunnet_common::local_api::ControlPlaneStatusInfo) {
+    let loopback =
+        cp.url.contains("127.0.0.1") || cp.url.contains("localhost") || cp.url.contains("[::1]");
+    let state = if cp.connected {
+        out.green("connected")
+    } else {
+        out.red("disconnected")
+    };
+    let mut line = format!("  control    {state}  {}", cp.url);
+    if let Some(secs) = cp.connected_for_secs {
+        line.push_str(&format!("  ·  up {}", output::format_uptime(secs)));
+    } else if let Some(secs) = cp.last_change_secs_ago {
+        line.push_str(&format!("  ·  {}", output::format_uptime(secs)));
+        line.push_str(" ago");
+    }
+    if cp.reconnects > 0 {
+        line.push_str(&format!("  ·  reconnects {}", cp.reconnects));
+    }
+    out.writeln(line);
+    if loopback {
+        out.writeln(format!(
+            "             {}",
+            out.yellow("loopback URL - remote VMs must enroll with the host LAN/public URL")
+        ));
+    }
+    if let Some(err) = &cp.last_error
+        && !cp.connected
+    {
+        out.writeln(format!(
+            "             {}",
+            out.dim(&format!("last error: {err}"))
+        ));
+        let skew = err.contains("stale")
+            || err.contains("401")
+            || err.to_ascii_lowercase().contains("unauthorized");
+        if skew {
+            out.writeln(format!(
+                "             {}",
+                out.yellow("hint: sync this machine's clock (VM time drift breaks control auth)")
+            ));
+        }
+    }
+}
+
+fn print_network_section(out: &Output, net: &NetworkSummary, peers: Option<&Vec<PeerSummary>>) {
+    out.writeln(out.bold(&format!("Network: {}", net.network_name)));
+    out.writeln(format!("  ip         {}", out.cyan(&net.ip)));
+    out.writeln(format!("  role       {}  ·  {}", net.role, net.mode));
+    if let Some(ka) = net.keep_alive {
         out.writeln(format!(
             "  keep-alive {}",
             if ka { "on" } else { "off (on-demand)" }
         ));
     }
-    out.writeln(format!(
-        "  endpoint   {}",
-        out.dim(&output::short_endpoint(&info.endpoint_id))
-    ));
-    if let Some(cp) = &info.control {
-        let loopback = cp.url.contains("127.0.0.1")
-            || cp.url.contains("localhost")
-            || cp.url.contains("[::1]");
-        let state = if cp.connected {
-            out.green("connected")
-        } else {
-            out.red("disconnected")
-        };
-        let mut line = format!("  control    {state}  {}", cp.url);
-        if let Some(secs) = cp.connected_for_secs {
-            line.push_str(&format!("  ·  up {}", output::format_uptime(secs)));
-        } else if let Some(secs) = cp.last_change_secs_ago {
-            line.push_str(&format!("  ·  {}", output::format_uptime(secs)));
-            line.push_str(" ago");
-        }
-        if cp.reconnects > 0 {
-            line.push_str(&format!("  ·  reconnects {}", cp.reconnects));
-        }
-        out.writeln(line);
-        if loopback {
-            out.writeln(format!(
-                "             {}",
-                out.yellow("loopback URL - remote VMs must enroll with the host LAN/public URL")
-            ));
-        }
-        if let Some(err) = &cp.last_error
-            && !cp.connected
-        {
-            out.writeln(format!(
-                "             {}",
-                out.dim(&format!("last error: {err}"))
-            ));
-            let skew = err.contains("stale")
-                || err.contains("401")
-                || err.to_ascii_lowercase().contains("unauthorized");
-            if skew {
-                out.writeln(format!(
-                    "             {}",
-                    out.yellow(
-                        "hint: sync this machine's clock (VM time drift breaks control auth)"
-                    )
-                ));
-            }
-        }
-    } else if let Some(url) = &info.control_url {
+    if let Some(cp) = &net.control {
+        print_control_plane(out, cp);
+    } else if let Some(url) = &net.control_url {
         let loopback =
             url.contains("127.0.0.1") || url.contains("localhost") || url.contains("[::1]");
         if loopback {
@@ -493,33 +579,26 @@ fn print_status(
             out.writeln(format!("  control    {url}"));
         }
     }
-    print_service_lines(out, service, agent_running);
     out.writeln(format!(
         "  peers      {} online / {} total",
-        info.peers_online, info.peers_total
+        net.peers_online, net.peers_total
     ));
-    out.writeln(format!("  relay      {}", info.relay_status));
-    if let Some(drops) = info.firewall_drops {
+    out.writeln(format!("  relay      {}", net.relay_status));
+    if let Some(drops) = net.firewall_drops {
         out.writeln(format!(
             "  firewall   {} drops · {} conntrack",
             drops,
-            info.conntrack_entries.unwrap_or(0)
+            net.conntrack_entries.unwrap_or(0)
         ));
     }
-    out.writeln(format!(
-        "  uptime     {}  ·  agent v{}  ·  snap {}",
-        output::format_uptime(info.uptime_secs),
-        info.agent_version,
-        info.snapshot_version
-    ));
-    if let Some(secs) = info.expires_in_secs {
+    if let Some(secs) = net.expires_in_secs {
         out.writeln(format!(
             "  expiry     {} remaining",
             output::format_uptime(secs)
         ));
     }
 
-    if let Some(peers) = &info.peers {
+    if let Some(peers) = peers {
         out.writeln("");
         out.writeln(out.bold("Peers"));
         out.writeln(format!(
@@ -547,6 +626,18 @@ fn print_status(
             ));
         }
     }
+}
+
+async fn fetch_peers_by_network(
+    client: &TunnetClient,
+    node: &NodeSummary,
+) -> anyhow::Result<std::collections::HashMap<String, Vec<PeerSummary>>> {
+    let mut out = std::collections::HashMap::new();
+    for net in &node.networks {
+        let resp = client.network_peers(&net.network_id).await?;
+        out.insert(net.network_id.clone(), resp.peers);
+    }
+    Ok(out)
 }
 
 pub async fn run_ping(args: PingArgs) -> anyhow::Result<()> {
@@ -666,7 +757,7 @@ pub async fn run_reload(args: ReloadArgs) -> anyhow::Result<()> {
 pub async fn run_route_list(args: RouteListArgs) -> anyhow::Result<()> {
     let out = Output::new(args.json);
     let client = ipc_or_err(args.state_dir.as_deref()).await?;
-    let info = client.routes_list().await?;
+    let info = client.routes_list(None).await?;
     if out.json {
         return out.print_json(&info);
     }

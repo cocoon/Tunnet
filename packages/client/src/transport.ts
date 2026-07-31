@@ -171,6 +171,44 @@ export function networkQuery(base: string, network?: string): string {
   return `${base}?network=${encodeURIComponent(network)}`;
 }
 
+export async function* parseEventsSse(
+  body: { getReader(): ReadableStreamDefaultReader<Uint8Array> } | null,
+): AsyncGenerator<import("./types").LocalEvent> {
+  if (!body) return;
+
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const blocks = buffer.split("\n\n");
+    buffer = blocks.pop() ?? "";
+
+    for (const block of blocks) {
+      for (const line of block.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (!data) continue;
+
+        try {
+          yield JSON.parse(data) as import("./types").LocalEvent;
+        } catch {
+          try {
+            const err = JSON.parse(data) as ApiError;
+            throw new TunnetApiError(err.code as ApiErrorCode, err.message);
+          } catch (inner) {
+            if (inner instanceof TunnetApiError) throw inner;
+          }
+        }
+      }
+    }
+  }
+}
+
 export async function* parsePingSse(
   body: { getReader(): ReadableStreamDefaultReader<Uint8Array> } | null,
 ): AsyncGenerator<import("./types").PingEvent> {

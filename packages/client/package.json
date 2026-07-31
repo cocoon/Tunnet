@@ -8,5 +8,8 @@
   },
   "dependencies": {
     "undici": "^7.28.0"
+  },
+  "scripts": {
+    "check-api-version": "bun run scripts/check-api-version.ts"
   }
 }

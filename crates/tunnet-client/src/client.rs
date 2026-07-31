@@ -17,14 +17,15 @@ use tunnet_common::local_api::{
     DirectFirewallPendingResponse, DirectFirewallResponse, DirectInviteRequest,
     DirectInviteResponse, DirectKeepAliveRequest, DirectNetworkRequest, DirectOverrideIpRequest,
     DirectPendingResponse, DirectPolicyResponse, DirectPolicySetRequest, DnsStatusInfo,
-    JsonPayload, LocalEnrollRequest, NetcheckInfo, NetworkCreateRequest, NetworkJoinRequest,
-    NetworkLeaveRequest, NetworkUpgradeRequest, OkResponse, PingEvent, PolicyOpRequest,
+    JsonPayload, LocalEnrollRequest, LocalEvent, MetaInfo, NetcheckInfo, NetworkCreateRequest,
+    NetworkJoinRequest, NetworkLeaveRequest, NetworkSummary, NetworkUpgradeRequest,
+    NetworksResponse, NodeSummary, OkResponse, PeersResponse, PingEvent, PolicyOpRequest,
     PostureCheckRequest, ResetRequest, RouteAddRequest, RouteAddedResponse, RoutesInfo,
     SendAcceptRequest, SendConfigInfo, SendFileRequest, SendRejectRequest, SendSetConfigRequest,
     ServeInfo, ServeStartRequest, ServesResponse, SshAuthPollRequest, SshAuthPollResponse,
-    SshCastResponse, SshRecordingsResponse, SshSessionsResponse, StatusInfo, TransferInfo,
-    TransfersResponse, TunnelInfo, TunnelStartRequest, TunnelsResponse, UpdateRequest,
-    ValidateConfigRequest, format_api_error,
+    SshCastResponse, SshRecordingsResponse, SshSessionsResponse, TransferInfo, TransfersResponse,
+    TunnelInfo, TunnelStartRequest, TunnelsResponse, UpdateRequest, ValidateConfigRequest,
+    format_api_error,
 };
 
 use crate::transport::{self, default_api_path};
@@ -60,16 +61,115 @@ impl TunnetClient {
     // Status / networking
     // -----------------------------------------------------------------------
 
-    pub async fn status(&self, peers: bool) -> anyhow::Result<StatusInfo> {
-        self.get_json(&format!("/v1/status?peers={peers}")).await
+    pub async fn meta(&self) -> anyhow::Result<MetaInfo> {
+        self.get_json("/v1/meta").await
+    }
+
+    pub async fn node(&self) -> anyhow::Result<NodeSummary> {
+        self.get_json("/v1/node").await
+    }
+
+    pub async fn networks(&self) -> anyhow::Result<NetworksResponse> {
+        self.get_json("/v1/networks").await
+    }
+
+    pub async fn network(&self, network_id: &str) -> anyhow::Result<NetworkSummary> {
+        self.get_json(&format!("/v1/networks/{}", urlencoding(network_id)))
+            .await
+    }
+
+    pub async fn network_peers(&self, network_id: &str) -> anyhow::Result<PeersResponse> {
+        self.get_json(&format!("/v1/networks/{}/peers", urlencoding(network_id)))
+            .await
+    }
+
+    pub async fn network_routes(&self, network_id: &str) -> anyhow::Result<RoutesInfo> {
+        self.get_json(&format!("/v1/networks/{}/routes", urlencoding(network_id)))
+            .await
+    }
+
+    pub async fn network_firewall(
+        &self,
+        network_id: &str,
+    ) -> anyhow::Result<DirectFirewallResponse> {
+        self.get_json(&format!(
+            "/v1/networks/{}/firewall",
+            urlencoding(network_id)
+        ))
+        .await
+    }
+
+    pub async fn network_join_requests(
+        &self,
+        network_id: &str,
+    ) -> anyhow::Result<DirectPendingResponse> {
+        self.get_json(&format!(
+            "/v1/networks/{}/join-requests",
+            urlencoding(network_id)
+        ))
+        .await
+    }
+
+    pub async fn network_join_accept(
+        &self,
+        network_id: &str,
+        peer_id: &str,
+    ) -> anyhow::Result<OkResponse> {
+        self.post_json(
+            &format!(
+                "/v1/networks/{}/join-requests/{}/accept",
+                urlencoding(network_id),
+                urlencoding(peer_id)
+            ),
+            &EmptyBody {},
+        )
+        .await
+    }
+
+    pub async fn network_join_deny(
+        &self,
+        network_id: &str,
+        peer_id: &str,
+    ) -> anyhow::Result<OkResponse> {
+        self.post_json(
+            &format!(
+                "/v1/networks/{}/join-requests/{}/deny",
+                urlencoding(network_id),
+                urlencoding(peer_id)
+            ),
+            &EmptyBody {},
+        )
+        .await
+    }
+
+    /// Stream local daemon events from `GET /v1/events` (SSE).
+    pub async fn events<F>(&self, mut on_event: F) -> anyhow::Result<()>
+    where
+        F: FnMut(LocalEvent) -> anyhow::Result<()>,
+    {
+        let (status, bytes) = self
+            .raw_request("GET", "/v1/events", None::<&EmptyBody>)
+            .await?;
+        if !(200..300).contains(&status) {
+            if let Ok(err) = serde_json::from_slice::<ApiError>(&bytes) {
+                bail!("{}", format_api_error(&err.code, &err.message));
+            }
+            bail!("events SSE failed ({status})");
+        }
+
+        parse_events_sse(&bytes, &mut on_event)
     }
 
     pub async fn dns(&self) -> anyhow::Result<DnsStatusInfo> {
         self.get_json("/v1/dns").await
     }
 
-    pub async fn routes_list(&self) -> anyhow::Result<RoutesInfo> {
-        self.get_json("/v1/routes").await
+    pub async fn routes_list(&self, network_id: Option<&str>) -> anyhow::Result<RoutesInfo> {
+        let uri = match network_id {
+            Some(id) => format!("/v1/routes?network_id={}", urlencoding(id)),
+            None => "/v1/routes".to_string(),
+        };
+        self.get_json(&uri).await
     }
 
     pub async fn routes_add(
@@ -705,9 +805,14 @@ fn urlencoding(s: &str) -> String {
     out
 }
 
-fn parse_ping_sse<F>(bytes: &Bytes, on_event: &mut F) -> anyhow::Result<()>
+fn parse_sse_data<F, T>(
+    bytes: &Bytes,
+    mut on_event: F,
+    stop_on: impl Fn(&T) -> bool,
+) -> anyhow::Result<()>
 where
-    F: FnMut(PingEvent) -> anyhow::Result<()>,
+    F: FnMut(T) -> anyhow::Result<()>,
+    T: serde::de::DeserializeOwned,
 {
     let text = String::from_utf8_lossy(bytes);
     for block in text.split("\n\n") {
@@ -719,10 +824,10 @@ where
             if data.is_empty() {
                 continue;
             }
-            if let Ok(event) = serde_json::from_str::<PingEvent>(data) {
-                let is_summary = matches!(event, PingEvent::Summary(_));
+            if let Ok(event) = serde_json::from_str::<T>(data) {
+                let done = stop_on(&event);
                 on_event(event)?;
-                if is_summary {
+                if done {
                     return Ok(());
                 }
             } else if let Ok(err) = serde_json::from_str::<ApiError>(data) {
@@ -731,4 +836,20 @@ where
         }
     }
     Ok(())
+}
+
+fn parse_ping_sse<F>(bytes: &Bytes, on_event: &mut F) -> anyhow::Result<()>
+where
+    F: FnMut(PingEvent) -> anyhow::Result<()>,
+{
+    parse_sse_data(bytes, on_event, |event| {
+        matches!(event, PingEvent::Summary(_))
+    })
+}
+
+fn parse_events_sse<F>(bytes: &Bytes, on_event: &mut F) -> anyhow::Result<()>
+where
+    F: FnMut(LocalEvent) -> anyhow::Result<()>,
+{
+    parse_sse_data(bytes, on_event, |_| false)
 }

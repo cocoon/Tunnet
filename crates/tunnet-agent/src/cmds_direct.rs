@@ -690,6 +690,9 @@ pub async fn run_upgrade(args: UpgradeArgs, state_dir: Option<&str>) -> anyhow::
         network_id: resp.network_id,
         organization_id: resp.organization_id,
         enrolled_at: chrono::Utc::now(),
+        management_url: None,
+        dashboard_url: None,
+        local_ui: tunnet_common::local_api::LocalUiPolicy::default(),
     });
     persist_agent(&paths, &identity, managed, policy)?;
     tunnet_core::state::save_snapshot_cache(&paths, &resp.snapshot)?;
@@ -717,24 +720,8 @@ pub async fn run_upgrade(args: UpgradeArgs, state_dir: Option<&str>) -> anyhow::
 pub async fn run_leave(args: LeaveArgs, state_dir: Option<&str>) -> anyhow::Result<()> {
     let paths = paths(state_dir);
     let policy = SealPolicy::from_env_and_flag(false);
-    let (identity, mut persisted, _) = load_agent(&paths, policy)?;
     let name = args.network.or(args.name);
-    let direct = persisted.require_direct_network(name.as_deref())?.clone();
-    let nid = direct.network_id;
-    let nname = direct.network_name.clone();
-    let Some(networks) = persisted.direct_networks_mut() else {
-        anyhow::bail!("not in Direct mode");
-    };
-    networks.retain(|d| d.network_id != nid);
-    if networks.is_empty() {
-        // wipe public state + docs; keep identity only via full reset suggestion
-        anyhow::bail!("leaving the last Direct network; use `tunnet reset --yes` instead");
-    }
-    let docs = paths.docs_dir(nid);
-    if docs.exists() {
-        let _ = std::fs::remove_dir_all(&docs);
-    }
-    persist_agent(&paths, &identity, persisted, policy)?;
+    let nname = tunnet_core::leave_direct_network(&paths, policy, name.as_deref())?;
     println!("Left Direct network '{nname}'. Restart the agent to apply.");
     crate::cmds::finish_after_config(state_dir, true).await?;
     Ok(())

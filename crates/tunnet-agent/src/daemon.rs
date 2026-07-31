@@ -181,9 +181,14 @@ async fn start_idle_bootstrap(
     use tunnet_core::local_api::{BootstrapApiState, spawn_bootstrap_api};
 
     let bootstrap = Arc::new(crate::api_bootstrap::AgentBootstrapOps::new(paths.clone()));
-    let handle = spawn_bootstrap_api(BootstrapApiState { bootstrap })
-        .await
-        .context("start idle Local Management API")?;
+    let (events_tx, _) = tokio::sync::broadcast::channel(256);
+    let handle = spawn_bootstrap_api(BootstrapApiState {
+        bootstrap,
+        daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+        events: events_tx,
+    })
+    .await
+    .context("start idle Local Management API")?;
     if let Some(tx) = on_ready.take() {
         let _ = tx.send(());
     }

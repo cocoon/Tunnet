@@ -215,6 +215,7 @@ pub async fn run(
     let (data_plane, cmd_rx) = DataPlaneHandle::new(8);
     let bootstrap: Arc<dyn tunnet_core::local_api::BootstrapOps> =
         Arc::new(crate::api_bootstrap::AgentBootstrapOps::new(paths.clone()));
+    let (events_tx, _) = tokio::sync::broadcast::channel(256);
     let api_state = Arc::new(LocalApiState {
         node: node.clone(),
         hostname: hostname.clone(),
@@ -230,8 +231,16 @@ pub async fn run(
         send: node.send.clone(),
         data_plane: data_plane.clone(),
         bootstrap,
+        events: events_tx,
     });
-    let _api_task = spawn_local_api(api_state)
+    api_state.send.set_events_tx(api_state.events.clone());
+    if let Some(link) = &node.control_link {
+        link.set_events_tx(api_state.events.clone());
+        if link.snapshot().connected {
+            api_state.emit(tunnet_common::local_api::LocalEvent::ControlConnected);
+        }
+    }
+    let _api_task = spawn_local_api(api_state.clone())
         .await
         .context("start Local Management API")?;
     if let Some(tx) = on_ready.take() {
@@ -488,6 +497,7 @@ pub async fn run(
         peer_dns_active: peer_dns_active.clone(),
         initial,
         ingress,
+        events: api_state.events.clone(),
     });
 
     if !args.disable_gossip {

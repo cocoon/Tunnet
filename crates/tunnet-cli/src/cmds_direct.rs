@@ -167,6 +167,9 @@ pub async fn run_create(args: CreateArgs, state_dir: Option<&str>) -> anyhow::Re
     match client.network_create(&body).await {
         Ok(resp) => {
             println!("{}", resp.message);
+            if let Err(e) = crate::cmds::wait_until_daemon(state_dir, 60).await {
+                println!("Note: {e}");
+            }
             Ok(())
         }
         Err(e) if crate::cmds::is_api_connection_closed(&e) => {
@@ -188,6 +191,9 @@ pub async fn run_join(args: JoinArgs, state_dir: Option<&str>) -> anyhow::Result
     match client.network_join(&body).await {
         Ok(resp) => {
             println!("{}", resp.message);
+            if let Err(e) = crate::cmds::wait_until_daemon(state_dir, 60).await {
+                println!("Note: {e}");
+            }
             Ok(())
         }
         Err(e) if crate::cmds::is_api_connection_closed(&e) => {
@@ -413,14 +419,40 @@ pub async fn run_upgrade(args: UpgradeArgs, state_dir: Option<&str>) -> anyhow::
 
 pub async fn run_leave(args: LeaveArgs, state_dir: Option<&str>) -> anyhow::Result<()> {
     tunnet_service::ensure_admin()?;
-    let client = ipc_or_err(state_dir).await?;
-    let body = NetworkLeaveRequest {
-        network: args.network,
-        name: args.name,
-    };
-    let resp = client.network_leave(&body).await?;
-    println!("{}", resp.message);
-    Ok(())
+
+    match ipc_or_err(state_dir).await {
+        Ok(client) => {
+            let body = NetworkLeaveRequest {
+                network: args.network,
+                name: args.name,
+            };
+            let resp = client.network_leave(&body).await?;
+            println!("{}", resp.message);
+            Ok(())
+        }
+        Err(_) => {
+            let paths = tunnet_core::StatePaths::resolve(state_dir);
+            let policy = tunnet_core::SealPolicy::from_env_and_flag(false);
+            let name = args.network.or(args.name);
+            let nname = tunnet_core::leave_direct_network(&paths, policy, name.as_deref())?;
+            println!("Left Direct network '{nname}'.");
+            match tunnet_service::reload_after_config(state_dir) {
+                Ok(()) => {
+                    if let Err(e) = crate::cmds::wait_until_daemon(state_dir, 20).await {
+                        println!("Note: {e}");
+                    } else {
+                        println!("Agent is up.");
+                    }
+                }
+                Err(e) => {
+                    println!(
+                        "Note: could not reload agent ({e:#}). Start with `tunnet service start`."
+                    );
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 pub async fn run_override_ip(args: OverrideIpArgs, state_dir: Option<&str>) -> anyhow::Result<()> {

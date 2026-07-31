@@ -119,6 +119,8 @@ impl BootstrapOps for AgentBootstrapOps {
             labels_json,
             expires_in: req.expires_in,
             no_encrypt_state: req.no_encrypt_state,
+            management_url: req.management_url,
+            dashboard_url: req.dashboard_url,
         };
         crate::cli::run_enroll(args, self.state_dir().as_deref())
             .await

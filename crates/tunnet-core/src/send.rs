@@ -15,6 +15,7 @@ use iroh_blobs::{BlobFormat, BlobsProtocol, Hash, HashAndFormat};
 use parking_lot::Mutex;
 use std::str::FromStr;
 use tokio::sync::mpsc;
+use tunnet_common::local_api::LocalEvent;
 use tunnet_common::send::{
     ConsentDecision, SEND_ALPN, SendBlobFormat, SendConsentMode, SendWireMsg, TransferDecision,
     TransferDone, TransferOffer,
@@ -130,6 +131,7 @@ struct SendInner {
     /// Pending inbound offers waiting for prompt consent.
     pending: Mutex<HashMap<String, PendingOffer>>,
     client_tx: Mutex<Option<mpsc::Sender<ClientMsg>>>,
+    events_tx: Mutex<Option<tokio::sync::broadcast::Sender<LocalEvent>>>,
 }
 
 struct PendingOffer {
@@ -177,6 +179,7 @@ impl SendManager {
                 retained_tags: Mutex::new(Vec::new()),
                 pending: Mutex::new(HashMap::new()),
                 client_tx: Mutex::new(None),
+                events_tx: Mutex::new(None),
             }),
         };
         let cfg = mgr.config();
@@ -193,6 +196,10 @@ impl SendManager {
 
     pub fn set_client_tx(&self, tx: mpsc::Sender<ClientMsg>) {
         *self.inner.client_tx.lock() = Some(tx);
+    }
+
+    pub fn set_events_tx(&self, tx: tokio::sync::broadcast::Sender<LocalEvent>) {
+        *self.inner.events_tx.lock() = Some(tx);
     }
 
     pub fn blobs_protocol(&self) -> BlobsProtocol {
@@ -265,6 +272,12 @@ impl SendManager {
         let tx = self.inner.client_tx.lock().clone();
         if let Some(tx) = tx {
             let _ = tx.send(msg).await;
+        }
+    }
+
+    fn emit_local(&self, event: LocalEvent) {
+        if let Some(tx) = self.inner.events_tx.lock().as_ref() {
+            let _ = tx.send(event);
         }
     }
 
@@ -397,6 +410,9 @@ impl SendManager {
                 completed_at_ms: None,
             };
             self.upsert(record.clone());
+            self.emit_local(LocalEvent::TransferCreated {
+                id: transfer_id.clone(),
+            });
             self.emit(ClientMsg::TransferOffer {
                 transfer_id: transfer_id.clone(),
                 sender_endpoint_id: self.inner.self_endpoint_id.clone(),
@@ -512,11 +528,12 @@ impl SendManager {
                         .lock()
                         .push((tag_name, Instant::now() + SENDER_TTL));
                     self.emit(ClientMsg::TransferComplete {
-                        transfer_id,
+                        transfer_id: transfer_id.clone(),
                         inbox_path: None,
                         duration_ms: None,
                     })
                     .await;
+                    self.emit_local(LocalEvent::TransferCompleted { id: transfer_id });
                 } else {
                     self.update_status(
                         &transfer_id,
@@ -608,6 +625,9 @@ impl SendManager {
             completed_at_ms: None,
         };
         self.upsert(record);
+        self.emit_local(LocalEvent::TransferCreated {
+            id: offer.transfer_id.clone(),
+        });
         self.emit(ClientMsg::TransferOffer {
             transfer_id: offer.transfer_id.clone(),
             sender_endpoint_id: offer.sender_endpoint_id.clone(),
@@ -802,6 +822,9 @@ impl SendManager {
                 .await;
                 // Keep recv half alive briefly
                 let _ = &mut recv;
+                self.emit_local(LocalEvent::TransferCompleted {
+                    id: transfer_id.clone(),
+                });
                 self.emit(ClientMsg::TransferComplete {
                     transfer_id,
                     inbox_path: Some(inbox_str),
@@ -874,6 +897,10 @@ impl SendManager {
                     if last_emit.elapsed() >= PROGRESS_THROTTLE || (pct - last_pct).abs() >= 1.0 {
                         last_emit = Instant::now();
                         last_pct = pct;
+                        self.emit_local(LocalEvent::TransferProgress {
+                            id: transfer_id.to_string(),
+                            bytes,
+                        });
                         self.emit(ClientMsg::TransferProgress {
                             transfer_id: transfer_id.to_string(),
                             percent: pct,

@@ -16,7 +16,7 @@ param(
     [string]$InstallDir = "",
     [switch]$NoService,
     [switch]$NoVerify,
-    [string[]]$Bins = @("tunnet", "tunnetd", "tunnet-control", "tunnet-relay"),
+    [string[]]$Bins = @("tunnet", "tunnetd"),
     [string]$Repo = $(if ($env:TUNNET_REPO) { $env:TUNNET_REPO } else { "tunnetio/Tunnet" })
 )
 
@@ -114,28 +114,51 @@ if (Test-Path $existingBin) {
     }
 }
 
-$archive = "tunnet-$versionBare-$target.zip"
+$archiveCandidates = @(
+    "tunnet-headless-$versionBare-$target.zip",
+    "tunnet-$versionBare-$target.zip"
+)
+$extractCandidates = @(
+    "tunnet-headless-$versionBare-$target",
+    "tunnet-$versionBare-$target"
+)
+
+$archive = $null
+$extractedName = $null
 $baseUrl = "https://github.com/$Repo/releases/download/$tag"
-$url = "$baseUrl/$archive"
-$checksumUrl = "$url.sha256"
 
 Write-Info "Installing Tunnet $tag ($target)"
-Write-Info "  archive: $url"
 Write-Info "  dest:    $InstallDir"
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("tunnet-install-" + [guid]::NewGuid().ToString("n"))
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
-    $archivePath = Join-Path $tmp $archive
-    $checksumPath = Join-Path $tmp "$archive.sha256"
+    $archivePath = $null
+    foreach ($i in 0..($archiveCandidates.Count - 1)) {
+        $candidate = $archiveCandidates[$i]
+        $candidatePath = Join-Path $tmp $candidate
+        try {
+            Write-Info "Downloading ${candidate}…"
+            Invoke-WebRequest -Uri "$baseUrl/$candidate" -OutFile $candidatePath -UseBasicParsing
+            $archive = $candidate
+            $extractedName = $extractCandidates[$i]
+            $archivePath = $candidatePath
+            break
+        }
+        catch {
+            continue
+        }
+    }
 
-    Write-Info "Downloading ${archive}…"
-    try {
-        Invoke-WebRequest -Uri $url -OutFile $archivePath -UseBasicParsing
+    if (-not $archive) {
+        Die "no release archive found for $tag ($target); tried: $($archiveCandidates -join ', ')"
     }
-    catch {
-        Die "download failed: $($_.Exception.Message)"
-    }
+
+    $url = "$baseUrl/$archive"
+    $checksumUrl = "$url.sha256"
+    Write-Info "  archive: $url"
+
+    $checksumPath = Join-Path $tmp "$archive.sha256"
 
     try {
         Invoke-WebRequest -Uri $checksumUrl -OutFile $checksumPath -UseBasicParsing
@@ -166,7 +189,7 @@ try {
     }
 
     Expand-Archive -Path $archivePath -DestinationPath $tmp -Force
-    $extracted = Join-Path $tmp "tunnet-$versionBare-$target"
+    $extracted = Join-Path $tmp $extractedName
     if (-not (Test-Path $extracted)) {
         Die "unexpected archive layout (missing $extracted)"
     }
@@ -175,10 +198,11 @@ try {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     }
 
+    $SERVICE_NAME = "tunnet"
     $svcRunning = $false
     if (Get-Service -Name $SERVICE_NAME -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Running' }) {
         Write-Info "Stopping running service before update…"
-        Stop-Service -Name "tunnet" -Force -ErrorAction SilentlyContinue
+        Stop-Service -Name $SERVICE_NAME -Force -ErrorAction SilentlyContinue
         $svcRunning = $true
     }
 
@@ -198,6 +222,13 @@ try {
 
     if ($installedCount -eq 0) {
         Die "no binaries were installed"
+    }
+
+    $wintunSrc = Join-Path $extracted "wintun.dll"
+    if (Test-Path $wintunSrc) {
+        $wintunDst = Join-Path $InstallDir "wintun.dll"
+        Copy-Item -Path $wintunSrc -Destination $wintunDst -Force
+        Write-Info "Installed wintun.dll -> $wintunDst"
     }
 
     $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")

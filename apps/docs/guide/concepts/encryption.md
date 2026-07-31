@@ -18,7 +18,7 @@ Tunnet uses QUIC ALPN (Application-Layer Protocol Negotiation) to multiplex diff
 
 ## Direct mode transport auth
 
-In Direct mode (no control plane), peers additionally perform a PSK handshake before accepting any application-level ALPN. This ensures that only peers who know the network secret can communicate, even without a central authority.
+In Direct mode (no control plane), peers authenticate before accepting data-plane ALPNs. Joining uses an **invite bootstrap** proof (HMAC over the join secret from the invite code). After membership is established, peers present coordinator-signed **network grants** tied to the current **network epoch**. Coordinators bump the epoch and publish **revocations** when kicking a peer; revoked endpoints are rejected on reconnect.
 
 ## Secrets at rest
 

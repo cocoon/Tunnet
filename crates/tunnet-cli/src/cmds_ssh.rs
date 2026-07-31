@@ -4,7 +4,7 @@ use crate::state::{StatePaths, known_hosts_path};
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use tokio::io::AsyncWriteExt;
-use tunnet_client::TunnetClient;
+use tunnet_client::{PeerSummary, TunnetClient};
 
 #[derive(Args, Debug)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -516,13 +516,22 @@ fn default_ssh_config_path() -> anyhow::Result<std::path::PathBuf> {
     }
 }
 
+async fn all_peers(client: &TunnetClient) -> anyhow::Result<Vec<PeerSummary>> {
+    let node = client.node().await?;
+    let mut peers = Vec::new();
+    for net in &node.networks {
+        let resp = client.network_peers(&net.network_id).await?;
+        peers.extend(resp.peers);
+    }
+    Ok(peers)
+}
+
 async fn resolve_host(target: &str) -> Option<String> {
     if target.parse::<std::net::Ipv4Addr>().is_ok() {
         return Some(target.to_string());
     }
     let client = api_client(None).await.ok()?;
-    let status = client.status(true).await.ok()?;
-    let peers = status.peers.unwrap_or_default();
+    let peers = all_peers(&client).await.ok()?;
     let needle = target.trim_end_matches(".tunnet");
     for peer in peers {
         if peer.hostname.eq_ignore_ascii_case(needle)
@@ -556,8 +565,7 @@ fn local_username() -> String {
 pub async fn run_ssh_keyscan(args: SshKeyscanArgs) -> anyhow::Result<()> {
     let paths = StatePaths::resolve(args.state_dir.as_deref());
     let client = api_client(args.state_dir.as_deref()).await?;
-    let status = client.status(true).await?;
-    let peers = status.peers.unwrap_or_default();
+    let peers = all_peers(&client).await?;
     let suffix = "tunnet".to_string();
 
     let selected: Vec<_> = if args.targets.is_empty() {

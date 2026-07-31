@@ -84,6 +84,12 @@ pub struct EnrollResponse {
     #[serde(default = "default_enroll_status")]
     pub status: String,
     pub snapshot: EndpointSnapshot,
+    /// Management API base URL for this deployment (service discovery).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management_url: Option<String>,
+    /// Dashboard base URL for deep links from Desktop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dashboard_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -144,6 +144,8 @@ impl ManagementClient {
             network_name: parsed.network_name,
             status: "active".into(),
             snapshot: parsed.snapshot,
+            management_url: None,
+            dashboard_url: None,
         })
     }
 

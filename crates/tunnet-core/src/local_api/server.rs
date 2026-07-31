@@ -11,6 +11,8 @@ use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto::Builder as HyperBuilder;
 use tower::Service;
 
+use tunnet_common::local_api::LocalEvent;
+
 use super::bootstrap_router::{self, BootstrapApiState};
 use super::router;
 use super::state::LocalApiState;
@@ -20,17 +22,24 @@ use super::transport::{ApiListener, ApiStream};
 ///
 /// Binds before returning so callers can treat the API as ready.
 pub async fn spawn(state: Arc<LocalApiState>) -> anyhow::Result<tokio::task::JoinHandle<()>> {
-    spawn_listener(move |peer| router::app(state.clone()).layer(Extension(peer))).await
+    let emit_state = state.clone();
+    let handle =
+        spawn_listener(move |peer| router::app(state.clone()).layer(Extension(peer))).await?;
+    emit_state.emit(LocalEvent::DaemonReady);
+    Ok(handle)
 }
 
 /// Spawn a bootstrap-only API (idle agent waiting for create / enroll / join).
 pub async fn spawn_bootstrap(
     state: BootstrapApiState,
 ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
-    spawn_listener(move |peer| {
+    let events = state.events.clone();
+    let handle = spawn_listener(move |peer| {
         bootstrap_router::bootstrap_app(state.clone()).layer(Extension(peer))
     })
-    .await
+    .await?;
+    let _ = events.send(LocalEvent::DaemonReady);
+    Ok(handle)
 }
 
 async fn spawn_listener<F>(make_app: F) -> anyhow::Result<tokio::task::JoinHandle<()>>

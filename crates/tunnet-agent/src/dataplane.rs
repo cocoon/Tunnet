@@ -7,6 +7,7 @@ use anyhow::Context;
 use ipnet::Ipv4Net;
 use parking_lot::Mutex;
 use tun_rs::AsyncDevice;
+use tunnet_common::local_api::LocalEvent;
 use tunnet_common::{DeviceProfile, DnsConfig};
 use tunnet_core::local_api::dataplane::DataPlaneCmdRx;
 use tunnet_core::local_api::{DataPlaneHandle, recv_cmd};
@@ -57,6 +58,7 @@ pub struct ControllerSpawn {
     pub peer_dns_active: Arc<std::sync::atomic::AtomicBool>,
     pub initial: LivePlane,
     pub ingress: IngressRegistry,
+    pub events: tokio::sync::broadcast::Sender<LocalEvent>,
 }
 
 /// Spawns the data-plane controller that listens for up/down IPC commands.
@@ -71,6 +73,7 @@ pub fn spawn_controller(spawn: ControllerSpawn) {
         peer_dns_active,
         initial,
         ingress,
+        events,
     } = spawn;
     let state = Arc::new(Mutex::new(Some(initial)));
     tokio::spawn(async move {
@@ -84,6 +87,7 @@ pub fn spawn_controller(spawn: ControllerSpawn) {
                     &cfg,
                     &peer_dns_active,
                     &state,
+                    &events,
                 )
                 .await
             } else {
@@ -95,6 +99,7 @@ pub fn spawn_controller(spawn: ControllerSpawn) {
                     &state,
                     &ingress,
                     &node.tunnel_pool,
+                    &events,
                 )
                 .await
             };
@@ -145,6 +150,7 @@ fn route_snapshot(
     (vec![], DeviceProfile::default(), false)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn bring_down(
     handle: &DataPlaneHandle,
     tun_slot: &TunSlot,
@@ -153,6 +159,7 @@ async fn bring_down(
     state: &Mutex<Option<LivePlane>>,
     ingress: &IngressRegistry,
     tunnel_pool: &tunnet_core::ConnPool,
+    events: &tokio::sync::broadcast::Sender<LocalEvent>,
 ) -> anyhow::Result<()> {
     if !handle.is_up() {
         return Ok(());
@@ -179,10 +186,12 @@ async fn bring_down(
     }
     drop(live.tun);
     handle.set_up(false);
+    let _ = events.send(LocalEvent::DataPlaneChanged { up: false });
     tracing::info!("data plane down");
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn bring_up(
     handle: &DataPlaneHandle,
     tun_slot: &TunSlot,
@@ -191,6 +200,7 @@ async fn bring_up(
     cfg: &DataPlaneConfig,
     peer_dns_active: &std::sync::atomic::AtomicBool,
     state: &Mutex<Option<LivePlane>>,
+    events: &tokio::sync::broadcast::Sender<LocalEvent>,
 ) -> anyhow::Result<()> {
     if handle.is_up() {
         return Ok(());
@@ -252,6 +262,7 @@ async fn bring_up(
         has_exit,
     });
     handle.set_up(true);
+    let _ = events.send(LocalEvent::DataPlaneChanged { up: true });
     tracing::info!("data plane up");
     Ok(())
 }

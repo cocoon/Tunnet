@@ -144,6 +144,9 @@ pub async fn enroll(cfg: EnrollConfig) -> Result<EnrollResult> {
         network_id: resp.network_id,
         organization_id: resp.organization_id.clone(),
         enrolled_at: chrono::Utc::now(),
+        management_url: None,
+        dashboard_url: None,
+        local_ui: Default::default(),
     });
     let policy = tunnet_core::SealPolicy::from_env_and_flag(false);
     tunnet_core::persist_agent(&paths, &identity, persisted, policy).map_err(Error::enrollment)?;

@@ -13,7 +13,7 @@ pub use api_ready::wait_for_local_api;
 pub use paths::{resolve_state_dir, system_state_dir};
 
 #[cfg(windows)]
-pub use win_service::{args_for_clap, setup_elevation_capture};
+pub use win_service::{args_for_clap, run_elevated, setup_elevation_capture};
 
 /// Ensure this process can perform admin-only Local API / service ops.
 ///
@@ -96,8 +96,24 @@ pub fn refresh_unit(state_dir: Option<&str>) -> anyhow::Result<()> {
 }
 
 fn install_inner(state_dir: Option<&str>, announce: bool) -> anyhow::Result<()> {
-    let exe = paths::resolve_daemon_exe()?;
-    let exe = exe.canonicalize().unwrap_or(exe).display().to_string();
+    #[cfg(windows)]
+    let exe = {
+        win_service::ensure_elevated()?;
+        if paths::daemon_outdated(state_dir).unwrap_or(true) && win_service::probe().active {
+            win_service::stop_and_wait()?;
+        }
+        let staged = paths::stage_daemon_exe(state_dir)?;
+        staged
+            .canonicalize()
+            .unwrap_or(staged)
+            .display()
+            .to_string()
+    };
+    #[cfg(not(windows))]
+    let exe = {
+        let exe = paths::resolve_daemon_exe()?;
+        exe.canonicalize().unwrap_or(exe).display().to_string()
+    };
     #[cfg(target_os = "linux")]
     {
         if !is_root() {
@@ -115,7 +131,6 @@ fn install_inner(state_dir: Option<&str>, announce: bool) -> anyhow::Result<()> 
     }
     #[cfg(windows)]
     {
-        win_service::ensure_elevated()?;
         win_service::install(&exe, state_dir)?;
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -213,22 +228,13 @@ pub fn start(state_dir: Option<&str>) -> anyhow::Result<()> {
     #[cfg(windows)]
     {
         win_service::ensure_elevated()?;
-        let initial = win_service::probe();
-        if !initial.installed {
-            println!("Service not installed; installing…");
-            install_inner(state_dir, false).map_err(|e| {
-                anyhow::anyhow!(
-                    "{e:#}\nRun an elevated Command Prompt: tunnet service install && tunnet service start"
-                )
-            })?;
-        } else {
-            win_service::discard_legacy_user_state();
-            if state_dir.is_some() {
-                let _ = install_inner(state_dir, false);
-            }
-        }
+        install_inner(state_dir, false).map_err(|e| {
+            anyhow::anyhow!(
+                "{e:#}\nRun an elevated Command Prompt: tunnet service install && tunnet service start"
+            )
+        })?;
         println!("Starting tunnet service…");
-        win_service::ensure_wintun_present()?;
+        win_service::ensure_wintun_present(state_dir)?;
         win_service::start_and_wait()?;
         wait_for_local_api(std::time::Duration::from_secs(60))?;
         println!("Service is running.");
@@ -298,10 +304,14 @@ pub fn stop_for_reset() -> anyhow::Result<()> {
 pub fn restart(state_dir: Option<&str>) -> anyhow::Result<()> {
     #[cfg(windows)]
     {
-        let _ = state_dir;
         win_service::ensure_elevated()?;
         println!("Restarting tunnet service…");
-        win_service::stop_and_wait()?;
+        // Restage binary + PathName before bringing the service back.
+        install_inner(state_dir, false)?;
+        win_service::ensure_wintun_present(state_dir)?;
+        if win_service::probe().active {
+            win_service::stop_and_wait()?;
+        }
         win_service::start_and_wait()?;
         wait_for_local_api(std::time::Duration::from_secs(60))?;
         println!("Service is running.");
@@ -440,11 +450,11 @@ pub fn reload_after_config(state_dir: Option<&str>) -> anyhow::Result<()> {
     }
     #[cfg(windows)]
     {
-        let _ = state_dir;
         if probe.installed {
-            if let Err(e) = win_service::stop_and_wait() {
-                eprintln!("warning: stop before reload: {e:#}");
+            if let Err(e) = install_inner(state_dir, false) {
+                eprintln!("warning: refresh agent binary before reload: {e:#}");
             }
+            let _ = win_service::stop_and_wait();
             win_service::start_and_wait()?;
             wait_for_local_api(std::time::Duration::from_secs(60))?;
             println!("Agent reloading from {}…", dir.display());

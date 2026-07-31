@@ -141,6 +141,12 @@ pub struct ManagedState {
     pub network_id: Uuid,
     pub organization_id: String,
     pub enrolled_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dashboard_url: Option<String>,
+    #[serde(default)]
+    pub local_ui: tunnet_common::local_api::LocalUiPolicy,
 }
 
 /// Direct-mode P2P network state (no control plane).
@@ -293,6 +299,19 @@ impl PersistedState {
 
     /// Resolve a Direct network by optional name. If `name` is `None` and exactly
     /// one network is joined, returns that network.
+    pub fn require_direct_network_id(&self, id: Uuid) -> anyhow::Result<&DirectState> {
+        match self {
+            PersistedState::Direct { networks } => networks
+                .iter()
+                .find(|d| d.network_id == id)
+                .with_context(|| format!("Direct network '{id}' not found")),
+            PersistedState::Managed(_) => anyhow::bail!(
+                "this command requires Direct mode; this agent is in Managed mode \
+                 (run `tunnet reset --yes` to switch)"
+            ),
+        }
+    }
+
     pub fn require_direct_network(&self, name: Option<&str>) -> anyhow::Result<&DirectState> {
         let networks = match self {
             PersistedState::Direct { networks } => networks,
@@ -443,6 +462,9 @@ mod tests {
             network_id: Uuid::nil(),
             organization_id: "org".into(),
             enrolled_at: Utc::now(),
+            management_url: None,
+            dashboard_url: None,
+            local_ui: tunnet_common::local_api::LocalUiPolicy::default(),
         });
         let bytes = serde_json::to_vec(&s).unwrap();
         let loaded: PersistedState = serde_json::from_slice(&bytes).unwrap();
