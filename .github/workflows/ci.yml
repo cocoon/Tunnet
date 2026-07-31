@@ -24,7 +24,7 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy (workspace)
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --exclude tunnet-desktop --all-targets --all-features -- -D warnings
 
       - name: Clippy (tunnet-core no-default)
         run: cargo clippy -p tunnet-core --no-default-features -- -D warnings

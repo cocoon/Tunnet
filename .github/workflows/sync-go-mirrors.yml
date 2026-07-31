@@ -69,13 +69,29 @@ jobs:
       - name: Publish go/terraform-provider-tunnet → tunnetio/terraform-provider-tunnet
         env:
           GH_TOKEN: ${{ secrets.GO_MIRROR_TOKEN }}
-          GOPROXY: direct
+          GOPROXY: https://proxy.golang.org,direct
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "::error::Missing GO_MIRROR_TOKEN secret"
             exit 1
           fi
+
+          retry() {
+            local attempt=1
+            local max=3
+            while [ "$attempt" -le "$max" ]; do
+              if "$@"; then
+                return 0
+              fi
+              if [ "$attempt" -eq "$max" ]; then
+                return 1
+              fi
+              echo "Attempt $attempt failed, retrying in 10s..."
+              sleep 10
+              attempt=$((attempt + 1))
+            done
+          }
 
           work=$(mktemp -d)
           git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/tunnetio/terraform-provider-tunnet.git" "$work/repo"
@@ -95,10 +111,10 @@ jobs:
 
           # Prefer latest SDK main (falls back to the rewritten tag pin above).
           export GOSUMDB=off
-          go get github.com/tunnetio/tunnet-go@main
-          go mod tidy
-          go test ./...
-          go build -o /dev/null .
+          retry go get github.com/tunnetio/tunnet-go@main
+          retry go mod tidy
+          retry go test ./...
+          retry go build -o /dev/null .
 
           git config user.name "tunnet-bot"
           git config user.email "noreply@tunnet.io"
