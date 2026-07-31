@@ -139,10 +139,18 @@ function MachinesPage() {
       list = list.filter((m) => {
         const presence = getMachinePresence(m, now);
         if (statusFilter === "pending") return presence === "pending";
-        if (statusFilter === "online") return presence === "online";
+        if (statusFilter === "online") {
+          return (
+            presence === "online" ||
+            presence === "degraded" ||
+            presence === "connecting"
+          );
+        }
         if (statusFilter === "expired") return presence === "expired";
         return (
           presence !== "online" &&
+          presence !== "degraded" &&
+          presence !== "connecting" &&
           presence !== "pending" &&
           presence !== "expired"
         );

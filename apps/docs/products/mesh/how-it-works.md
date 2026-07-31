@@ -1,6 +1,6 @@
 # How Mesh Works
 
-When you run `tunnet run`, the agent performs the following sequence.
+When you start the agent (`sudo tunnet service start` or foreground `tunnetd`), it performs the following sequence.
 
 ## Startup flow
 

@@ -45,6 +45,7 @@
         "@tunnet/db": "workspace:*",
         "@tunnet/entitlements": "workspace:*",
         "@tunnet/env": "workspace:*",
+        "@tunnet/policy-engine": "workspace:*",
         "@xyflow/react": "^12.11.2",
         "asciinema-player": "^3.17.0",
         "better-auth": "^1.6.25",

@@ -56,12 +56,10 @@ tunnet ssh-keyscan db-server -f
 
 ## Session recording
 
-Enable inbound session recording on a machine with:
+Enable inbound session recording by setting `TUNNET_RECORDER=1` on `tunnetd` / the OS service (not a separate CLI flag on `tunnet`):
 
 ```bash
-sudo tunnet run --recorder
-# or
-TUNNET_RECORDER=1 sudo tunnet run
+TUNNET_RECORDER=1 sudo tunnetd
 ```
 
 Recorded sessions can be replayed with `tunnet ssh play <session_id>` or viewed in the dashboard.

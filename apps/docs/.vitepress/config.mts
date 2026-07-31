@@ -253,7 +253,7 @@ export default defineConfig({
           items: [
             { text: "Overview", link: "/cli/" },
             { text: "tunnet enroll", link: "/cli/enroll" },
-            { text: "tunnet run", link: "/cli/run" },
+            { text: "tunnetd / tunnet service", link: "/cli/run" },
             { text: "tunnet status", link: "/cli/status" },
             { text: "tunnet ping", link: "/cli/ping" },
             { text: "tunnet serve", link: "/cli/serve" },

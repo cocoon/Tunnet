@@ -417,7 +417,7 @@ jobs:
             echo "irm https://github.com/${repo}/releases/latest/download/install.ps1 | iex"
             echo '```'
             echo ""
-            echo "### Windows Desktop (NSIS)"
+            echo "### Windows Desktop"
             echo ""
             echo "Download the \`Tunnet_*_x64-setup.exe\` installer from the assets below."
           } > release-notes.md

@@ -48,6 +48,7 @@ type DataTableProps<TData> = {
   selectable?: boolean;
   rowSelection?: RowSelectionState;
   onRowSelectionChange?: OnChangeFn<RowSelectionState>;
+  onRowClick?: (row: TData) => void;
   /** Defaults to 25. Set `false` to disable pagination. */
   pageSize?: number | false;
 };
@@ -61,6 +62,7 @@ export function DataTable<TData>({
   selectable = false,
   rowSelection,
   onRowSelectionChange,
+  onRowClick,
   pageSize: pageSizeProp = 25,
 }: DataTableProps<TData>) {
   const paginationEnabled = pageSizeProp !== false;
@@ -139,6 +141,22 @@ export function DataTable<TData>({
                 <TableRow
                   key={row.id}
                   data-state={row.getIsSelected() ? "selected" : undefined}
+                  className={onRowClick ? "cursor-pointer" : undefined}
+                  onClick={
+                    onRowClick
+                      ? (e) => {
+                          const target = e.target as HTMLElement;
+                          if (
+                            target.closest(
+                              "button, a, input, [role='checkbox'], [data-no-row-click]",
+                            )
+                          ) {
+                            return;
+                          }
+                          onRowClick(row.original);
+                        }
+                      : undefined
+                  }
                 >
                   {selectable ? (
                     <TableCell>

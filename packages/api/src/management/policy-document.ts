@@ -92,7 +92,20 @@ export const policySimulateResponse = z.object({
       port: z.number().int().positive().optional(),
       protocol: z.string().optional(),
       verdict: z.enum(["allow", "deny"]),
+      reason: z
+        .enum([
+          "org_deny",
+          "network_deny",
+          "network_allow",
+          "default_allow",
+          "default_deny",
+          "icmp_policy",
+          "posture_skip",
+        ])
+        .optional(),
       matchedRules: z.array(z.string()).optional(),
+      ruleSlug: z.string().optional(),
+      scope: z.enum(["organization", "network"]).optional(),
       posture: z
         .object({
           passed: z.boolean(),

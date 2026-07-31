@@ -14,7 +14,7 @@ The `tunnet` CLI is the primary interface for interacting with Tunnet from the c
 | Command | Description |
 |---------|-------------|
 | `tunnet enroll` | Register this machine with the control plane |
-| `tunnet run` | Start the agent (TUN + mesh) |
+| `tunnetd` / `tunnet service` | Start the agent daemon (TUN + mesh) |
 | `tunnet up` | Bring TUN/DNS/routes up (daemon must be running) |
 | `tunnet down` | Tear down TUN/DNS/routes; keep mesh alive |
 | `tunnet service` | Install / control the OS service |

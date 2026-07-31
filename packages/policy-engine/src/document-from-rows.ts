@@ -39,11 +39,13 @@ export type PolicyRows = {
     slug: string | null;
     name?: string | null;
     action: string;
+    scope?: "organization" | "network";
     srcSelector: Selector;
     dstSelector: Selector;
     ports: Array<{ start: number; end: number }>;
     protocol: string | null;
     priority: number;
+    orderIndex?: number;
     srcPosture: string[] | null;
     enabled?: boolean;
   }>;
@@ -74,6 +76,8 @@ export type PolicyRows = {
     endpointId: string | null;
   }>;
   tests?: PolicyDocument["tests"];
+  defaultAction?: "allow" | "deny";
+  icmpPolicy?: "allow" | "acl" | "deny";
 };
 
 export function documentFromRows(rows: PolicyRows): PolicyDocument {
@@ -99,6 +103,8 @@ export function documentFromRows(rows: PolicyRows): PolicyDocument {
       ports: formatPorts(policy.ports),
       protocol: policy.protocol === "any" ? null : policy.protocol,
       priority: policy.priority,
+      orderIndex: policy.orderIndex ?? 0,
+      scope: policy.scope ?? "network",
       posture: policy.srcPosture ?? [],
       labels: {},
       enabled: policy.enabled ?? true,
@@ -141,5 +147,7 @@ export function documentFromRows(rows: PolicyRows): PolicyDocument {
       selectors: attr.endpointId ? [`${attr.endpointId}`] : [],
     })),
     tests: rows.tests ?? [],
+    default_action: rows.defaultAction ?? "allow",
+    icmp_policy: rows.icmpPolicy ?? "allow",
   };
 }

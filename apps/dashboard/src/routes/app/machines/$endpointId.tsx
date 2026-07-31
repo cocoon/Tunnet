@@ -54,9 +54,11 @@ import {
 import { useActiveOrganization } from "@/lib/auth-client";
 import { deviceKindLabel, deviceTypeLabel } from "@/lib/device-type";
 import { deriveInactivityLimitCompact } from "@/lib/machine-expiry";
+import { formatHeartbeatAge } from "@/lib/machine-utils";
 import {
   useDevice,
   useDeviceMutations,
+  useDevicePostureStatus,
   useDeviceSshAuth,
   useOrgSettings,
   useServes,
@@ -352,6 +354,7 @@ function MachineDetailPage() {
   const deviceMutations = useDeviceMutations(orgId);
   const { data: tunnels } = useTunnels(orgId);
   const { data: serves } = useServes(orgId);
+  const { data: postureStatus } = useDevicePostureStatus(orgId, endpointId);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [createTunnelOpen, setCreateTunnelOpen] = useState(false);
   const [createServeOpen, setCreateServeOpen] = useState(false);
@@ -359,6 +362,7 @@ function MachineDetailPage() {
   const [tagsOpen, setTagsOpen] = useState(false);
   const [expiryOpen, setExpiryOpen] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
+  const [tab, setTab] = useState("overview");
   const queryClient = useQueryClient();
   usePresenceStream(orgId);
 
@@ -526,7 +530,13 @@ function MachineDetailPage() {
         </div>
       </div>
 
-      <Tabs defaultValue="overview" className="gap-5">
+      <Tabs
+        value={tab}
+        onValueChange={(v) => {
+          if (v) setTab(v);
+        }}
+        className="gap-5"
+      >
         <div className="border-b border-border/70">
           <TabsList
             variant="line"
@@ -666,6 +676,57 @@ function MachineDetailPage() {
             </section>
 
             <aside className="space-y-3">
+              <section className="panel space-y-2.5 p-3 text-[12px]">
+                <div className="text-muted-foreground font-medium tracking-wide uppercase">
+                  Health
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Presence</span>
+                  {listDevice ? (
+                    <StatusBadge orgId={orgId} device={listDevice} />
+                  ) : (
+                    <span>—</span>
+                  )}
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Last heartbeat</span>
+                  <span>
+                    {formatHeartbeatAge(device.lastHeartbeatAt) ?? "—"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Control plane</span>
+                  <span>
+                    {device.agentConnected ? "Connected" : "Disconnected"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">ACL</span>
+                  {networkId ? (
+                    <Link
+                      to="/app/networks/$networkId/access"
+                      params={{ networkId }}
+                      className="text-foreground hover:underline"
+                    >
+                      OK
+                    </Link>
+                  ) : (
+                    <span>OK</span>
+                  )}
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Posture</span>
+                  <button
+                    type="button"
+                    className="text-foreground hover:underline"
+                    onClick={() => setTab("posture")}
+                  >
+                    {typeof postureStatus?.overallScore === "number"
+                      ? `Score ${Math.round(postureStatus.overallScore)}`
+                      : "View"}
+                  </button>
+                </div>
+              </section>
               <section className="panel space-y-2.5 p-3 text-[12px]">
                 <div className="text-muted-foreground font-medium tracking-wide uppercase">
                   Endpoint

@@ -67,12 +67,18 @@ export function PeerTable({
                 <Badge
                   variant="outline"
                   className={
-                    peer.online
+                    peer.online === true
                       ? "border-success/30 bg-success/10 text-success"
-                      : undefined
+                      : peer.online == null
+                        ? "border-muted-foreground/30 text-muted-foreground"
+                        : undefined
                   }
                 >
-                  {peer.online ? "Online" : "Offline"}
+                  {peer.online === true
+                    ? "Online"
+                    : peer.online == null
+                      ? "Unknown"
+                      : "Offline"}
                 </Badge>
               </TableCell>
               {!compact ? (

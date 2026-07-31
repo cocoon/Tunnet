@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
 use tunnet_common::policy::{
-    Action, Direction, EvalCtx, PolicyBundle, PolicyRule, PortRange, Protocol,
+    Action, DefaultAction, Direction, EvalCtx, EvalReason, EvalVerdict, IcmpPolicy, PolicyBundle,
+    PolicyRule, PortRange, Protocol, RuleScope, evaluate_detailed,
 };
 
 use crate::ir::PolicyDocument;
@@ -11,7 +12,12 @@ use crate::selector::{self, ParsedSelector};
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SimulateResult {
     pub verdict: String,
+    pub reason: String,
     pub matched_rules: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_slug: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 pub fn simulate(
@@ -31,100 +37,79 @@ pub fn simulate(
     let peer_endpoint = selector::simulation_endpoint(&dst_parsed)
         .unwrap_or_else(|| "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into());
 
+    let self_tags = selector::simulation_tags(&src_parsed);
+    let peer_tags = selector::simulation_tags(&dst_parsed);
+
     let ctx = EvalCtx {
         self_endpoint_hex: &self_endpoint,
         self_ip: Ipv4Addr::new(10, 0, 0, 1),
-        self_tags: &selector::simulation_tags(&src_parsed),
+        self_tags: &self_tags,
         self_network: "",
         peer_endpoint_hex: &peer_endpoint,
         peer_ip: Some(Ipv4Addr::new(10, 0, 0, 2)),
-        peer_tags: &selector::simulation_tags(&dst_parsed),
+        peer_tags: &peer_tags,
         peer_network: "",
         dst_port: port,
         protocol,
         src_posture_ok: true,
     };
 
-    let matched = evaluate_with_trace(&bundle.rules, &rule_names, &ctx, Direction::Outbound);
+    let verdict = evaluate_detailed(&bundle, &ctx, Direction::Outbound);
+    let matched_rules = matched_names(&verdict, &rule_names, &bundle.rules);
     SimulateResult {
-        verdict: match matched.0 {
+        verdict: match verdict.action {
             Action::Allow => "allow".into(),
             Action::Deny => "deny".into(),
         },
-        matched_rules: matched.1,
+        reason: reason_str(verdict.reason).into(),
+        matched_rules,
+        rule_slug: verdict.rule_slug,
+        scope: verdict.scope.map(|s| match s {
+            RuleScope::Organization => "organization".into(),
+            RuleScope::Network => "network".into(),
+        }),
     }
 }
 
-fn evaluate_with_trace(
-    rules: &[PolicyRule],
-    names: &[String],
-    ctx: &EvalCtx<'_>,
-    direction: Direction,
-) -> (Action, Vec<String>) {
-    if rules.is_empty() {
-        return (Action::Allow, vec![]);
+fn reason_str(reason: EvalReason) -> &'static str {
+    match reason {
+        EvalReason::OrgDeny => "org_deny",
+        EvalReason::NetworkDeny => "network_deny",
+        EvalReason::NetworkAllow => "network_allow",
+        EvalReason::DefaultAllow => "default_allow",
+        EvalReason::DefaultDeny => "default_deny",
+        EvalReason::IcmpPolicy => "icmp_policy",
+        EvalReason::PostureSkip => "posture_skip",
     }
+}
 
-    let mut indexed: Vec<(usize, &PolicyRule)> = rules.iter().enumerate().collect();
-    indexed.sort_by_key(|(_, rule)| std::cmp::Reverse(rule.priority));
-
-    for (idx, rule) in indexed {
-        let matches = match direction {
-            Direction::Inbound => (
-                rule.src.matches_endpoint(
-                    ctx.peer_endpoint_hex,
-                    ctx.peer_tags,
-                    ctx.peer_network,
-                    ctx.peer_ip,
-                ),
-                rule.dst.matches_endpoint(
-                    ctx.self_endpoint_hex,
-                    ctx.self_tags,
-                    ctx.self_network,
-                    Some(ctx.self_ip),
-                ),
-            ),
-            Direction::Outbound => (
-                rule.src.matches_endpoint(
-                    ctx.self_endpoint_hex,
-                    ctx.self_tags,
-                    ctx.self_network,
-                    Some(ctx.self_ip),
-                ),
-                rule.dst.matches_endpoint(
-                    ctx.peer_endpoint_hex,
-                    ctx.peer_tags,
-                    ctx.peer_network,
-                    ctx.peer_ip,
-                ),
-            ),
-        };
-        if !matches.0 || !matches.1 {
-            continue;
-        }
-        if !rule.src_posture.is_empty() && !ctx.src_posture_ok {
-            continue;
-        }
-        if let Some(proto) = rule.protocol
-            && proto != Protocol::Any
-            && proto != ctx.protocol
+fn matched_names(verdict: &EvalVerdict, names: &[String], rules: &[PolicyRule]) -> Vec<String> {
+    if matches!(
+        verdict.reason,
+        EvalReason::DefaultAllow | EvalReason::DefaultDeny
+    ) {
+        return vec![];
+    }
+    if verdict.reason == EvalReason::IcmpPolicy {
+        return vec!["builtin:icmp".into()];
+    }
+    if let Some(slug) = &verdict.rule_slug {
+        return vec![slug.clone()];
+    }
+    // Fall back to index lookup when slug missing.
+    for (idx, rule) in rules.iter().enumerate() {
+        if Some(rule.scope) == verdict.scope
+            && matches!(
+                (verdict.reason, rule.action),
+                (EvalReason::OrgDeny | EvalReason::NetworkDeny, Action::Deny)
+                    | (EvalReason::NetworkAllow, Action::Allow)
+            )
+            && let Some(name) = names.get(idx)
         {
-            continue;
+            return vec![name.clone()];
         }
-        if !rule.ports.is_empty() {
-            match ctx.dst_port {
-                Some(p) if rule.ports.iter().any(|pr| pr.contains(p)) => {}
-                _ => continue,
-            }
-        }
-        let name = names
-            .get(idx)
-            .cloned()
-            .unwrap_or_else(|| format!("rule-{idx}"));
-        return (rule.action, vec![name]);
     }
-
-    (Action::Deny, vec![])
+    vec![]
 }
 
 pub fn compile_acl_bundle(doc: &PolicyDocument) -> (PolicyBundle, Vec<String>) {
@@ -157,6 +142,11 @@ pub fn compile_acl_bundle(doc: &PolicyDocument) -> (PolicyBundle, Vec<String>) {
                     .map(|p| selector::to_policy_selector(&p))
                     .unwrap_or(tunnet_common::policy::Selector::Any);
 
+                let scope = match acl.scope.as_deref() {
+                    Some("organization") => RuleScope::Organization,
+                    _ => RuleScope::Network,
+                };
+
                 rules.push(PolicyRule {
                     src: src_sel,
                     dst: dst_sel,
@@ -168,6 +158,10 @@ pub fn compile_acl_bundle(doc: &PolicyDocument) -> (PolicyBundle, Vec<String>) {
                     ports: parse_ports(&acl.ports),
                     protocol: acl.protocol.as_deref().map(parse_protocol),
                     priority: acl.priority,
+                    order_index: acl.order_index,
+                    scope,
+                    enabled: acl.enabled,
+                    slug: Some(acl.key().to_string()),
                     src_posture: acl.posture.clone(),
                 });
                 names.push(acl.key().to_string());
@@ -175,12 +169,24 @@ pub fn compile_acl_bundle(doc: &PolicyDocument) -> (PolicyBundle, Vec<String>) {
         }
     }
 
+    let default_action = match doc.default_action.as_deref() {
+        Some("deny") => DefaultAction::Deny,
+        _ => DefaultAction::Allow,
+    };
+    let icmp_policy = match doc.icmp_policy.as_deref() {
+        Some("acl") => IcmpPolicy::Acl,
+        Some("deny") => IcmpPolicy::Deny,
+        _ => IcmpPolicy::Allow,
+    };
+
     (
         PolicyBundle {
             rules,
             ssh_rules: vec![],
             version: 1,
             signature: String::new(),
+            default_action,
+            icmp_policy,
             postures,
             default_src_posture: vec![],
             posture_enforcement: None,
@@ -229,34 +235,23 @@ mod tests {
                     owners: vec![],
                 },
             ],
-            acls: vec![
-                AclRule {
-                    name: "allow-eng-staging".into(),
-                    slug: None,
-                    action: "allow".into(),
-                    src: vec!["tag:eng".into()],
-                    dst: vec!["tag:staging".into()],
-                    ports: vec!["443".into()],
-                    protocol: Some("tcp".into()),
-                    priority: 100,
-                    posture: vec![],
-                    labels: Default::default(),
-                    enabled: true,
-                },
-                AclRule {
-                    name: "default-deny".into(),
-                    slug: None,
-                    action: "deny".into(),
-                    src: vec!["*".into()],
-                    dst: vec!["*".into()],
-                    ports: vec![],
-                    protocol: None,
-                    priority: 1,
-                    posture: vec![],
-                    labels: Default::default(),
-                    enabled: true,
-                },
-            ],
+            acls: vec![AclRule {
+                name: "allow-eng-staging".into(),
+                slug: None,
+                action: "allow".into(),
+                src: vec!["tag:eng".into()],
+                dst: vec!["tag:staging".into()],
+                ports: vec!["443".into()],
+                protocol: Some("tcp".into()),
+                priority: 100,
+                order_index: 0,
+                scope: Some("network".into()),
+                posture: vec![],
+                labels: Default::default(),
+                enabled: true,
+            }],
+            default_action: Some("deny".into()),
+            icmp_policy: Some("allow".into()),
             ..Default::default()
         }
     }
@@ -266,6 +261,7 @@ mod tests {
         let doc = sample_doc();
         let result = simulate(&doc, "tag:eng", "tag:staging", Some(443), "tcp");
         assert_eq!(result.verdict, "allow");
+        assert_eq!(result.reason, "network_allow");
         assert_eq!(result.matched_rules, vec!["allow-eng-staging"]);
     }
 
@@ -273,21 +269,68 @@ mod tests {
     fn simulate_deny_when_no_match() {
         let doc = PolicyDocument {
             acls: vec![AclRule {
-                name: "deny-all".into(),
+                name: "allow-admin".into(),
                 slug: None,
-                action: "deny".into(),
+                action: "allow".into(),
                 src: vec!["tag:admin".into()],
                 dst: vec!["*".into()],
                 ports: vec![],
                 protocol: None,
                 priority: 10,
+                order_index: 0,
+                scope: Some("network".into()),
                 posture: vec![],
                 labels: Default::default(),
                 enabled: true,
             }],
+            default_action: Some("deny".into()),
             ..Default::default()
         };
         let result = simulate(&doc, "tag:guest", "tag:staging", Some(443), "tcp");
         assert_eq!(result.verdict, "deny");
+        assert_eq!(result.reason, "default_deny");
+    }
+
+    #[test]
+    fn org_deny_beats_network_allow() {
+        let doc = PolicyDocument {
+            acls: vec![
+                AclRule {
+                    name: "org-deny".into(),
+                    slug: None,
+                    action: "deny".into(),
+                    src: vec!["*".into()],
+                    dst: vec!["*".into()],
+                    ports: vec![],
+                    protocol: None,
+                    priority: 0,
+                    order_index: 0,
+                    scope: Some("organization".into()),
+                    posture: vec![],
+                    labels: Default::default(),
+                    enabled: true,
+                },
+                AclRule {
+                    name: "net-allow".into(),
+                    slug: None,
+                    action: "allow".into(),
+                    src: vec!["*".into()],
+                    dst: vec!["*".into()],
+                    ports: vec![],
+                    protocol: None,
+                    priority: 0,
+                    order_index: 0,
+                    scope: Some("network".into()),
+                    posture: vec![],
+                    labels: Default::default(),
+                    enabled: true,
+                },
+            ],
+            default_action: Some("allow".into()),
+            ..Default::default()
+        };
+        let result = simulate(&doc, "tag:eng", "tag:staging", Some(443), "tcp");
+        assert_eq!(result.verdict, "deny");
+        assert_eq!(result.reason, "org_deny");
     }
 }

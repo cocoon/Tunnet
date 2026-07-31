@@ -128,6 +128,8 @@ mod tests {
             ports: vec![],
             protocol: None,
             priority,
+            order_index: 0,
+            scope: None,
             posture: vec![],
             labels: Default::default(),
             enabled: true,

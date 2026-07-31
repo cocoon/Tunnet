@@ -4,16 +4,14 @@ SSH session recording captures the terminal output of SSH sessions for audit and
 
 ## Enabling recording
 
-Recording is enabled per-machine by starting the agent with the `--recorder` flag:
+Recording is enabled per-machine by setting `TUNNET_RECORDER=1` on the agent daemon (service environment or foreground `tunnetd`):
 
 ```bash
-sudo tunnet run --recorder
-```
+# OS service - set in the service environment, then restart
+TUNNET_RECORDER=1
 
-Or via the environment variable:
-
-```bash
-TUNNET_RECORDER=1 sudo tunnet run
+# Foreground
+TUNNET_RECORDER=1 sudo tunnetd
 ```
 
 ## Recording rules

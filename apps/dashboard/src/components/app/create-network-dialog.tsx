@@ -13,6 +13,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useNetworkMutations } from "@/lib/queries/management";
+import { cn } from "@/lib/utils";
 
 type CreateNetworkDialogProps = {
   orgId: string;
@@ -29,6 +30,7 @@ export function CreateNetworkDialog({
   const [name, setName] = useState("");
   const [cidr, setCidr] = useState("10.7.0.0/24");
   const [mtu, setMtu] = useState("1280");
+  const [defaultAction, setDefaultAction] = useState<"allow" | "deny">("allow");
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -37,11 +39,13 @@ export function CreateNetworkDialog({
         name: name.trim(),
         cidr,
         mtu: Number(mtu) || 1280,
+        defaultAction,
       });
       toast.success("Network created");
       setName("");
       setCidr("10.7.0.0/24");
       setMtu("1280");
+      setDefaultAction("allow");
       onOpenChange(false);
     } catch (err) {
       toast.error(
@@ -95,6 +99,41 @@ export function CreateNetworkDialog({
                 onChange={(e) => setMtu(e.target.value)}
                 required
               />
+            </div>
+            <div className="space-y-2">
+              <Label>Access mode</Label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDefaultAction("allow")}
+                  className={cn(
+                    "rounded-lg border px-3 py-3 text-left transition-colors",
+                    defaultAction === "allow"
+                      ? "border-foreground bg-muted/40"
+                      : "border-border/70 hover:bg-muted/30",
+                  )}
+                >
+                  <p className="text-sm font-medium">Open</p>
+                  <p className="text-muted-foreground mt-0.5 text-xs">
+                    Allow unless a deny policy matches
+                  </p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDefaultAction("deny")}
+                  className={cn(
+                    "rounded-lg border px-3 py-3 text-left transition-colors",
+                    defaultAction === "deny"
+                      ? "border-foreground bg-muted/40"
+                      : "border-border/70 hover:bg-muted/30",
+                  )}
+                >
+                  <p className="text-sm font-medium">Restricted</p>
+                  <p className="text-muted-foreground mt-0.5 text-xs">
+                    Deny unless an allow policy matches
+                  </p>
+                </button>
+              </div>
             </div>
           </div>
           <DialogFooter>

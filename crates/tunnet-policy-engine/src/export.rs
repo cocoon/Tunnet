@@ -136,6 +136,8 @@ mod tests {
                 ports: vec!["443".into()],
                 protocol: Some("tcp".into()),
                 priority: 100,
+                order_index: 0,
+                scope: None,
                 posture: vec![],
                 labels: Default::default(),
                 enabled: true,

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { selectorSchema } from "./policies";
+import { policySlugSchema, selectorSchema } from "./policies";
 
 const tagNameSchema = z
   .string()
@@ -99,11 +99,7 @@ export const grantSchema = z.object({
 });
 
 export const createGrantBody = z.object({
-  slug: z
-    .string()
-    .min(1)
-    .max(128)
-    .regex(/^[a-z0-9][a-z0-9-]*$/),
+  slug: policySlugSchema,
   networkId: z.string().uuid().optional(),
   description: z.string().optional(),
   srcSelectors: z.array(selectorSchema).default([]),
@@ -125,11 +121,7 @@ export const autoApproverSchema = z.object({
 });
 
 export const createAutoApproverBody = z.object({
-  slug: z
-    .string()
-    .min(1)
-    .max(128)
-    .regex(/^[a-z0-9][a-z0-9-]*$/),
+  slug: policySlugSchema,
   networkId: z.string().uuid().optional(),
   routes: z.record(z.string(), z.array(z.string())).default({}),
   exitNodes: z.array(z.string()).default([]),

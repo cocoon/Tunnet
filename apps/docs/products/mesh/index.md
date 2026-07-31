@@ -29,7 +29,7 @@ The mesh network competes directly with **Tailscale** (mesh VPN), **Cloudflare W
 ```bash
 # Enroll and start
 sudo tunnet enroll --control-url http://control:8080 --token TOKEN
-sudo tunnet run
+sudo tunnet service start
 
 # Inspect the network
 tunnet status --peers

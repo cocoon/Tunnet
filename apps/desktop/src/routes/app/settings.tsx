@@ -193,7 +193,7 @@ function SettingsPage() {
           <CardDescription>
             {service?.active
               ? "Running in the background"
-              : "Not running — start it to use Tunnet"}
+              : "Not running - start it to use Tunnet"}
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-2">
@@ -262,7 +262,7 @@ function SettingsPage() {
       </Card>
 
       <p className="px-1 text-xs text-muted-foreground">
-        Tunnet agent {agentVersion || "—"}
+        Tunnet agent {agentVersion || "-"}
       </p>
     </div>
   );

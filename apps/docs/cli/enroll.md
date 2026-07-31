@@ -43,4 +43,4 @@ sudo tunnet enroll \
 
 ## Notes
 
-Enrollment only needs to happen once per machine. After enrollment, run `tunnet run` to start the agent. If the machine is already enrolled, the command will error. Use `tunnet reset --yes` to wipe state before re-enrolling.
+Enrollment only needs to happen once per machine. After enrollment, start the agent with `sudo tunnet service start` (or foreground `sudo tunnetd`). If the service is already running, it often reloads automatically. If the machine is already enrolled, the command will error. Use `tunnet reset --yes` to wipe state before re-enrolling.

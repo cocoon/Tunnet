@@ -32,23 +32,15 @@ function sampleDoc(): PolicyDocument {
         ports: ["443"],
         protocol: "tcp",
         priority: 100,
-        posture: [],
-        labels: {},
-        enabled: true,
-      },
-      {
-        name: "default-deny",
-        action: "deny",
-        src: ["*"],
-        dst: ["*"],
-        ports: [],
-        protocol: null,
-        priority: 1,
+        orderIndex: 0,
+        scope: "network" as const,
         posture: [],
         labels: {},
         enabled: true,
       },
     ],
+    default_action: "deny",
+    icmp_policy: "allow",
   };
 }
 
@@ -72,6 +64,8 @@ describe("parseJsonDocument + validateDocument", () => {
           ports: [],
           protocol: null,
           priority: 1,
+          orderIndex: 0,
+          scope: "network" as const,
           posture: [],
           labels: {},
           enabled: true,
@@ -116,6 +110,7 @@ describe("simulateDocument", () => {
       protocol: "tcp",
     });
     expect(result.verdict).toBe("allow");
+    expect(result.reason).toBe("network_allow");
     expect(result.matchedRules).toEqual(["allow-eng-staging"]);
   });
 
@@ -127,6 +122,53 @@ describe("simulateDocument", () => {
       protocol: "tcp",
     });
     expect(result.verdict).toBe("deny");
+    expect(result.reason).toBe("default_deny");
+  });
+
+  test("org deny beats network allow", () => {
+    const doc = {
+      ...emptyDocument(),
+      acls: [
+        {
+          name: "org-deny",
+          action: "deny",
+          src: ["*"],
+          dst: ["*"],
+          ports: [],
+          protocol: null,
+          priority: 0,
+          orderIndex: 0,
+          scope: "organization" as const,
+          posture: [],
+          labels: {},
+          enabled: true,
+        },
+        {
+          name: "net-allow",
+          action: "allow",
+          src: ["*"],
+          dst: ["*"],
+          ports: [],
+          protocol: null,
+          priority: 0,
+          orderIndex: 0,
+          scope: "network" as const,
+          posture: [],
+          labels: {},
+          enabled: true,
+        },
+      ],
+      default_action: "allow" as const,
+      icmp_policy: "allow" as const,
+    };
+    const result = simulateDocument(doc, {
+      src: "tag:eng",
+      dst: "tag:staging",
+      port: 443,
+      protocol: "tcp",
+    });
+    expect(result.verdict).toBe("deny");
+    expect(result.reason).toBe("org_deny");
   });
 });
 
@@ -146,10 +188,7 @@ describe("YAML parse/export round-trip", () => {
     const yaml = exportDocument(doc, "yaml");
     const parsed = parseDocument("yaml", yaml);
     expect(await contentHash(doc)).toBe(await contentHash(parsed));
-    expect(parsed.acls.map((a) => a.name)).toEqual([
-      "allow-eng-staging",
-      "default-deny",
-    ]);
+    expect(parsed.acls.map((a) => a.name)).toEqual(["allow-eng-staging"]);
   });
 });
 
@@ -166,6 +205,8 @@ describe("diffDocuments", () => {
           ports: [],
           protocol: null,
           priority: 10,
+          orderIndex: 0,
+          scope: "network" as const,
           posture: [],
           labels: {},
           enabled: true,
@@ -178,6 +219,8 @@ describe("diffDocuments", () => {
           ports: [],
           protocol: null,
           priority: 5,
+          orderIndex: 0,
+          scope: "network" as const,
           posture: [],
           labels: {},
           enabled: true,
@@ -195,6 +238,8 @@ describe("diffDocuments", () => {
           ports: [],
           protocol: null,
           priority: 10,
+          orderIndex: 0,
+          scope: "network" as const,
           posture: [],
           labels: {},
           enabled: true,
@@ -207,6 +252,8 @@ describe("diffDocuments", () => {
           ports: [],
           protocol: null,
           priority: 20,
+          orderIndex: 0,
+          scope: "network" as const,
           posture: [],
           labels: {},
           enabled: true,
@@ -250,11 +297,13 @@ describe("documentFromRows", () => {
         {
           slug: "allow-eng",
           action: "allow",
+          scope: "network" as const,
           srcSelector: { kind: "tag", value: "eng" },
           dstSelector: { kind: "tag", value: "staging" },
           ports: [{ start: 443, end: 443 }],
           protocol: "tcp",
           priority: 100,
+          orderIndex: 0,
           srcPosture: null,
           enabled: true,
         },

@@ -1,5 +1,7 @@
 import {
+  createOrgPolicyBody,
   createPolicyBody,
+  patchOrgPolicyBody,
   patchPolicyBody,
   type Selector,
 } from "@tunnet/api/management";
@@ -26,6 +28,8 @@ function serializePolicy(row: typeof schema.policies.$inferSelect) {
     ports: row.ports as { start: number; end: number }[],
     protocol: row.protocol as "tcp" | "udp" | "icmp" | "any" | null,
     priority: row.priority,
+    orderIndex: row.orderIndex,
+    enabled: row.enabled,
     srcPosture: row.srcPosture ?? null,
     createdAt: toIso(row.createdAt)!,
   };
@@ -101,6 +105,8 @@ export const policiesRoutes = new Elysia()
                 ports: parsed.ports,
                 protocol: parsed.protocol ?? null,
                 priority: parsed.priority,
+                orderIndex: parsed.orderIndex,
+                enabled: parsed.enabled,
                 srcPosture: parsed.srcPosture ?? null,
               })
               .returning();
@@ -127,46 +133,59 @@ export const policiesRoutes = new Elysia()
           return serializePolicy(row);
         },
       )
-      .post("/organizations/:orgId/policies", async ({ authContext, body }) => {
-        const auth = getAuth({ authContext });
-        const parsed = createPolicyBody.parse(body);
-
-        const row = await db.transaction(async (tx) => {
-          const [created] = await tx
-            .insert(schema.policies)
-            .values({
-              organizationId: auth.organizationId,
-              networkId: null,
-              scope: "organization",
-              slug: parsed.slug ?? null,
-              srcSelector: parsed.srcSelector,
-              dstSelector: parsed.dstSelector,
-              action: parsed.action,
-              ports: parsed.ports,
-              protocol: parsed.protocol ?? null,
-              priority: parsed.priority,
-              srcPosture: parsed.srcPosture ?? null,
-            })
-            .returning();
-
-          if (!created) {
-            throw new Error("Failed to create policy");
+      .post(
+        "/organizations/:orgId/policies",
+        async ({ authContext, body, set }) => {
+          const auth = getAuth({ authContext });
+          const parsed = createOrgPolicyBody.safeParse(body);
+          if (!parsed.success) {
+            set.status = 400;
+            return {
+              error: "Organization-scoped Allow is not supported",
+              issues: parsed.error.issues,
+            };
           }
+          const data = parsed.data;
 
-          await writeAudit(tx, {
-            organizationId: auth.organizationId,
-            actor: auth.user.id,
-            action: "policy.created",
-            target: created.id,
-            metadata: { scope: "organization" },
+          const row = await db.transaction(async (tx) => {
+            const [created] = await tx
+              .insert(schema.policies)
+              .values({
+                organizationId: auth.organizationId,
+                networkId: null,
+                scope: "organization",
+                slug: data.slug ?? null,
+                srcSelector: data.srcSelector,
+                dstSelector: data.dstSelector,
+                action: data.action,
+                ports: data.ports,
+                protocol: data.protocol ?? null,
+                priority: data.priority,
+                orderIndex: data.orderIndex,
+                enabled: data.enabled,
+                srcPosture: data.srcPosture ?? null,
+              })
+              .returning();
+
+            if (!created) {
+              throw new Error("Failed to create policy");
+            }
+
+            await writeAudit(tx, {
+              organizationId: auth.organizationId,
+              actor: auth.user.id,
+              action: "policy.created",
+              target: created.id,
+              metadata: { scope: "organization" },
+            });
+
+            await bumpOrgAndNotify(tx, auth.organizationId);
+            return created;
           });
 
-          await bumpOrgAndNotify(tx, auth.organizationId);
-          return created;
-        });
-
-        return serializePolicy(row);
-      }),
+          return serializePolicy(row);
+        },
+      ),
   )
   .group("", (app) =>
     app
@@ -221,14 +240,22 @@ export const policiesRoutes = new Elysia()
       )
       .patch(
         "/organizations/:orgId/policies/:policyId",
-        async ({ authContext, params, body }) => {
+        async ({ authContext, params, body, set }) => {
           const auth = getAuth({ authContext });
-          const parsed = patchPolicyBody.parse(body);
+          const parsed = patchOrgPolicyBody.safeParse(body);
+          if (!parsed.success) {
+            set.status = 400;
+            return {
+              error: "Organization-scoped Allow is not supported",
+              issues: parsed.error.issues,
+            };
+          }
+          const data = parsed.data;
 
           const row = await db.transaction(async (tx) => {
             const [updated] = await tx
               .update(schema.policies)
-              .set(parsed)
+              .set(data)
               .where(
                 and(
                   eq(schema.policies.id, params.policyId),
@@ -247,7 +274,7 @@ export const policiesRoutes = new Elysia()
               actor: auth.user.id,
               action: "policy.updated",
               target: updated.id,
-              metadata: { ...parsed, scope: "organization" },
+              metadata: { ...data, scope: "organization" },
             });
 
             await bumpOrgAndNotify(tx, auth.organizationId);

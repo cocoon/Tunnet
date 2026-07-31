@@ -69,6 +69,7 @@ pub fn app(state: ApiState) -> Router {
         .route("/v1/routes", get(routes_list).post(routes_add))
         .route("/v1/ping/{peer}", get(ping))
         .route("/v1/diag", get(diag))
+        .route("/v1/acl/denies", get(acl_denies))
         .route("/v1/netcheck", get(netcheck))
         .route("/v1/reload", post(reload))
         .route("/v1/data-plane", get(data_plane_status))
@@ -571,6 +572,16 @@ async fn diag(
 ) -> ApiResult<Json<tunnet_common::local_api::DiagInfo>> {
     peer.require_cap(DIAG_READ)?;
     Ok(Json(handlers::build_diag(&state).await))
+}
+
+async fn acl_denies(
+    Extension(peer): Extension<PeerIdentity>,
+    State(state): State<ApiState>,
+) -> ApiResult<Json<serde_json::Value>> {
+    peer.require_cap(DIAG_READ)?;
+    Ok(Json(serde_json::json!({
+        "denies": state.node.acl.recent_denies(),
+    })))
 }
 
 async fn netcheck(

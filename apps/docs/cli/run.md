@@ -1,11 +1,23 @@
-# tunnet run
+# tunnetd / tunnet service
 
-Start the Tunnet agent. Creates the virtual TUN interface, connects to peers, and begins handling mesh traffic, serves, tunnels, file transfers, and policies.
+Start the Tunnet agent daemon. Creates the virtual TUN interface, connects to peers, and begins handling mesh traffic, serves, tunnels, file transfers, and policies.
 
-## Usage
+Prefer the OS service in production. Use foreground `tunnetd` for debugging.
+
+## Recommended: OS service
 
 ```bash
-sudo tunnet run [options]
+sudo tunnet service start
+```
+
+See [`tunnet service`](/cli/service) for install, stop, restart, and status.
+
+After `tunnet enroll`, the agent often reloads automatically if the service is already running. Otherwise start it with the command above.
+
+## Foreground daemon
+
+```bash
+sudo tunnetd [options]
 ```
 
 ## Options
@@ -17,6 +29,8 @@ sudo tunnet run [options]
 | `--metrics-bind` | `TUNNET_METRICS_BIND` | `127.0.0.1:9100` | Prometheus metrics endpoint |
 | `--disable-gossip` | `TUNNET_DISABLE_GOSSIP` | `false` | Disable gossip presence |
 | `--recorder` | `TUNNET_RECORDER` | `false` | Enable SSH session recording |
+
+For the OS service, set the same variables in the service environment (for example `TUNNET_RECORDER=1`) rather than passing CLI flags.
 
 ## Requirements
 

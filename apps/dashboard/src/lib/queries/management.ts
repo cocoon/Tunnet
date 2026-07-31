@@ -34,7 +34,7 @@ export function useNetworks(orgId: string | undefined) {
 export function useNetwork(orgId: string | undefined, networkId: string) {
   return useQuery({
     queryKey: orgId ? queryKeys.network(orgId, networkId) : ["network"],
-    enabled: Boolean(orgId),
+    enabled: Boolean(orgId && networkId),
     queryFn: async () => {
       const client = createManagementClient(orgId!);
       return client.getNetwork(networkId);

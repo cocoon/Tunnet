@@ -3,7 +3,8 @@ use serde::Deserialize;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use tunnet_common::policy::{
-    Action, PolicyBundle, PolicyRule, Protocol, Selector, SshAction, SshPolicyRule,
+    Action, DefaultAction, IcmpPolicy, PolicyBundle, PolicyRule, Protocol, RuleScope, Selector,
+    SshAction, SshPolicyRule,
 };
 use tunnet_common::posture::PostureEnforcementConfig;
 use uuid::Uuid;
@@ -16,6 +17,9 @@ struct Row {
     ports: sqlx::types::Json<Vec<tunnet_common::policy::PortRange>>,
     protocol: Option<String>,
     priority: i32,
+    order_index: i32,
+    enabled: bool,
+    slug: Option<String>,
     src_posture: Option<sqlx::types::Json<Vec<String>>>,
 }
 
@@ -38,6 +42,12 @@ struct PostureDefinitionRow {
     assertions: sqlx::types::Json<Vec<String>>,
 }
 
+#[derive(sqlx::FromRow)]
+struct NetworkAclMeta {
+    default_action: String,
+    icmp_policy: String,
+}
+
 pub async fn load_network_bundle(
     pool: &PgPool,
     signing_key: &SigningKey,
@@ -45,8 +55,11 @@ pub async fn load_network_bundle(
     version: u64,
 ) -> anyhow::Result<PolicyBundle> {
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT src_selector, dst_selector, action, ports, protocol, priority, src_posture \
-         FROM policies WHERE network_id = $1 ORDER BY priority DESC",
+        "SELECT src_selector, dst_selector, action, ports, protocol, priority, \
+                order_index, enabled, slug, src_posture \
+         FROM policies \
+         WHERE network_id = $1 AND enabled = true \
+         ORDER BY order_index ASC, priority ASC",
     )
     .bind(network_id)
     .fetch_all(pool)
@@ -61,6 +74,12 @@ pub async fn load_network_bundle(
     .fetch_all(pool)
     .await?;
 
+    let meta: NetworkAclMeta =
+        sqlx::query_as("SELECT default_action, icmp_policy FROM networks WHERE id = $1")
+            .bind(network_id)
+            .fetch_one(pool)
+            .await?;
+
     let org_id: String = sqlx::query_scalar("SELECT organization_id FROM networks WHERE id = $1")
         .bind(network_id)
         .fetch_one(pool)
@@ -72,6 +91,9 @@ pub async fn load_network_bundle(
         rows,
         ssh_rows,
         version,
+        RuleScope::Network,
+        parse_default_action(&meta.default_action),
+        parse_icmp_policy(&meta.icmp_policy),
         posture_meta.postures,
         posture_meta.default_src_posture,
         posture_meta.posture_enforcement,
@@ -85,26 +107,46 @@ pub async fn load_org_bundle(
     version: u64,
 ) -> anyhow::Result<PolicyBundle> {
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT src_selector, dst_selector, action, ports, protocol, priority, src_posture \
+        "SELECT src_selector, dst_selector, action, ports, protocol, priority, \
+                order_index, enabled, slug, src_posture \
          FROM policies \
-         WHERE organization_id = $1 AND network_id IS NULL \
-         ORDER BY priority DESC",
+         WHERE organization_id = $1 AND network_id IS NULL AND enabled = true \
+         ORDER BY order_index ASC, priority ASC",
     )
     .bind(organization_id)
     .fetch_all(pool)
     .await?;
 
     // Org-level SSH rules are not modeled yet; network-scoped only.
+    // Org bundles carry deny guardrails only; default/icmp come from the network on merge.
     let posture_meta = load_posture_metadata(pool, organization_id, None).await?;
     sign_bundle(
         signing_key,
         rows,
         Vec::new(),
         version,
+        RuleScope::Organization,
+        DefaultAction::Allow,
+        IcmpPolicy::Allow,
         posture_meta.postures,
         posture_meta.default_src_posture,
         posture_meta.posture_enforcement,
     )
+}
+
+fn parse_default_action(raw: &str) -> DefaultAction {
+    match raw {
+        "deny" => DefaultAction::Deny,
+        _ => DefaultAction::Allow,
+    }
+}
+
+fn parse_icmp_policy(raw: &str) -> IcmpPolicy {
+    match raw {
+        "acl" => IcmpPolicy::Acl,
+        "deny" => IcmpPolicy::Deny,
+        _ => IcmpPolicy::Allow,
+    }
 }
 
 struct PostureMetadata {
@@ -179,11 +221,15 @@ async fn load_posture_metadata(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sign_bundle(
     signing_key: &SigningKey,
     rows: Vec<Row>,
     ssh_rows: Vec<SshRow>,
     version: u64,
+    scope: RuleScope,
+    default_action: DefaultAction,
+    icmp_policy: IcmpPolicy,
     postures: HashMap<String, Vec<String>>,
     default_src_posture: Vec<String>,
     posture_enforcement: Option<PostureEnforcementConfig>,
@@ -207,6 +253,10 @@ fn sign_bundle(
                 _ => None,
             }),
             priority: r.priority,
+            order_index: r.order_index,
+            scope,
+            enabled: r.enabled,
+            slug: r.slug,
             src_posture: {
                 let explicit = r.src_posture.map(|j| j.0).unwrap_or_default();
                 if explicit.is_empty() {
@@ -246,11 +296,13 @@ fn sign_bundle(
         ssh_rules,
         version,
         signature: String::new(),
+        default_action,
+        icmp_policy,
         postures,
         default_src_posture,
         posture_enforcement,
     };
-    let sign_bytes = serde_json::to_vec(&(&bundle.rules, &bundle.ssh_rules, bundle.version))?;
+    let sign_bytes = tunnet_common::policy::policy_bundle_sign_bytes(&bundle)?;
     let sig = signing_key.sign(&sign_bytes);
     bundle.signature =
         base64::Engine::encode(&base64::engine::general_purpose::STANDARD, sig.to_bytes());

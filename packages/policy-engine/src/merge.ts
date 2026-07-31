@@ -1,4 +1,4 @@
-import type { PolicyDocument } from "./types";
+import { emptyDocument, type PolicyDocument } from "./types";
 
 export class MergeConflictError extends Error {
   constructor(
@@ -26,18 +26,7 @@ function mergeVec<T>(
 }
 
 export function mergeDocuments(docs: PolicyDocument[]): PolicyDocument {
-  const out: PolicyDocument = {
-    tags: [],
-    host_aliases: [],
-    ip_sets: [],
-    acls: [],
-    grants: [],
-    ssh_rules: [],
-    postures: [],
-    auto_approvers: [],
-    node_attributes: [],
-    tests: [],
-  };
+  const out: PolicyDocument = emptyDocument();
 
   for (const doc of docs) {
     mergeVec(out.tags, doc.tags, "tag", (t) => t.name);
@@ -60,6 +49,12 @@ export function mergeDocuments(docs: PolicyDocument[]): PolicyDocument {
       (n) => n.name,
     );
     mergeVec(out.tests, doc.tests, "test", (t) => t.name);
+    if (doc.default_action !== undefined) {
+      out.default_action = doc.default_action;
+    }
+    if (doc.icmp_policy !== undefined) {
+      out.icmp_policy = doc.icmp_policy;
+    }
   }
 
   return out;

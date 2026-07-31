@@ -137,12 +137,15 @@ export async function loadOrganizationPolicyDocument(
     policies: policyRows.map((policy) => ({
       slug: policy.slug,
       action: policy.action,
+      scope: policy.scope as "organization" | "network",
       srcSelector: policy.srcSelector as Selector,
       dstSelector: policy.dstSelector as Selector,
       ports: policy.ports as Array<{ start: number; end: number }>,
       protocol: policy.protocol,
       priority: policy.priority,
+      orderIndex: policy.orderIndex,
       srcPosture: policy.srcPosture,
+      enabled: policy.enabled,
     })),
     grants: grantRows.map((grant) => ({
       slug: grant.slug,
@@ -257,6 +260,12 @@ export async function applyPolicyDocument(input: {
     }
 
     for (const acl of input.document.acls) {
+      const scope = acl.scope ?? "organization";
+      if (scope === "organization" && acl.action !== "deny") {
+        throw new Error(
+          `Organization-scoped Allow is not supported (acl: ${acl.slug ?? acl.name})`,
+        );
+      }
       await tx.insert(schema.policies).values({
         organizationId: input.organizationId,
         networkId: null,
@@ -268,6 +277,8 @@ export async function applyPolicyDocument(input: {
         ports: parsePortRanges(acl.ports),
         protocol: acl.protocol ?? "any",
         priority: acl.priority,
+        orderIndex: acl.orderIndex ?? 0,
+        enabled: acl.enabled ?? true,
         srcPosture: acl.posture.length > 0 ? acl.posture : null,
       });
     }

@@ -283,7 +283,7 @@ pub async fn mark_agent_disconnected(
 }
 
 pub async fn record_heartbeat(pool: &PgPool, endpoint_id: &str) -> anyhow::Result<()> {
-    let result = sqlx::query(crate::device_expiry_sql::SLIDE_ON_HEARTBEAT)
+    let _result = sqlx::query(crate::device_expiry_sql::SLIDE_ON_HEARTBEAT)
         .bind(endpoint_id)
         .execute(pool)
         .await?;
@@ -293,12 +293,6 @@ pub async fn record_heartbeat(pool: &PgPool, endpoint_id: &str) -> anyhow::Resul
         .execute(pool)
         .await?;
 
-    // Push fresh lastHeartbeatAt to dashboard SSE so "last seen" stays current.
-    if result.rows_affected() > 0
-        && let Some(device) = load_device(pool, endpoint_id).await?
-    {
-        emit_presence_changed(pool, &device.organization_id, endpoint_id).await?;
-    }
     Ok(())
 }
 

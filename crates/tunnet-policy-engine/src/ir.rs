@@ -24,6 +24,10 @@ pub struct PolicyDocument {
     pub node_attributes: Vec<NodeAttribute>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tests: Vec<PolicyTest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icmp_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +66,10 @@ pub struct AclRule {
     pub protocol: Option<String>,
     #[serde(default)]
     pub priority: i32,
+    #[serde(default)]
+    pub order_index: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     #[serde(default)]
     pub posture: Vec<String>,
     #[serde(default)]

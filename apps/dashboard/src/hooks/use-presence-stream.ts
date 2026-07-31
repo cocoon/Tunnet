@@ -128,13 +128,23 @@ export function usePresenceStream(orgId: string | undefined) {
                 networkId?: string | null;
               };
               if (payload.type === "presence" && payload.patch) {
+                const key = queryKeys.devicePresence(
+                  activeOrgId,
+                  payload.patch.endpointId,
+                );
+                const previous = queryClient.getQueryData<PresencePatch>(key);
                 applyPresencePatch(queryClient, activeOrgId, payload.patch);
-                void queryClient.invalidateQueries({
-                  queryKey: queryKeys.machines(activeOrgId),
-                });
-                void queryClient.invalidateQueries({
-                  queryKey: queryKeys.networks(activeOrgId),
-                });
+                const connectedFlipped =
+                  !previous ||
+                  previous.agentConnected !== payload.patch.agentConnected;
+                if (connectedFlipped) {
+                  void queryClient.invalidateQueries({
+                    queryKey: queryKeys.machines(activeOrgId),
+                  });
+                  void queryClient.invalidateQueries({
+                    queryKey: queryKeys.networks(activeOrgId),
+                  });
+                }
               } else if (payload.type === "entity" && payload.kind) {
                 invalidateEntityQueries(
                   queryClient,

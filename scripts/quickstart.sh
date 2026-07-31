@@ -63,5 +63,5 @@ ${GREEN}════════════════════════
        --control-url http://<your-ip>:8080 \\
        --token <YOUR_TOKEN>${NC}
 
-     ${CYAN}sudo tunnet run${NC}
+     ${CYAN}sudo tunnet service start${NC}
 "

@@ -8,8 +8,10 @@ import { cn } from "@/lib/utils";
 
 const labels: Record<MachinePresence, string> = {
   online: "Online",
-  stale: "Stale",
+  degraded: "Degraded",
+  connecting: "Connecting",
   offline: "Offline",
+  unknown: "Unknown",
   suspended: "Suspended",
   pending: "Pending",
   expired: "Expired",
@@ -20,8 +22,10 @@ const variants: Record<
   "default" | "secondary" | "destructive" | "outline"
 > = {
   online: "default",
-  stale: "secondary",
+  degraded: "secondary",
+  connecting: "secondary",
   offline: "outline",
+  unknown: "outline",
   suspended: "destructive",
   pending: "secondary",
   expired: "destructive",
@@ -29,8 +33,10 @@ const variants: Record<
 
 const dotClass: Record<MachinePresence, string> = {
   online: "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]",
-  stale: "bg-amber-400",
+  degraded: "bg-amber-400",
+  connecting: "bg-sky-400",
   offline: "bg-muted-foreground/40",
+  unknown: "bg-muted-foreground/40",
   suspended: "bg-destructive",
   pending: "bg-amber-400",
   expired: "bg-destructive",

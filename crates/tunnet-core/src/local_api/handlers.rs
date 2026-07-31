@@ -422,14 +422,19 @@ pub(crate) fn peer_summaries(
                 Some(snap.last_activity_secs_ago)
             };
             let pool_online = snap.live || pool.has_live(p.endpoint);
-            let online = pool_online || presence_online.unwrap_or(false);
+            // None = unknown (cold start / no beacon yet); do not treat as offline.
+            let online = if pool_online {
+                Some(true)
+            } else {
+                presence_online
+            };
             PeerSummary {
                 network_id: p.network_id.to_string(),
                 ip: p.ip.to_string(),
                 hostname: p.hostname.clone(),
                 endpoint_id: p.endpoint_hex.clone(),
                 tags: p.tags.clone(),
-                online: Some(online),
+                online,
                 latency_ms,
                 os: None,
                 conn_state: Some(snap.state),

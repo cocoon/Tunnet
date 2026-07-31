@@ -56,10 +56,10 @@ The machine gets an internal IP and joins the network.
 ## 6. Start the agent
 
 ```bash
-sudo tunnet run
+sudo tunnet service start
 ```
 
-This creates the `tunnet0` virtual interface, connects to peers, and starts handling traffic.
+This starts `tunnetd` as an OS service, creates the `tunnet0` virtual interface, connects to peers, and starts handling traffic. For a foreground process instead, run `sudo tunnetd`. After enrollment, the service often reloads automatically if it was already running.
 
 ## 7. Verify
 

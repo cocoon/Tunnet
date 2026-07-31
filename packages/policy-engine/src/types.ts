@@ -24,6 +24,8 @@ export const aclRuleSchema = z.object({
   ports: z.array(z.string()).default([]),
   protocol: z.string().optional().nullable(),
   priority: z.number().int().default(0),
+  orderIndex: z.number().int().default(0),
+  scope: z.enum(["organization", "network"]).default("network"),
   posture: z.array(z.string()).default([]),
   labels: z.record(z.string(), z.string()).default({}),
   enabled: z.boolean().default(true),
@@ -82,6 +84,8 @@ export const policyDocumentSchema = z.object({
   auto_approvers: z.array(autoApproverSchema).default([]),
   node_attributes: z.array(nodeAttributeSchema).default([]),
   tests: z.array(policyTestSchema).default([]),
+  default_action: z.enum(["allow", "deny"]).default("allow"),
+  icmp_policy: z.enum(["allow", "acl", "deny"]).default("allow"),
 });
 
 export type TagDefinition = z.infer<typeof tagDefinitionSchema>;
@@ -116,9 +120,21 @@ export type DiffChange = {
   summary?: string;
 };
 
+export type SimulateReason =
+  | "org_deny"
+  | "network_deny"
+  | "network_allow"
+  | "default_allow"
+  | "default_deny"
+  | "icmp_policy"
+  | "posture_skip";
+
 export type SimulateResult = {
   verdict: "allow" | "deny";
+  reason: SimulateReason;
   matchedRules: string[];
+  ruleSlug?: string;
+  scope?: "organization" | "network";
 };
 
 export type TestCaseResult = {

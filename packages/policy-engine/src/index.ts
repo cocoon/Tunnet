@@ -25,6 +25,7 @@ export {
   type PolicyTest,
   type PostureDefinition,
   policyDocumentSchema,
+  type SimulateReason,
   type SimulateResult,
   type SshRule,
   type TagDefinition,

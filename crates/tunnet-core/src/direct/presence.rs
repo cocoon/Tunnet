@@ -58,6 +58,13 @@ impl PresenceTable {
             .is_some_and(|b| b.expires_at > now)
     }
 
+    /// `None` = never seen (unknown), `Some(true)` = live beacon, `Some(false)` = expired.
+    pub fn presence_status(&self, endpoint_id: &str, now: i64) -> Option<bool> {
+        let peers = self.peers.lock();
+        let beacon = peers.get(endpoint_id)?;
+        Some(beacon.expires_at > now)
+    }
+
     pub fn last_seen_secs_ago(&self, endpoint_id: &str, now: i64) -> Option<u64> {
         let beacon = self.peers.lock().get(endpoint_id).cloned()?;
         if beacon.expires_at <= now {

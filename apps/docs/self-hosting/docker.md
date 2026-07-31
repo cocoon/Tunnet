@@ -70,7 +70,7 @@ sudo tunnet enroll \
   --control-url http://your-docker-host:8080 \
   --token YOUR_TOKEN
 
-sudo tunnet run
+sudo tunnet service start
 ```
 
 ## Production considerations

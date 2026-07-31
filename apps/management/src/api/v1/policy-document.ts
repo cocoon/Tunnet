@@ -94,7 +94,10 @@ export const policyDocumentRoutes = new Elysia()
               port: scenario.port,
               protocol: scenario.protocol,
               verdict: result.verdict,
+              reason: result.reason,
               matchedRules: result.matchedRules,
+              ruleSlug: result.ruleSlug,
+              scope: result.scope,
             };
           }),
         };

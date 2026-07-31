@@ -221,12 +221,23 @@ impl CoreNode {
         if tables.is_empty() {
             return None;
         }
+        let mut saw_entry = false;
+        let mut any_online = false;
         for table in tables.values() {
-            if table.is_online(endpoint_hex, now) {
-                return Some(true);
+            match table.presence_status(endpoint_hex, now) {
+                Some(true) => any_online = true,
+                Some(false) => saw_entry = true,
+                None => {}
             }
         }
-        Some(false)
+        if any_online {
+            return Some(true);
+        }
+        // Never-seen peers stay unknown (None) so cold-start does not flood Offline.
+        if saw_entry {
+            return Some(false);
+        }
+        None
     }
 
     #[cfg(feature = "direct")]

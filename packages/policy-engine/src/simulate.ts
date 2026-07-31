@@ -8,17 +8,20 @@ import {
   type AclRule,
   aclKey,
   type PolicyDocument,
+  type SimulateReason,
   type SimulateResult,
 } from "./types";
 
 type CompiledRule = {
   name: string;
   action: "allow" | "deny";
+  scope: "organization" | "network";
   srcSelectors: ReturnType<typeof parseSelector>[];
   dstSelectors: ReturnType<typeof parseSelector>[];
   ports: Array<{ start: number; end: number }>;
   protocol: "tcp" | "udp" | "icmp" | "any";
   priority: number;
+  orderIndex: number;
   posture: string[];
   enabled: boolean;
 };
@@ -66,11 +69,13 @@ function compileRules(doc: PolicyDocument): CompiledRule[] {
         rules.push({
           name: aclKey(acl),
           action: acl.action === "deny" ? "deny" : "allow",
+          scope: acl.scope ?? "network",
           srcSelectors: [parseSelector(src)],
           dstSelectors: [parseSelector(dst)],
           ports: parsePorts(acl.ports),
           protocol: acl.protocol ? parseProtocol(acl.protocol) : "any",
           priority: acl.priority,
+          orderIndex: acl.orderIndex ?? 0,
           posture: acl.posture,
           enabled: acl.enabled,
         });
@@ -108,6 +113,70 @@ function portMatches(
   return ports.some((range) => port >= range.start && port <= range.end);
 }
 
+function ruleMatches(
+  rule: CompiledRule,
+  srcEndpoint: string,
+  srcTags: string[],
+  dstEndpoint: string,
+  dstTags: string[],
+  port: number | undefined,
+  parsedProto: CompiledRule["protocol"],
+): boolean {
+  const srcMatch = rule.srcSelectors.some((sel) =>
+    selectorMatches(sel, srcEndpoint, srcTags),
+  );
+  const dstMatch = rule.dstSelectors.some((sel) =>
+    selectorMatches(sel, dstEndpoint, dstTags),
+  );
+  if (!srcMatch || !dstMatch) {
+    return false;
+  }
+  if (rule.protocol !== "any" && rule.protocol !== parsedProto) {
+    return false;
+  }
+  return portMatches(rule.ports, port, parsedProto);
+}
+
+function phaseResult(
+  rule: CompiledRule,
+  reason: SimulateReason,
+): SimulateResult {
+  return {
+    verdict: rule.action,
+    reason,
+    matchedRules: [rule.name],
+    ruleSlug: rule.name,
+    scope: rule.scope,
+  };
+}
+
+function firstInPhase(
+  rules: CompiledRule[],
+  scope: "organization" | "network",
+  action: "allow" | "deny",
+  match: (rule: CompiledRule) => boolean,
+  srcPostureOk: boolean,
+  postureSkip: { current: CompiledRule | null },
+): CompiledRule | null {
+  const candidates = rules
+    .filter((r) => r.enabled && r.scope === scope && r.action === action)
+    .sort((a, b) => a.orderIndex - b.orderIndex || a.priority - b.priority);
+
+  for (const rule of candidates) {
+    if (!match(rule)) {
+      continue;
+    }
+    if (rule.posture.length > 0 && !srcPostureOk) {
+      if (!postureSkip.current) {
+        postureSkip.current = rule;
+      }
+      continue;
+    }
+    return rule;
+  }
+  return null;
+}
+
 function evaluateRules(
   rules: CompiledRule[],
   srcEndpoint: string,
@@ -116,39 +185,92 @@ function evaluateRules(
   dstTags: string[],
   port: number | undefined,
   protocol: string,
+  defaultAction: "allow" | "deny",
+  icmpPolicy: "allow" | "acl" | "deny",
+  srcPostureOk: boolean,
 ): SimulateResult {
   const parsedProto = parseProtocol(protocol);
 
-  // Match agent behavior: mesh ICMP is always allowed.
   if (parsedProto === "icmp") {
-    return { verdict: "allow", matchedRules: ["builtin:icmp"] };
+    if (icmpPolicy === "allow") {
+      return {
+        verdict: "allow",
+        reason: "icmp_policy",
+        matchedRules: ["builtin:icmp"],
+      };
+    }
+    if (icmpPolicy === "deny") {
+      return {
+        verdict: "deny",
+        reason: "icmp_policy",
+        matchedRules: ["builtin:icmp"],
+      };
+    }
   }
 
-  const sorted = [...rules].sort((a, b) => b.priority - a.priority);
+  const match = (rule: CompiledRule) =>
+    ruleMatches(
+      rule,
+      srcEndpoint,
+      srcTags,
+      dstEndpoint,
+      dstTags,
+      port,
+      parsedProto,
+    );
+  const postureSkip: { current: CompiledRule | null } = { current: null };
 
-  for (const rule of sorted) {
-    const srcMatch = rule.srcSelectors.some((sel) =>
-      selectorMatches(sel, srcEndpoint, srcTags),
-    );
-    const dstMatch = rule.dstSelectors.some((sel) =>
-      selectorMatches(sel, dstEndpoint, dstTags),
-    );
-    if (!srcMatch || !dstMatch) {
-      continue;
-    }
-    if (rule.protocol !== "any" && rule.protocol !== parsedProto) {
-      continue;
-    }
-    if (!portMatches(rule.ports, port, parsedProto)) {
-      continue;
-    }
+  const orgDeny = firstInPhase(
+    rules,
+    "organization",
+    "deny",
+    match,
+    srcPostureOk,
+    postureSkip,
+  );
+  if (orgDeny) {
+    return phaseResult(orgDeny, "org_deny");
+  }
+
+  const netDeny = firstInPhase(
+    rules,
+    "network",
+    "deny",
+    match,
+    srcPostureOk,
+    postureSkip,
+  );
+  if (netDeny) {
+    return phaseResult(netDeny, "network_deny");
+  }
+
+  const netAllow = firstInPhase(
+    rules,
+    "network",
+    "allow",
+    match,
+    srcPostureOk,
+    postureSkip,
+  );
+  if (netAllow) {
+    return phaseResult(netAllow, "network_allow");
+  }
+
+  if (postureSkip.current) {
     return {
-      verdict: rule.action,
-      matchedRules: [rule.name],
+      verdict: defaultAction,
+      reason: "posture_skip",
+      matchedRules: [postureSkip.current.name],
+      ruleSlug: postureSkip.current.name,
+      scope: postureSkip.current.scope,
     };
   }
 
-  return { verdict: "deny", matchedRules: [] };
+  return {
+    verdict: defaultAction,
+    reason: defaultAction === "allow" ? "default_allow" : "default_deny",
+    matchedRules: [],
+  };
 }
 
 export function simulateDocument(
@@ -158,6 +280,7 @@ export function simulateDocument(
     dst: string;
     port?: number;
     protocol?: string;
+    srcPostureOk?: boolean;
   },
 ): SimulateResult {
   const rules = compileRules(doc);
@@ -171,6 +294,9 @@ export function simulateDocument(
     tagsForSelector(dstSel),
     scenario.port,
     scenario.protocol ?? "tcp",
+    doc.default_action ?? "allow",
+    doc.icmp_policy ?? "allow",
+    scenario.srcPostureOk ?? true,
   );
 }
 

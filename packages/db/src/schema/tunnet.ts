@@ -43,6 +43,8 @@ const id = () => uuid("id").primaryKey().default(sql`uuidv7()`);
 
 export const policyActionValues = ["allow", "deny"] as const;
 export const policyScopeValues = ["network", "organization"] as const;
+export const networkDefaultActionValues = ["allow", "deny"] as const;
+export const networkIcmpPolicyValues = ["allow", "acl", "deny"] as const;
 export const tunnelRoutingKindValues = ["path", "port"] as const;
 export const organizationCaStatusValues = [
   "active",
@@ -105,6 +107,10 @@ export const networks = pgTable(
     cidr: cidr("cidr").notNull(),
     /** 1280 = IPv6 minimum; safe for QUIC-over-UDP tunnel overhead. */
     mtu: integer("mtu").notNull().default(1280),
+    /** Open = allow, Restricted = deny when no ACL rule matches. */
+    defaultAction: text("default_action").notNull().default("allow"),
+    /** allow (default) | acl | deny - how ICMP is handled. */
+    icmpPolicy: text("icmp_policy").notNull().default("allow"),
     /** Network overrides for org defaults (e.g. `{ agentPolicy: {...} }`). */
     settings: jsonb("settings").notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -112,7 +118,17 @@ export const networks = pgTable(
       .notNull(),
     version: bigint("version", { mode: "number" }).notNull().default(0),
   },
-  (table) => [unique().on(table.organizationId, table.name)],
+  (table) => [
+    unique().on(table.organizationId, table.name),
+    check(
+      "networks_default_action_check",
+      sql`${table.defaultAction} IN ('allow', 'deny')`,
+    ),
+    check(
+      "networks_icmp_policy_check",
+      sql`${table.icmpPolicy} IN ('allow', 'acl', 'deny')`,
+    ),
+  ],
 );
 
 export const devices = pgTable(
@@ -256,6 +272,9 @@ export const policies = pgTable(
     ports: jsonb("ports").notNull().default([]),
     protocol: text("protocol"),
     priority: integer("priority").notNull().default(0),
+    /** Primary ordering within an evaluation phase (ascending, first match). */
+    orderIndex: integer("order_index").notNull().default(0),
+    enabled: boolean("enabled").notNull().default(true),
     /** Posture definition names required on source device; null/empty = inherit org default. */
     srcPosture: jsonb("src_posture").$type<string[] | null>(),
     /** Stable slug for GitOps / Terraform identity. */
@@ -269,8 +288,15 @@ export const policies = pgTable(
       table.organizationId,
       table.priority,
     ),
+    index("policies_by_org_order_idx").on(
+      table.organizationId,
+      table.orderIndex,
+    ),
     index("policies_by_network_priority_idx")
       .on(table.networkId, table.priority)
+      .where(sql`${table.networkId} IS NOT NULL`),
+    index("policies_by_network_order_idx")
+      .on(table.networkId, table.orderIndex)
       .where(sql`${table.networkId} IS NOT NULL`),
     uniqueIndex("policies_org_slug_unique")
       .on(table.organizationId, table.slug)

@@ -1,8 +1,11 @@
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
+import type { CreatePolicyBody } from "@tunnet/api/management";
 import { formatDistanceToNow } from "date-fns";
 import { ChevronRightIcon } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { SuggestAllowFromServe } from "@/components/app/acl/suggest-allow-from-serve";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { CopyField } from "@/components/app/copy-field";
 import { EntityStatus } from "@/components/app/entity-status";
@@ -33,12 +36,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCan } from "@/hooks/use-permission";
 import { useActiveOrganization } from "@/lib/auth-client";
 import { getMachinePresence } from "@/lib/machine-utils";
+import { createManagementClient } from "@/lib/management-client";
 import {
   useMachines,
+  useNetwork,
   useServeMutations,
   useServePeers,
   useServes,
 } from "@/lib/queries/management";
+import { queryKeys } from "@/lib/query-keys";
 
 export const Route = createFileRoute("/app/serves/$serveId")({
   component: ServeDetailPage,
@@ -70,15 +76,33 @@ function ServeDetailPage() {
   const { data: activeOrg } = useActiveOrganization();
   const orgId = activeOrg?.id;
   const { data: canManage = false } = useCan(orgId, "serve", "update");
+  const { data: canManagePolicy = false } = useCan(orgId, "policy", "update");
   const { data: serves, isPending } = useServes(orgId);
   const { data: machines } = useMachines(orgId);
   const mutations = useServeMutations(orgId);
   const [confirmStop, setConfirmStop] = useState(false);
+  const queryClient = useQueryClient();
 
   const serve = useMemo(
     () => (serves ?? []).find((s) => s.id === serveId),
     [serves, serveId],
   );
+
+  const { data: network } = useNetwork(orgId, serve?.networkId ?? "");
+
+  const createPolicy = useMutation({
+    mutationFn: async (body: CreatePolicyBody) => {
+      if (!orgId || !serve) throw new Error("No organization");
+      return createManagementClient(orgId).createPolicy(serve.networkId, body);
+    },
+    onSuccess: () => {
+      if (orgId && serve) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.policies(orgId, serve.networkId),
+        });
+      }
+    },
+  });
 
   const { data: peers, isPending: peersPending } = useServePeers(
     orgId,
@@ -165,6 +189,28 @@ function ServeDetailPage() {
         title={serve.internalHostname}
         description={`${serve.protocol.toUpperCase()} · port ${serve.localPort}`}
         actions={<EntityStatus status={serve.status} />}
+      />
+
+      <SuggestAllowFromServe
+        orgId={orgId}
+        networkId={serve.networkId}
+        endpointId={serve.endpointId}
+        localPort={serve.localPort}
+        protocol="tcp"
+        restricted={network?.defaultAction === "deny"}
+        canManage={canManagePolicy}
+        loading={createPolicy.isPending}
+        onSubmit={async (body) => {
+          try {
+            await createPolicy.mutateAsync(body as CreatePolicyBody);
+            toast.success("Allow policy created");
+          } catch (err) {
+            toast.error(
+              err instanceof Error ? err.message : "Failed to create policy",
+            );
+            throw err;
+          }
+        }}
       />
 
       <Tabs defaultValue="overview" className="gap-4">

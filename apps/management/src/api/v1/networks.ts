@@ -21,6 +21,8 @@ function serializeNetwork(row: typeof schema.networks.$inferSelect) {
     name: row.name,
     cidr: formatIpv4Cidr(row.cidr),
     mtu: row.mtu,
+    defaultAction: row.defaultAction as "allow" | "deny",
+    icmpPolicy: row.icmpPolicy as "allow" | "acl" | "deny",
     version: row.version,
     settings: normalizeNetworkSettings(row.settings),
     createdAt: toIso(row.createdAt)!,
@@ -66,6 +68,8 @@ export const networksRoutes = new Elysia()
               name: parsed.name,
               cidr: formatIpv4Cidr(parsed.cidr),
               mtu: parsed.mtu,
+              defaultAction: parsed.defaultAction,
+              icmpPolicy: parsed.icmpPolicy,
             })
             .returning();
 
@@ -123,6 +127,12 @@ export const networksRoutes = new Elysia()
                 ...(parsed.cidr !== undefined
                   ? { cidr: formatIpv4Cidr(parsed.cidr) }
                   : {}),
+                ...(parsed.defaultAction !== undefined
+                  ? { defaultAction: parsed.defaultAction }
+                  : {}),
+                ...(parsed.icmpPolicy !== undefined
+                  ? { icmpPolicy: parsed.icmpPolicy }
+                  : {}),
                 ...(parsed.settings !== undefined
                   ? { settings: nextSettings }
                   : {}),
@@ -146,7 +156,9 @@ export const networksRoutes = new Elysia()
               agentPolicyChanged ||
               parsed.name !== undefined ||
               parsed.cidr !== undefined ||
-              parsed.mtu !== undefined
+              parsed.mtu !== undefined ||
+              parsed.defaultAction !== undefined ||
+              parsed.icmpPolicy !== undefined
             ) {
               await bumpNetworkAndNotify(tx, updated.id, auth.organizationId);
             }

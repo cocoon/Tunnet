@@ -62,14 +62,18 @@ export function deriveInactivityLimitCompact(
   return formatDurationCompact(secs);
 }
 
-/** True when the inactivity clock should tick (offline / stale / not online). */
+/** True when the inactivity clock should tick (not actively online). */
 export function isExpiryCountdownActive(
   device: ExpiryDevice,
   now = Date.now(),
 ): boolean {
   if (device.status === "expired" || device.expiredAt) return true;
   const presence = getMachinePresence(device, now);
-  return presence !== "online";
+  return (
+    presence !== "online" &&
+    presence !== "degraded" &&
+    presence !== "connecting"
+  );
 }
 
 export function getExpiryUrgency(
@@ -80,7 +84,13 @@ export function getExpiryUrgency(
   if (device.status === "expired" || device.expiredAt) return "critical";
 
   const resolved = presence ?? getMachinePresence(device, now);
-  if (resolved === "online") return null;
+  if (
+    resolved === "online" ||
+    resolved === "degraded" ||
+    resolved === "connecting"
+  ) {
+    return null;
+  }
 
   const expiresAtMs = resolveExpiresAtMs(device);
   if (expiresAtMs === null) return null;

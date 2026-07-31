@@ -11,6 +11,102 @@ pub enum Action {
     Deny,
 }
 
+/// Network access mode: Open = Allow, Restricted = Deny.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DefaultAction {
+    #[default]
+    Allow,
+    Deny,
+}
+
+impl From<DefaultAction> for Action {
+    fn from(value: DefaultAction) -> Self {
+        match value {
+            DefaultAction::Allow => Action::Allow,
+            DefaultAction::Deny => Action::Deny,
+        }
+    }
+}
+
+/// How ICMP is handled before/alongside ACL evaluation.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum IcmpPolicy {
+    /// Always allow ICMP (default; ping/PMTU work out of the box).
+    #[default]
+    Allow,
+    /// Evaluate ICMP through the normal ACL phases.
+    Acl,
+    /// Always deny ICMP.
+    Deny,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleScope {
+    Organization,
+    #[default]
+    Network,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalReason {
+    OrgDeny,
+    NetworkDeny,
+    NetworkAllow,
+    DefaultAllow,
+    DefaultDeny,
+    IcmpPolicy,
+    PostureSkip,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvalVerdict {
+    pub action: Action,
+    pub reason: EvalReason,
+    pub rule_slug: Option<String>,
+    pub scope: Option<RuleScope>,
+}
+
+impl EvalVerdict {
+    fn icmp(action: Action) -> Self {
+        Self {
+            action,
+            reason: EvalReason::IcmpPolicy,
+            rule_slug: None,
+            scope: None,
+        }
+    }
+
+    fn default_action(default: DefaultAction) -> Self {
+        match default {
+            DefaultAction::Allow => Self {
+                action: Action::Allow,
+                reason: EvalReason::DefaultAllow,
+                rule_slug: None,
+                scope: None,
+            },
+            DefaultAction::Deny => Self {
+                action: Action::Deny,
+                reason: EvalReason::DefaultDeny,
+                rule_slug: None,
+                scope: None,
+            },
+        }
+    }
+
+    fn rule(action: Action, reason: EvalReason, rule: &PolicyRule) -> Self {
+        Self {
+            action,
+            reason,
+            rule_slug: rule.slug.clone(),
+            scope: Some(rule.scope),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
@@ -44,10 +140,24 @@ pub struct PolicyRule {
     pub ports: Vec<PortRange>,
     #[serde(default)]
     pub protocol: Option<Protocol>,
+    /// Legacy priority; `order_index` is primary within an evaluation phase.
     pub priority: i32,
+    /// Ascending order within an evaluation phase (first match wins).
+    #[serde(default)]
+    pub order_index: i32,
+    #[serde(default)]
+    pub scope: RuleScope,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
     /// Posture definition names required on the source device (OR semantics).
     #[serde(default)]
     pub src_posture: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -62,7 +172,7 @@ impl PortRange {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyBundle {
     pub rules: Vec<PolicyRule>,
     /// Application-level SSH access rules (separate from L3/L4 ACL).
@@ -72,6 +182,12 @@ pub struct PolicyBundle {
     /// base64 Ed25519 signature by the control plane's policy key.
     #[serde(default)]
     pub signature: String,
+    /// Network access mode when no ACL rule matches.
+    #[serde(default)]
+    pub default_action: DefaultAction,
+    /// ICMP handling before ACL evaluation.
+    #[serde(default)]
+    pub icmp_policy: IcmpPolicy,
     /// Org posture definitions: name → assertion strings.
     #[serde(default)]
     pub postures: HashMap<String, Vec<String>>,
@@ -80,6 +196,22 @@ pub struct PolicyBundle {
     pub default_src_posture: Vec<String>,
     #[serde(default)]
     pub posture_enforcement: Option<PostureEnforcementConfig>,
+}
+
+impl Default for PolicyBundle {
+    fn default() -> Self {
+        Self {
+            rules: Vec::new(),
+            ssh_rules: Vec::new(),
+            version: 0,
+            signature: String::new(),
+            default_action: DefaultAction::Allow,
+            icmp_policy: IcmpPolicy::Allow,
+            postures: HashMap::new(),
+            default_src_posture: Vec::new(),
+            posture_enforcement: None,
+        }
+    }
 }
 
 pub const AUTOGROUP_NONROOT: &str = "autogroup:nonroot";
@@ -192,9 +324,11 @@ pub struct Ipv6EvalCtx<'a> {
     pub self_endpoint_hex: &'a str,
     pub self_ipv6: Ipv6Addr,
     pub self_tags: &'a [String],
+    pub self_network: &'a str,
     pub peer_endpoint_hex: &'a str,
     pub peer_ipv6: Option<Ipv6Addr>,
     pub peer_tags: &'a [String],
+    pub peer_network: &'a str,
     pub dst_port: Option<u16>,
     pub protocol: Protocol,
     /// When false, rules with non-empty `src_posture` do not match.
@@ -230,13 +364,14 @@ impl Selector {
         &self,
         endpoint_hex: &str,
         tags: &[String],
+        network: &str,
         ipv6: Option<Ipv6Addr>,
     ) -> bool {
         match self {
             Selector::Any => true,
             Selector::Endpoint(id) => id.eq_ignore_ascii_case(endpoint_hex),
             Selector::Tag(t) => tags.iter().any(|x| x == t),
-            Selector::Network(_) => false,
+            Selector::Network(n) => n == network,
             Selector::Cidr(cidr) => match (ipv6, cidr.parse::<ipnet::IpNet>()) {
                 (Some(ip), Ok(net)) => net.contains(&std::net::IpAddr::V6(ip)),
                 _ => false,
@@ -251,11 +386,17 @@ impl Selector {
 }
 
 /// Merge org-scoped and network-scoped bundles into one effective ruleset.
-/// Org rules are listed first; evaluation still sorts by `priority` desc.
+/// Network `default_action` / `icmp_policy` win; rule scopes are preserved.
 pub fn merge_policy_bundles(org: &PolicyBundle, network: &PolicyBundle) -> PolicyBundle {
     let mut rules = Vec::with_capacity(org.rules.len() + network.rules.len());
-    rules.extend(org.rules.iter().cloned());
-    rules.extend(network.rules.iter().cloned());
+    for mut rule in org.rules.iter().cloned() {
+        rule.scope = RuleScope::Organization;
+        rules.push(rule);
+    }
+    for mut rule in network.rules.iter().cloned() {
+        rule.scope = RuleScope::Network;
+        rules.push(rule);
+    }
 
     let mut ssh_rules = Vec::with_capacity(org.ssh_rules.len() + network.ssh_rules.len());
     ssh_rules.extend(org.ssh_rules.iter().cloned());
@@ -277,6 +418,8 @@ pub fn merge_policy_bundles(org: &PolicyBundle, network: &PolicyBundle) -> Polic
         ssh_rules,
         version: org.version.max(network.version),
         signature: String::new(),
+        default_action: network.default_action,
+        icmp_policy: network.icmp_policy,
         postures,
         default_src_posture,
         posture_enforcement: network
@@ -288,7 +431,13 @@ pub fn merge_policy_bundles(org: &PolicyBundle, network: &PolicyBundle) -> Polic
 
 /// Canonical bytes signed by the control plane for a policy bundle.
 pub fn policy_bundle_sign_bytes(bundle: &PolicyBundle) -> Result<Vec<u8>, serde_json::Error> {
-    serde_json::to_vec(&(&bundle.rules, &bundle.ssh_rules, bundle.version))
+    serde_json::to_vec(&(
+        &bundle.rules,
+        &bundle.ssh_rules,
+        bundle.version,
+        bundle.default_action,
+        bundle.icmp_policy,
+    ))
 }
 
 /// Verify Ed25519 signature on a policy bundle. Empty signature is allowed only
@@ -328,68 +477,158 @@ pub fn policy_content_hash(canonical_ir_json: &[u8]) -> String {
 }
 
 pub fn evaluate(bundle: &PolicyBundle, ctx: &EvalCtx<'_>, direction: Direction) -> Action {
-    // Mesh ICMP (OS ping, PMTU) must work out of the box. TCP/UDP-only ACLs with
-    // implicit deny used to black-hole ping while `tunnet ping` (QUIC) still worked.
+    evaluate_detailed(bundle, ctx, direction).action
+}
+
+/// Structured ACL evaluation (deny always beats allow).
+///
+/// 1. Organization Deny matches → Deny  
+/// 2. Network Deny matches → Deny  
+/// 3. Network Allow matches → Allow  
+/// 4. Else → network.default_action  
+///
+/// ICMP is gated by `bundle.icmp_policy` before phases (unless `acl`).
+pub fn evaluate_detailed(
+    bundle: &PolicyBundle,
+    ctx: &EvalCtx<'_>,
+    direction: Direction,
+) -> EvalVerdict {
     if ctx.protocol == Protocol::Icmp {
-        return Action::Allow;
+        match bundle.icmp_policy {
+            IcmpPolicy::Allow => return EvalVerdict::icmp(Action::Allow),
+            IcmpPolicy::Deny => return EvalVerdict::icmp(Action::Deny),
+            IcmpPolicy::Acl => {}
+        }
     }
-    evaluate_rules(
-        &bundle.rules,
+    evaluate_phases(
+        bundle,
         |r, dir| rule_matches_v4(r, ctx, dir),
         direction,
+        ctx.src_posture_ok,
     )
 }
 
-/// IPv6 ACL: empty rule set = allow (open); non-empty with no match = deny.
-pub fn evaluate_ipv6(
-    org_bundle: &PolicyBundle,
-    network_bundles: &[PolicyBundle],
-    ctx: &Ipv6EvalCtx<'_>,
-    direction: Direction,
-) -> Action {
-    let org = evaluate_rules(
-        &org_bundle.rules,
-        |r, dir| rule_matches_v6(r, ctx, dir),
-        direction,
-    );
-    if org == Action::Allow {
-        return Action::Allow;
-    }
-    for bundle in network_bundles {
-        let action = evaluate_rules(
-            &bundle.rules,
-            |r, dir| rule_matches_v6(r, ctx, dir),
-            direction,
-        );
-        if action == Action::Allow {
-            return Action::Allow;
-        }
-    }
-    Action::Deny
+pub fn evaluate_ipv6(bundle: &PolicyBundle, ctx: &Ipv6EvalCtx<'_>, direction: Direction) -> Action {
+    evaluate_ipv6_detailed(bundle, ctx, direction).action
 }
 
-fn evaluate_rules<F>(rules: &[PolicyRule], mut matcher: F, direction: Direction) -> Action
+pub fn evaluate_ipv6_detailed(
+    bundle: &PolicyBundle,
+    ctx: &Ipv6EvalCtx<'_>,
+    direction: Direction,
+) -> EvalVerdict {
+    if ctx.protocol == Protocol::Icmp {
+        match bundle.icmp_policy {
+            IcmpPolicy::Allow => return EvalVerdict::icmp(Action::Allow),
+            IcmpPolicy::Deny => return EvalVerdict::icmp(Action::Deny),
+            IcmpPolicy::Acl => {}
+        }
+    }
+    evaluate_phases(
+        bundle,
+        |r, dir| rule_matches_v6(r, ctx, dir),
+        direction,
+        ctx.src_posture_ok,
+    )
+}
+
+fn evaluate_phases<F>(
+    bundle: &PolicyBundle,
+    mut matcher: F,
+    direction: Direction,
+    src_posture_ok: bool,
+) -> EvalVerdict
 where
     F: FnMut(&PolicyRule, Direction) -> bool,
 {
-    if rules.is_empty() {
-        return Action::Allow;
+    let mut posture_skip: Option<&PolicyRule> = None;
+
+    // Phase 1: Organization Deny
+    if let Some(rule) = first_matching_in_phase(
+        &bundle.rules,
+        RuleScope::Organization,
+        Action::Deny,
+        &mut matcher,
+        direction,
+        src_posture_ok,
+        &mut posture_skip,
+    ) {
+        return EvalVerdict::rule(Action::Deny, EvalReason::OrgDeny, rule);
     }
 
-    let mut sorted: Vec<&PolicyRule> = rules.iter().collect();
-    sorted.sort_by_key(|rule| std::cmp::Reverse(rule.priority));
+    // Phase 2: Network Deny
+    if let Some(rule) = first_matching_in_phase(
+        &bundle.rules,
+        RuleScope::Network,
+        Action::Deny,
+        &mut matcher,
+        direction,
+        src_posture_ok,
+        &mut posture_skip,
+    ) {
+        return EvalVerdict::rule(Action::Deny, EvalReason::NetworkDeny, rule);
+    }
 
-    for r in sorted {
-        if !matcher(r, direction) {
+    // Phase 3: Network Allow (org Allow is not supported in v1)
+    if let Some(rule) = first_matching_in_phase(
+        &bundle.rules,
+        RuleScope::Network,
+        Action::Allow,
+        &mut matcher,
+        direction,
+        src_posture_ok,
+        &mut posture_skip,
+    ) {
+        return EvalVerdict::rule(Action::Allow, EvalReason::NetworkAllow, rule);
+    }
+
+    if let Some(rule) = posture_skip {
+        return EvalVerdict {
+            action: bundle.default_action.into(),
+            reason: EvalReason::PostureSkip,
+            rule_slug: rule.slug.clone(),
+            scope: Some(rule.scope),
+        };
+    }
+
+    EvalVerdict::default_action(bundle.default_action)
+}
+
+fn first_matching_in_phase<'a, F>(
+    rules: &'a [PolicyRule],
+    scope: RuleScope,
+    action: Action,
+    matcher: &mut F,
+    direction: Direction,
+    src_posture_ok: bool,
+    posture_skip: &mut Option<&'a PolicyRule>,
+) -> Option<&'a PolicyRule>
+where
+    F: FnMut(&PolicyRule, Direction) -> bool,
+{
+    let mut candidates: Vec<&PolicyRule> = rules
+        .iter()
+        .filter(|r| r.enabled && r.scope == scope && r.action == action)
+        .collect();
+    candidates.sort_by(|a, b| {
+        a.order_index
+            .cmp(&b.order_index)
+            .then_with(|| a.priority.cmp(&b.priority))
+    });
+
+    for rule in candidates {
+        if !matcher(rule, direction) {
             continue;
         }
-        if let Some(proto) = r.protocol {
-            // protocol checked inside matcher for v4/v6 specific paths
-            let _ = proto;
+        if !rule.src_posture.is_empty() && !src_posture_ok {
+            if posture_skip.is_none() {
+                *posture_skip = Some(rule);
+            }
+            continue;
         }
-        return r.action;
+        return Some(rule);
     }
-    Action::Deny
+    None
 }
 
 fn rule_matches_v4(r: &PolicyRule, ctx: &EvalCtx<'_>, direction: Direction) -> bool {
@@ -426,31 +665,41 @@ fn rule_matches_v4(r: &PolicyRule, ctx: &EvalCtx<'_>, direction: Direction) -> b
     if !src_ok || !dst_ok {
         return false;
     }
-    if !r.src_posture.is_empty() && !ctx.src_posture_ok {
-        return false;
-    }
     proto_port_ok(r, ctx.protocol, ctx.dst_port)
 }
 
 fn rule_matches_v6(r: &PolicyRule, ctx: &Ipv6EvalCtx<'_>, direction: Direction) -> bool {
     let (src_ok, dst_ok) = match direction {
         Direction::Inbound => (
-            r.src
-                .matches_ipv6_endpoint(ctx.peer_endpoint_hex, ctx.peer_tags, ctx.peer_ipv6),
-            r.dst
-                .matches_ipv6_endpoint(ctx.self_endpoint_hex, ctx.self_tags, Some(ctx.self_ipv6)),
+            r.src.matches_ipv6_endpoint(
+                ctx.peer_endpoint_hex,
+                ctx.peer_tags,
+                ctx.peer_network,
+                ctx.peer_ipv6,
+            ),
+            r.dst.matches_ipv6_endpoint(
+                ctx.self_endpoint_hex,
+                ctx.self_tags,
+                ctx.self_network,
+                Some(ctx.self_ipv6),
+            ),
         ),
         Direction::Outbound => (
-            r.src
-                .matches_ipv6_endpoint(ctx.self_endpoint_hex, ctx.self_tags, Some(ctx.self_ipv6)),
-            r.dst
-                .matches_ipv6_endpoint(ctx.peer_endpoint_hex, ctx.peer_tags, ctx.peer_ipv6),
+            r.src.matches_ipv6_endpoint(
+                ctx.self_endpoint_hex,
+                ctx.self_tags,
+                ctx.self_network,
+                Some(ctx.self_ipv6),
+            ),
+            r.dst.matches_ipv6_endpoint(
+                ctx.peer_endpoint_hex,
+                ctx.peer_tags,
+                ctx.peer_network,
+                ctx.peer_ipv6,
+            ),
         ),
     };
     if !src_ok || !dst_ok {
-        return false;
-    }
-    if !r.src_posture.is_empty() && !ctx.src_posture_ok {
         return false;
     }
     proto_port_ok(r, ctx.protocol, ctx.dst_port)
@@ -464,7 +713,7 @@ fn proto_port_ok(r: &PolicyRule, protocol: Protocol, dst_port: Option<u16>) -> b
         return false;
     }
     // ICMP has no L4 port; port-restricted rules must not silently fail to match
-    // when the rule protocol is `any` / unset (caller may still exclude ICMP).
+    // when the rule protocol is `any` / unset.
     if protocol == Protocol::Icmp {
         return true;
     }
@@ -488,9 +737,8 @@ mod tests {
     use super::*;
     use std::net::Ipv6Addr;
 
-    #[test]
-    fn empty_policy_allows_by_default() {
-        let ctx = EvalCtx {
+    fn base_ctx(protocol: Protocol, port: Option<u16>) -> EvalCtx<'static> {
+        EvalCtx {
             self_endpoint_hex: "aa",
             self_ip: Ipv4Addr::new(10, 7, 0, 1),
             self_tags: &[],
@@ -499,113 +747,219 @@ mod tests {
             peer_ip: Some(Ipv4Addr::new(10, 7, 0, 2)),
             peer_tags: &[],
             peer_network: "",
-            dst_port: Some(80),
-            protocol: Protocol::Tcp,
+            dst_port: port,
+            protocol,
             src_posture_ok: true,
+        }
+    }
+
+    fn rule(
+        scope: RuleScope,
+        action: Action,
+        order_index: i32,
+        src: Selector,
+        protocol: Option<Protocol>,
+    ) -> PolicyRule {
+        PolicyRule {
+            src,
+            dst: Selector::Any,
+            action,
+            ports: vec![],
+            protocol,
+            priority: 0,
+            order_index,
+            scope,
+            enabled: true,
+            slug: None,
+            src_posture: vec![],
+        }
+    }
+
+    #[test]
+    fn empty_policy_uses_default_allow() {
+        let ctx = base_ctx(Protocol::Tcp, Some(80));
+        let verdict = evaluate_detailed(&PolicyBundle::default(), &ctx, Direction::Outbound);
+        assert_eq!(verdict.action, Action::Allow);
+        assert_eq!(verdict.reason, EvalReason::DefaultAllow);
+    }
+
+    #[test]
+    fn empty_policy_uses_default_deny_when_restricted() {
+        let ctx = base_ctx(Protocol::Tcp, Some(80));
+        let bundle = PolicyBundle {
+            default_action: DefaultAction::Deny,
+            ..PolicyBundle::default()
         };
+        let verdict = evaluate_detailed(&bundle, &ctx, Direction::Outbound);
+        assert_eq!(verdict.action, Action::Deny);
+        assert_eq!(verdict.reason, EvalReason::DefaultDeny);
+    }
+
+    #[test]
+    fn icmp_policy_allow_bypasses_acl() {
+        let bundle = PolicyBundle {
+            default_action: DefaultAction::Deny,
+            icmp_policy: IcmpPolicy::Allow,
+            rules: vec![rule(
+                RuleScope::Network,
+                Action::Deny,
+                0,
+                Selector::Any,
+                None,
+            )],
+            ..PolicyBundle::default()
+        };
+        let ctx = base_ctx(Protocol::Icmp, None);
+        let verdict = evaluate_detailed(&bundle, &ctx, Direction::Outbound);
+        assert_eq!(verdict.action, Action::Allow);
+        assert_eq!(verdict.reason, EvalReason::IcmpPolicy);
+    }
+
+    #[test]
+    fn icmp_policy_deny_blocks() {
+        let bundle = PolicyBundle {
+            icmp_policy: IcmpPolicy::Deny,
+            ..PolicyBundle::default()
+        };
+        let ctx = base_ctx(Protocol::Icmp, None);
         assert_eq!(
-            evaluate(&PolicyBundle::default(), &ctx, Direction::Outbound),
-            Action::Allow
+            evaluate_detailed(&bundle, &ctx, Direction::Outbound).action,
+            Action::Deny
         );
     }
 
     #[test]
-    fn icmp_allowed_even_with_tcp_only_rules() {
+    fn icmp_policy_acl_evaluates_rules() {
         let bundle = PolicyBundle {
-            version: 1,
-            signature: String::new(),
-            rules: vec![
-                PolicyRule {
-                    priority: 100,
-                    action: Action::Allow,
-                    src: Selector::Any,
-                    dst: Selector::Any,
-                    protocol: Some(Protocol::Tcp),
-                    ports: vec![PortRange { start: 80, end: 80 }],
-                    src_posture: vec![],
-                },
-                PolicyRule {
-                    priority: 1,
-                    action: Action::Deny,
-                    src: Selector::Any,
-                    dst: Selector::Any,
-                    protocol: None,
-                    ports: vec![],
-                    src_posture: vec![],
-                },
-            ],
-            ssh_rules: vec![],
-            postures: Default::default(),
-            default_src_posture: vec![],
-            posture_enforcement: None,
+            default_action: DefaultAction::Deny,
+            icmp_policy: IcmpPolicy::Acl,
+            rules: vec![rule(
+                RuleScope::Network,
+                Action::Allow,
+                0,
+                Selector::Any,
+                Some(Protocol::Icmp),
+            )],
+            ..PolicyBundle::default()
         };
-        let ctx = EvalCtx {
-            self_endpoint_hex: "aa",
-            self_ip: Ipv4Addr::new(10, 7, 0, 1),
-            self_tags: &[],
-            self_network: "",
-            peer_endpoint_hex: "bb",
-            peer_ip: Some(Ipv4Addr::new(10, 7, 0, 2)),
-            peer_tags: &[],
-            peer_network: "",
-            dst_port: None,
-            protocol: Protocol::Icmp,
-            src_posture_ok: true,
-        };
-        assert_eq!(evaluate(&bundle, &ctx, Direction::Outbound), Action::Allow);
-        assert_eq!(evaluate(&bundle, &ctx, Direction::Inbound), Action::Allow);
+        let ctx = base_ctx(Protocol::Icmp, None);
+        let verdict = evaluate_detailed(&bundle, &ctx, Direction::Outbound);
+        assert_eq!(verdict.action, Action::Allow);
+        assert_eq!(verdict.reason, EvalReason::NetworkAllow);
     }
 
     #[test]
-    fn explicit_rules_deny_unmatched() {
-        let ctx = EvalCtx {
-            self_endpoint_hex: "aa",
-            self_ip: Ipv4Addr::new(10, 7, 0, 1),
-            self_tags: &[],
-            self_network: "",
-            peer_endpoint_hex: "bb",
-            peer_ip: Some(Ipv4Addr::new(10, 7, 0, 2)),
-            peer_tags: &[],
-            peer_network: "",
-            dst_port: Some(80),
-            protocol: Protocol::Tcp,
-            src_posture_ok: true,
-        };
+    fn org_deny_beats_network_allow() {
         let bundle = PolicyBundle {
-            rules: vec![PolicyRule {
-                src: Selector::Tag("admin".into()),
-                dst: Selector::Any,
-                action: Action::Allow,
-                ports: vec![],
-                protocol: None,
-                priority: 10,
-                src_posture: vec![],
-            }],
-            ssh_rules: vec![],
-            version: 1,
-            signature: String::new(),
-            postures: HashMap::new(),
-            default_src_posture: vec![],
-            posture_enforcement: None,
+            rules: vec![
+                rule(
+                    RuleScope::Organization,
+                    Action::Deny,
+                    10,
+                    Selector::Any,
+                    None,
+                ),
+                rule(RuleScope::Network, Action::Allow, 0, Selector::Any, None),
+            ],
+            default_action: DefaultAction::Allow,
+            ..PolicyBundle::default()
+        };
+        let ctx = base_ctx(Protocol::Tcp, Some(80));
+        let verdict = evaluate_detailed(&bundle, &ctx, Direction::Outbound);
+        assert_eq!(verdict.action, Action::Deny);
+        assert_eq!(verdict.reason, EvalReason::OrgDeny);
+    }
+
+    #[test]
+    fn network_deny_beats_network_allow() {
+        let bundle = PolicyBundle {
+            rules: vec![
+                rule(RuleScope::Network, Action::Deny, 5, Selector::Any, None),
+                rule(RuleScope::Network, Action::Allow, 0, Selector::Any, None),
+            ],
+            default_action: DefaultAction::Allow,
+            ..PolicyBundle::default()
+        };
+        let ctx = base_ctx(Protocol::Tcp, Some(80));
+        let verdict = evaluate_detailed(&bundle, &ctx, Direction::Outbound);
+        assert_eq!(verdict.action, Action::Deny);
+        assert_eq!(verdict.reason, EvalReason::NetworkDeny);
+    }
+
+    #[test]
+    fn order_index_ascending_first_match() {
+        let mut early = rule(
+            RuleScope::Network,
+            Action::Allow,
+            1,
+            Selector::Tag("a".into()),
+            None,
+        );
+        early.slug = Some("first".into());
+        let mut late = rule(
+            RuleScope::Network,
+            Action::Allow,
+            2,
+            Selector::Tag("a".into()),
+            None,
+        );
+        late.slug = Some("second".into());
+        let bundle = PolicyBundle {
+            rules: vec![late, early],
+            default_action: DefaultAction::Deny,
+            ..PolicyBundle::default()
+        };
+        let mut ctx = base_ctx(Protocol::Tcp, Some(80));
+        let tags = vec!["a".to_string()];
+        ctx.self_tags = &tags;
+        let verdict = evaluate_detailed(&bundle, &ctx, Direction::Outbound);
+        assert_eq!(verdict.rule_slug.as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn unmatched_network_allow_falls_to_default() {
+        let ctx = base_ctx(Protocol::Tcp, Some(80));
+        let bundle = PolicyBundle {
+            rules: vec![rule(
+                RuleScope::Network,
+                Action::Allow,
+                0,
+                Selector::Tag("admin".into()),
+                None,
+            )],
+            default_action: DefaultAction::Deny,
+            ..PolicyBundle::default()
         };
         assert_eq!(evaluate(&bundle, &ctx, Direction::Outbound), Action::Deny);
     }
 
     #[test]
-    fn ipv6_empty_policy_allows_by_default() {
+    fn ipv6_uses_same_default_action() {
         let ctx = Ipv6EvalCtx {
             self_endpoint_hex: "aa",
             self_ipv6: Ipv6Addr::LOCALHOST,
             self_tags: &[],
+            self_network: "",
             peer_endpoint_hex: "bb",
             peer_ipv6: Some(Ipv6Addr::LOCALHOST),
             peer_tags: &[],
+            peer_network: "",
             dst_port: None,
             protocol: Protocol::Any,
             src_posture_ok: true,
         };
-        let action = evaluate_ipv6(&PolicyBundle::default(), &[], &ctx, Direction::Outbound);
-        assert_eq!(action, Action::Allow);
+        assert_eq!(
+            evaluate_ipv6(&PolicyBundle::default(), &ctx, Direction::Outbound),
+            Action::Allow
+        );
+        let restricted = PolicyBundle {
+            default_action: DefaultAction::Deny,
+            ..PolicyBundle::default()
+        };
+        assert_eq!(
+            evaluate_ipv6(&restricted, &ctx, Direction::Outbound),
+            Action::Deny
+        );
     }
 
     #[test]
@@ -669,12 +1023,16 @@ mod tests {
             ports: vec![],
             protocol: None,
             priority,
+            order_index: 0,
+            scope: RuleScope::Network,
+            enabled: true,
+            slug: None,
             src_posture: vec![],
         }
     }
 
     #[test]
-    fn merge_policy_bundles_combines_rules_postures_and_max_version() {
+    fn merge_policy_bundles_sets_scopes_and_network_defaults() {
         let mut org_postures = HashMap::new();
         org_postures.insert("os".into(), vec!["linux".into()]);
         let mut network_postures = HashMap::new();
@@ -685,6 +1043,8 @@ mod tests {
             ssh_rules: vec![],
             version: 3,
             signature: "org-sig".into(),
+            default_action: DefaultAction::Allow,
+            icmp_policy: IcmpPolicy::Allow,
             postures: org_postures,
             default_src_posture: vec!["os".into()],
             posture_enforcement: None,
@@ -694,6 +1054,8 @@ mod tests {
             ssh_rules: vec![],
             version: 7,
             signature: "net-sig".into(),
+            default_action: DefaultAction::Deny,
+            icmp_policy: IcmpPolicy::Acl,
             postures: network_postures,
             default_src_posture: vec![],
             posture_enforcement: None,
@@ -701,19 +1063,12 @@ mod tests {
 
         let merged = merge_policy_bundles(&org, &network);
         assert_eq!(merged.rules.len(), 2);
-        assert!(matches!(&merged.rules[0].src, Selector::Tag(t) if t == "org"));
-        assert!(matches!(&merged.rules[1].src, Selector::Tag(t) if t == "net"));
+        assert_eq!(merged.rules[0].scope, RuleScope::Organization);
+        assert_eq!(merged.rules[1].scope, RuleScope::Network);
+        assert_eq!(merged.default_action, DefaultAction::Deny);
+        assert_eq!(merged.icmp_policy, IcmpPolicy::Acl);
         assert_eq!(merged.version, 7);
         assert_eq!(merged.signature, "");
-        assert_eq!(merged.postures.len(), 2);
-        assert_eq!(
-            merged.postures.get("os").unwrap(),
-            &vec!["linux".to_string()]
-        );
-        assert_eq!(
-            merged.postures.get("disk").unwrap(),
-            &vec!["encrypted".to_string()]
-        );
         assert_eq!(merged.default_src_posture, vec!["os".to_string()]);
     }
 
@@ -730,6 +1085,8 @@ mod tests {
             ssh_rules: vec![],
             version: 2,
             signature: String::new(),
+            default_action: DefaultAction::Allow,
+            icmp_policy: IcmpPolicy::Allow,
             postures: HashMap::new(),
             default_src_posture: vec![],
             posture_enforcement: None,
@@ -761,6 +1118,8 @@ mod tests {
             ssh_rules: vec![],
             version: 1,
             signature: String::new(),
+            default_action: DefaultAction::Allow,
+            icmp_policy: IcmpPolicy::Allow,
             postures: HashMap::new(),
             default_src_posture: vec![],
             posture_enforcement: None,

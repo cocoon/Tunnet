@@ -1,5 +1,8 @@
 import type { CreatePolicyBody, Selector } from "@tunnet/api/management";
-import { EndpointCombobox } from "@/components/app/endpoint-combobox";
+import {
+  EndpointCombobox,
+  shortEndpointId,
+} from "@/components/app/endpoint-combobox";
 import { TagCombobox } from "@/components/app/tag-combobox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { slugifyPolicyName } from "@/lib/slugify";
 
 export function PolicySelectorFields({
   orgId,
@@ -120,6 +124,9 @@ export function buildPolicySelector(kind: string, value: string): Selector {
 
 export function formatPolicySelector(selector: Selector): string {
   if (selector.kind === "any") return "any";
+  if (selector.kind === "endpoint") {
+    return `machine:${shortEndpointId(selector.value)}`;
+  }
   return `${selector.kind}:${selector.value}`;
 }
 
@@ -133,7 +140,7 @@ export function applyPolicyExtraFields(
   body: CreatePolicyBody,
   extra: PolicyExtraFields,
 ): CreatePolicyBody {
-  const slug = extra.slug.trim();
+  const slug = slugifyPolicyName(extra.slug);
   const posture = extra.srcPosture
     .split(",")
     .map((s) => s.trim())

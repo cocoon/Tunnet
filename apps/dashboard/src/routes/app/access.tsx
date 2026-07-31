@@ -1,40 +1,28 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
-import type { CreatePolicyBody, Policy } from "@tunnet/api/management";
+import type {
+  CreatePolicyBody,
+  PatchPolicyBody,
+  Policy,
+} from "@tunnet/api/management";
 import { formatDistanceToNow } from "date-fns";
 import { ChevronRightIcon, PlusIcon, TrashIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import { PolicyFormSheet } from "@/components/app/acl/policy-form-sheet";
+import {
+  buildEndpointLabelMap,
+  formatSelectorLabel,
+} from "@/components/app/acl/policy-labels";
+import { formatPortsInput } from "@/components/app/acl/ports-input";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { DataTable } from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { PageHeader } from "@/components/app/page-header";
-import {
-  applyPolicyExtraFields,
-  buildPolicySelector,
-  formatPolicySelector,
-  PolicySelectorFields,
-} from "@/components/app/policy-selector-fields";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCan } from "@/hooks/use-permission";
 import { useActiveOrganization } from "@/lib/auth-client";
@@ -61,7 +49,7 @@ function AccessPage() {
     <>
       <PageHeader
         title="Access"
-        description="Organization-wide policies apply first; network policies refine per mesh."
+        description="Organization Deny policies are hard guardrails across all meshes. Network access mode (Open/Restricted) controls unmatched traffic."
       />
 
       <OrganizationPoliciesPanel />
@@ -87,6 +75,9 @@ function AccessPage() {
                   <CardContent className="space-y-3">
                     <p className="text-muted-foreground text-sm">
                       {machineCount} machines · {network.cidr}
+                      {network.defaultAction === "deny"
+                        ? " · Restricted"
+                        : " · Open"}
                     </p>
                     <Link
                       to="/app/networks/$networkId/access"
@@ -112,14 +103,49 @@ function OrganizationPoliciesPanel() {
   const orgId = activeOrg?.id;
   const { data: canManage = false } = useCan(orgId, "policy", "update");
   const { data: policies, isPending } = useOrganizationPolicies(orgId);
+  const { data: machines } = useMachines(orgId);
+  const endpointLabels = useMemo(
+    () =>
+      buildEndpointLabelMap(
+        (machines ?? []).map((m) => ({
+          endpointId: m.endpointId,
+          name: m.name,
+        })),
+      ),
+    [machines],
+  );
   const queryClient = useQueryClient();
-  const [createOpen, setCreateOpen] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [editing, setEditing] = useState<Policy | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
   const createPolicy = useMutation({
     mutationFn: async (body: CreatePolicyBody) => {
       if (!orgId) throw new Error("No organization");
       return createManagementClient(orgId).createOrganizationPolicy(body);
+    },
+    onSuccess: () => {
+      if (orgId) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.organizationPolicies(orgId),
+        });
+      }
+    },
+  });
+
+  const updatePolicy = useMutation({
+    mutationFn: async ({
+      policyId,
+      body,
+    }: {
+      policyId: string;
+      body: PatchPolicyBody;
+    }) => {
+      if (!orgId) throw new Error("No organization");
+      return createManagementClient(orgId).updateOrganizationPolicy(
+        policyId,
+        body,
+      );
     },
     onSuccess: () => {
       if (orgId) {
@@ -144,6 +170,8 @@ function OrganizationPoliciesPanel() {
     },
   });
 
+  const saving = createPolicy.isPending || updatePolicy.isPending;
+
   const columns = useMemo<ColumnDef<Policy>[]>(
     () => [
       {
@@ -164,8 +192,8 @@ function OrganizationPoliciesPanel() {
         id: "source",
         header: "Source",
         cell: ({ row }) => (
-          <span className="font-mono text-xs">
-            {formatPolicySelector(row.original.srcSelector)}
+          <span className="text-xs">
+            {formatSelectorLabel(row.original.srcSelector, endpointLabels)}
           </span>
         ),
       },
@@ -173,21 +201,21 @@ function OrganizationPoliciesPanel() {
         id: "destination",
         header: "Destination",
         cell: ({ row }) => (
-          <span className="font-mono text-xs">
-            {formatPolicySelector(row.original.dstSelector)}
+          <span className="text-xs">
+            {formatSelectorLabel(row.original.dstSelector, endpointLabels)}
           </span>
         ),
       },
       {
-        id: "srcPosture",
-        header: "Src posture",
-        cell: ({ row }) => {
-          const posture = row.original.srcPosture;
-          if (!posture?.length) return "—";
-          return (
-            <span className="font-mono text-xs">{posture.join(", ")}</span>
-          );
-        },
+        id: "ports",
+        header: "Ports",
+        cell: ({ row }) => (
+          <span className="font-mono text-xs">
+            {row.original.ports.length === 0
+              ? "*"
+              : formatPortsInput(row.original.ports)}
+          </span>
+        ),
       },
       {
         id: "protocol",
@@ -195,9 +223,18 @@ function OrganizationPoliciesPanel() {
         cell: ({ row }) => row.original.protocol ?? "any",
       },
       {
-        id: "priority",
-        header: "Priority",
-        accessorKey: "priority",
+        id: "order",
+        header: "Order",
+        accessorKey: "orderIndex",
+      },
+      {
+        id: "srcPosture",
+        header: "Src posture",
+        cell: ({ row }) => {
+          const posture = row.original.srcPosture;
+          if (!posture?.length) return "—";
+          return <span className="text-xs">{posture.join(", ")}</span>;
+        },
       },
       ...(canManage
         ? [
@@ -209,6 +246,7 @@ function OrganizationPoliciesPanel() {
                 <Button
                   variant="ghost"
                   size="icon"
+                  data-no-row-click
                   onClick={() => setDeleteId(row.original.id)}
                 >
                   <TrashIcon className="size-4" />
@@ -218,7 +256,7 @@ function OrganizationPoliciesPanel() {
           ]
         : []),
     ],
-    [canManage],
+    [canManage, endpointLabels],
   );
 
   return (
@@ -227,12 +265,17 @@ function OrganizationPoliciesPanel() {
         <div>
           <h2 className="text-sm font-medium">Organization policies</h2>
           <p className="text-muted-foreground text-sm">
-            Evaluated before every network ACL. Deny here blocks across all
-            meshes.
+            Deny-only guardrails evaluated across every mesh before network
+            allows.
           </p>
         </div>
         {canManage ? (
-          <Button onClick={() => setCreateOpen(true)}>
+          <Button
+            onClick={() => {
+              setEditing(null);
+              setSheetOpen(true);
+            }}
+          >
             <PlusIcon className="mr-2 size-4" />
             Add org policy
           </Button>
@@ -244,10 +287,15 @@ function OrganizationPoliciesPanel() {
       ) : (policies?.length ?? 0) === 0 ? (
         <EmptyState
           title="No organization policies"
-          description="Optional org-wide rules apply to every network in this tenant."
+          description="Optional org-wide deny rules apply to every network in this tenant."
           action={
             canManage ? (
-              <Button onClick={() => setCreateOpen(true)}>
+              <Button
+                onClick={() => {
+                  setEditing(null);
+                  setSheetOpen(true);
+                }}
+              >
                 Add org policy
               </Button>
             ) : undefined
@@ -258,23 +306,43 @@ function OrganizationPoliciesPanel() {
           columns={columns}
           data={policies ?? []}
           getRowId={(row) => row.id}
+          onRowClick={
+            canManage
+              ? (row) => {
+                  setEditing(row);
+                  setSheetOpen(true);
+                }
+              : undefined
+          }
         />
       )}
 
-      <CreateOrgPolicyDialog
+      <PolicyFormSheet
+        open={sheetOpen}
+        onOpenChange={(open) => {
+          setSheetOpen(open);
+          if (!open) setEditing(null);
+        }}
+        scope="organization"
         orgId={orgId}
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        loading={createPolicy.isPending}
+        editing={editing}
+        loading={saving}
         onSubmit={async (body) => {
           try {
-            await createPolicy.mutateAsync(body);
-            toast.success("Organization policy created");
-            setCreateOpen(false);
+            if (editing) {
+              await updatePolicy.mutateAsync({
+                policyId: editing.id,
+                body,
+              });
+              toast.success("Organization policy updated");
+            } else {
+              await createPolicy.mutateAsync(body as CreatePolicyBody);
+              toast.success("Organization policy created");
+            }
+            setSheetOpen(false);
+            setEditing(null);
           } catch (err) {
-            toast.error(
-              err instanceof Error ? err.message : "Failed to create",
-            );
+            toast.error(err instanceof Error ? err.message : "Failed to save");
           }
         }}
       />
@@ -350,153 +418,5 @@ function PolicyRevisionsPanel() {
         </ul>
       )}
     </div>
-  );
-}
-
-function CreateOrgPolicyDialog({
-  orgId,
-  open,
-  onOpenChange,
-  loading,
-  onSubmit,
-}: {
-  orgId?: string;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  loading: boolean;
-  onSubmit: (body: CreatePolicyBody) => Promise<void>;
-}) {
-  const [action, setAction] = useState<"allow" | "deny">("deny");
-  const [protocol, setProtocol] = useState("any");
-  const [priority, setPriority] = useState("100");
-  const [slug, setSlug] = useState("");
-  const [srcPosture, setSrcPosture] = useState("");
-  const [srcKind, setSrcKind] = useState("any");
-  const [dstKind, setDstKind] = useState("any");
-  const [srcValue, setSrcValue] = useState("");
-  const [dstValue, setDstValue] = useState("");
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    await onSubmit(
-      applyPolicyExtraFields(
-        {
-          action,
-          srcSelector: buildPolicySelector(srcKind, srcValue),
-          dstSelector: buildPolicySelector(dstKind, dstValue),
-          ports: [],
-          protocol:
-            protocol === "any" ? null : (protocol as "tcp" | "udp" | "icmp"),
-          priority: Number(priority) || 0,
-        },
-        { slug, srcPosture },
-      ),
-    );
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <form onSubmit={(e) => void handleSubmit(e)}>
-          <DialogHeader>
-            <DialogTitle>Add organization policy</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="org-slug">Slug</Label>
-              <Input
-                id="org-slug"
-                value={slug}
-                onChange={(e) => setSlug(e.target.value)}
-                placeholder="deny-untrusted"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Action</Label>
-              <Select
-                value={action}
-                onValueChange={(v) => setAction(v as "allow" | "deny")}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="allow">Allow</SelectItem>
-                  <SelectItem value="deny">Deny</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <PolicySelectorFields
-              orgId={orgId}
-              label="Source"
-              kind={srcKind}
-              value={srcValue}
-              onKindChange={setSrcKind}
-              onValueChange={setSrcValue}
-            />
-            <PolicySelectorFields
-              orgId={orgId}
-              label="Destination"
-              kind={dstKind}
-              value={dstValue}
-              onKindChange={setDstKind}
-              onValueChange={setDstValue}
-            />
-            <div className="space-y-2">
-              <Label htmlFor="org-src-posture">Src posture</Label>
-              <Input
-                id="org-src-posture"
-                value={srcPosture}
-                onChange={(e) => setSrcPosture(e.target.value)}
-                placeholder="compliant, mdm-enrolled"
-              />
-              <p className="text-muted-foreground text-xs">
-                Comma-separated posture definition names (OR).
-              </p>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <Label>Protocol</Label>
-                <Select
-                  value={protocol}
-                  onValueChange={(v) => setProtocol(v ?? "any")}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="any">Any</SelectItem>
-                    <SelectItem value="tcp">TCP</SelectItem>
-                    <SelectItem value="udp">UDP</SelectItem>
-                    <SelectItem value="icmp">ICMP</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="org-priority">Priority</Label>
-                <Input
-                  id="org-priority"
-                  type="number"
-                  value={priority}
-                  onChange={(e) => setPriority(e.target.value)}
-                />
-              </div>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" disabled={loading}>
-              Create
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
   );
 }
