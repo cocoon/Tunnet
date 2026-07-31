@@ -333,6 +333,8 @@ jobs:
 
       - name: Build NSIS installer
         working-directory: apps/desktop
+        env:
+          TAURI_CI: true
         run: bun run tauri build
 
       - name: Collect NSIS installer

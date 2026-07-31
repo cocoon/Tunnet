@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+#[cfg(windows)]
+use std::path::Path;
 
 /// System-wide state directory used by the Tunnet service.
 pub fn system_state_dir() -> PathBuf {
@@ -31,10 +34,12 @@ fn daemon_name() -> &'static str {
     }
 }
 
+#[cfg(windows)]
 pub fn installed_bin_dir(state_dir: Option<&str>) -> PathBuf {
     resolve_state_dir(state_dir).join("bin")
 }
 
+#[cfg(windows)]
 pub fn installed_daemon_exe(state_dir: Option<&str>) -> PathBuf {
     installed_bin_dir(state_dir).join(daemon_name())
 }
@@ -55,7 +60,7 @@ pub fn resolve_daemon_exe() -> anyhow::Result<PathBuf> {
     anyhow::bail!("could not find {name}; place it next to tunnet or on PATH")
 }
 
-/// Whether the staged service binary differs from the build/install source.
+#[cfg(windows)]
 pub fn daemon_outdated(state_dir: Option<&str>) -> anyhow::Result<bool> {
     let source = resolve_daemon_exe()?;
     let dest = installed_daemon_exe(state_dir);
@@ -65,10 +70,7 @@ pub fn daemon_outdated(state_dir: Option<&str>) -> anyhow::Result<bool> {
     Ok(!same_artifact(&source, &dest))
 }
 
-/// Install `tunnetd` (+ `wintun.dll` on Windows) under `{state}/bin`.
-///
-/// The service always runs this copy so `cargo build` can overwrite
-/// `target/debug/tunnetd.exe` without racing the running process.
+#[cfg(windows)]
 pub fn stage_daemon_exe(state_dir: Option<&str>) -> anyhow::Result<PathBuf> {
     let source = {
         let s = resolve_daemon_exe()?;
@@ -91,6 +93,7 @@ pub fn stage_daemon_exe(state_dir: Option<&str>) -> anyhow::Result<PathBuf> {
     Ok(dest)
 }
 
+#[cfg(windows)]
 fn atomic_copy(source: &Path, dest: &Path) -> anyhow::Result<()> {
     if dest.is_file() && same_artifact(source, dest) {
         return Ok(());
@@ -120,6 +123,7 @@ fn atomic_copy(source: &Path, dest: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
 fn same_artifact(a: &Path, b: &Path) -> bool {
     let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else {
         return false;

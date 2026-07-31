@@ -20,7 +20,7 @@ fn api_path() -> PathBuf {
         if run.parent().is_some_and(|p| p.is_dir()) {
             return run;
         }
-        return PathBuf::from("/tmp/tunnetd.sock");
+        PathBuf::from("/tmp/tunnetd.sock")
     }
     #[cfg(windows)]
     {
