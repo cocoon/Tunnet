@@ -17,7 +17,6 @@ use iroh::{Endpoint, EndpointId};
 use parking_lot::Mutex;
 use serde::Serialize;
 use tokio::sync::Mutex as AsyncMutex;
-use tunnet_common::TUNNEL_LATENCY_ALPN;
 
 pub const DEFAULT_IDLE_SECS: u64 = 120;
 pub const RECONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -55,6 +54,8 @@ pub struct PeerConnSnapshot {
 
 struct PeerSlot {
     conn: Option<Connection>,
+    /// True if the live connection was opened by our dial (not accepted).
+    opened_by_us: bool,
     state: PeerConnState,
     last_activity: Instant,
     peer_keep_alive: bool,
@@ -68,6 +69,7 @@ impl PeerSlot {
     fn new() -> Self {
         Self {
             conn: None,
+            opened_by_us: false,
             state: PeerConnState::Suspended,
             last_activity: Instant::now(),
             peer_keep_alive: false,
@@ -156,7 +158,6 @@ pub struct ConnPool {
     bytes_in: Arc<DashMap<EndpointId, AtomicU64>>,
     bytes_out: Arc<DashMap<EndpointId, AtomicU64>>,
     tunnel_hook: Arc<Mutex<Option<TunnelConnHook>>>,
-    latency_hook: Arc<Mutex<Option<TunnelConnHook>>>,
 }
 
 struct PoolPolicy {
@@ -183,7 +184,6 @@ impl ConnPool {
             bytes_in: Arc::new(DashMap::new()),
             bytes_out: Arc::new(DashMap::new()),
             tunnel_hook: Arc::new(Mutex::new(None)),
-            latency_hook: Arc::new(Mutex::new(None)),
         };
         pool.spawn_idle_sweeper();
         pool
@@ -204,18 +204,12 @@ impl ConnPool {
             bytes_in: other.bytes_in.clone(),
             bytes_out: other.bytes_out.clone(),
             tunnel_hook: Arc::new(Mutex::new(None)),
-            latency_hook: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Register a hook invoked whenever this pool dials a tunnel connection.
     pub fn set_tunnel_hook(&self, hook: TunnelConnHook) {
         *self.tunnel_hook.lock() = Some(hook);
-    }
-
-    /// Register a hook invoked whenever this pool dials a latency-ALPN connection.
-    pub fn set_latency_hook(&self, hook: TunnelConnHook) {
-        *self.latency_hook.lock() = Some(hook);
     }
 
     fn fire_tunnel_hook(&self, peer: EndpointId, conn: Connection) {
@@ -225,14 +219,23 @@ impl ConnPool {
         }
     }
 
-    fn fire_latency_hook(&self, peer: EndpointId, conn: Connection) {
-        let hook = self.latency_hook.lock().clone();
-        if let Some(hook) = hook {
-            hook(peer, conn);
-        }
+    /// Local EndpointId is the canonical initiator when `local < peer`.
+    /// Prefer the connection opened by that initiator so both ends converge.
+    fn prefer_incoming(
+        local: EndpointId,
+        peer: EndpointId,
+        existing_opened_by_us: bool,
+        incoming_opened_by_us: bool,
+    ) -> bool {
+        let want_opened_by_us = local < peer;
+        let existing_ok = existing_opened_by_us == want_opened_by_us;
+        let incoming_ok = incoming_opened_by_us == want_opened_by_us;
+        matches!((existing_ok, incoming_ok), (false, true))
     }
 
+    /// Install an accepted connection. Returns false if tie-break keeps the existing conn.
     pub async fn adopt(&self, peer: EndpointId, conn: Connection) -> bool {
+        let local = self.endpoint.id();
         let slot = self.slot(peer);
         let mut guard = slot.lock().await;
         if let Some(existing) = guard.live_conn() {
@@ -240,84 +243,20 @@ impl ConnPool {
                 guard.touch();
                 return true;
             }
+            if !Self::prefer_incoming(local, peer, guard.opened_by_us, false) {
+                return false;
+            }
             if let Some(old) = guard.conn.take() {
-                old.close(0u32.into(), b"replaced_by_accept");
+                old.close(0u32.into(), b"tie_break");
             }
         }
         guard.conn = Some(conn.clone());
+        guard.opened_by_us = false;
         guard.state = PeerConnState::Connected;
         guard.touch();
         drop(guard);
         self.fire_tunnel_hook(peer, conn);
         true
-    }
-
-    pub async fn adopt_latency(&self, peer: EndpointId, conn: Connection) -> bool {
-        let key = (peer, TUNNEL_LATENCY_ALPN.to_vec());
-        let slot = self
-            .extra
-            .entry(key)
-            .or_insert_with(|| Arc::new(AsyncMutex::new(None)))
-            .clone();
-        let mut guard = slot.lock().await;
-        if let Some(existing) = guard.as_ref().filter(|c| c.close_reason().is_none()) {
-            if existing.stable_id() == conn.stable_id() {
-                return true;
-            }
-            if let Some(old) = guard.take() {
-                old.close(0u32.into(), b"replaced_by_accept");
-            }
-        }
-        *guard = Some(conn.clone());
-        drop(guard);
-        self.fire_latency_hook(peer, conn);
-        true
-    }
-
-    /// Dial or reuse the latency ALPN connection for `peer`.
-    pub async fn get_latency(&self, peer: EndpointId) -> anyhow::Result<Connection> {
-        let key = (peer, TUNNEL_LATENCY_ALPN.to_vec());
-        let slot = self
-            .extra
-            .entry(key)
-            .or_insert_with(|| Arc::new(AsyncMutex::new(None)))
-            .clone();
-        let guard = slot.lock().await;
-        if let Some(c) = guard.as_ref().filter(|c| c.close_reason().is_none()) {
-            return Ok(c.clone());
-        }
-        drop(guard);
-        let conn = self
-            .endpoint
-            .connect(peer, TUNNEL_LATENCY_ALPN)
-            .await
-            .with_context(|| format!("latency connect to {peer}"))?;
-        let mut guard = slot.lock().await;
-        if let Some(existing) = guard.as_ref().filter(|c| c.close_reason().is_none()) {
-            let existing = existing.clone();
-            drop(guard);
-            conn.close(0u32.into(), b"superseded");
-            self.fire_latency_hook(peer, existing.clone());
-            return Ok(existing);
-        }
-        *guard = Some(conn.clone());
-        drop(guard);
-        self.fire_latency_hook(peer, conn.clone());
-        tokio::task::yield_now().await;
-        Ok(conn)
-    }
-
-    pub async fn send_latency(&self, peer: EndpointId, packet: Bytes) -> anyhow::Result<()> {
-        if self.has_live(peer) {
-            return self.send_or_buffer(peer, packet).await;
-        }
-        match self.get_latency(peer).await {
-            Ok(conn) => send_datagram(&conn, packet).await,
-            Err(e) => {
-                tracing::debug!(%peer, ?e, "latency dial failed; trying bulk");
-                self.send_or_buffer(peer, packet).await
-            }
-        }
     }
 
     /// Close every default-ALPN peer connection (e.g. data plane down).
@@ -332,22 +271,16 @@ impl ConnPool {
             if let Some(c) = g.conn.take() {
                 c.close(0u32.into(), b"dataplane_down");
             }
+            g.opened_by_us = false;
             g.state = PeerConnState::Suspended;
             g.drop_buf();
             tracing::debug!(%peer, "closed tunnel pool connection");
         }
-        let latency: Vec<_> = self
-            .extra
-            .iter()
-            .filter(|e| e.key().1.as_slice() == TUNNEL_LATENCY_ALPN)
-            .map(|e| (e.key().clone(), e.value().clone()))
-            .collect();
-        for ((peer, _), slot) in latency {
-            let mut g = slot.lock().await;
+        for entry in self.extra.iter() {
+            let mut g = entry.value().lock().await;
             if let Some(c) = g.take() {
                 c.close(0u32.into(), b"dataplane_down");
             }
-            tracing::debug!(%peer, "closed latency tunnel connection");
         }
     }
 
@@ -568,21 +501,38 @@ impl ConnPool {
                         .store(latency_us, Ordering::Relaxed);
                 }
 
+                let local = self.endpoint.id();
                 let (canonical, buffered, fire_hook) = {
                     let mut guard = slot.lock().await;
-                    // Accept may have installed a live conn while we dialed.
-                    // Prefer that connection so send and ingress stay on one QUIC path.
                     if let Some(existing) = guard.live_conn() {
-                        let existing = existing.clone();
-                        if let Some(tx) = guard.dial_waiters.take() {
-                            let _ = tx.send(Ok(existing.clone()));
+                        let existing_by_us = guard.opened_by_us;
+                        if Self::prefer_incoming(local, peer, existing_by_us, true) {
+                            // Our dial wins tie-break over the accepted conn.
+                            if let Some(old) = guard.conn.take() {
+                                old.close(0u32.into(), b"tie_break");
+                            }
+                            guard.conn = Some(conn.clone());
+                            guard.opened_by_us = true;
+                            guard.state = PeerConnState::Connected;
+                            guard.touch();
+                            if let Some(tx) = guard.dial_waiters.take() {
+                                let _ = tx.send(Ok(conn.clone()));
+                            }
+                            let buffered = guard.take_buf();
+                            (conn, buffered, true)
+                        } else {
+                            let existing = existing.clone();
+                            if let Some(tx) = guard.dial_waiters.take() {
+                                let _ = tx.send(Ok(existing.clone()));
+                            }
+                            let buffered = guard.take_buf();
+                            drop(guard);
+                            conn.close(0u32.into(), b"tie_break");
+                            (existing, buffered, true)
                         }
-                        let buffered = guard.take_buf();
-                        drop(guard);
-                        conn.close(0u32.into(), b"superseded");
-                        (existing, buffered, true)
                     } else {
                         guard.conn = Some(conn.clone());
+                        guard.opened_by_us = true;
                         guard.state = PeerConnState::Connected;
                         guard.touch();
                         if let Some(tx) = guard.dial_waiters.take() {
@@ -803,7 +753,18 @@ impl ConnPool {
 }
 
 /// Send a datagram, waiting for buffer space when congested instead of dropping.
+///
+/// Drops packets larger than the connection's current `max_datagram_size`.
 pub async fn send_datagram(conn: &Connection, packet: Bytes) -> anyhow::Result<()> {
+    if let Some(max) = conn.max_datagram_size()
+        && packet.len() > max
+    {
+        anyhow::bail!(
+            "datagram_too_large: packet {} > max_datagram_size {}",
+            packet.len(),
+            max
+        );
+    }
     if conn.datagram_send_buffer_space() == 0 {
         conn.send_datagram_wait(packet)
             .await
@@ -825,6 +786,22 @@ mod tests {
             .bind()
             .await
             .expect("bind test endpoint")
+    }
+
+    #[test]
+    fn tie_break_prefers_canonical_initiator_side() {
+        let a = SecretKey::generate().public();
+        let b = SecretKey::generate().public();
+        let (low, high) = if a < b { (a, b) } else { (b, a) };
+
+        // Low endpoint is initiator: wants opened_by_us=true.
+        assert!(ConnPool::prefer_incoming(low, high, false, true));
+        assert!(!ConnPool::prefer_incoming(low, high, true, false));
+        assert!(!ConnPool::prefer_incoming(low, high, true, true));
+
+        // High endpoint is not initiator: wants accepted (opened_by_us=false).
+        assert!(ConnPool::prefer_incoming(high, low, true, false));
+        assert!(!ConnPool::prefer_incoming(high, low, false, true));
     }
 
     #[tokio::test]

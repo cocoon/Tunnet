@@ -102,6 +102,7 @@ export const deviceProfilesRoutes = new Elysia()
           exitNodeEndpointId: null,
           splitTunnelMode: "exclude" as const,
           splitTunnelCidrs: [] as string[],
+          allowLocalLan: true,
           updatedAt: new Date(0).toISOString(),
         };
       }
@@ -111,6 +112,7 @@ export const deviceProfilesRoutes = new Elysia()
         exitNodeEndpointId: row.exitNodeEndpointId,
         splitTunnelMode: row.splitTunnelMode as "include" | "exclude",
         splitTunnelCidrs: row.splitTunnelCidrs,
+        allowLocalLan: true,
         updatedAt: toIso(row.updatedAt)!,
       };
     },
@@ -326,6 +328,7 @@ export const deviceProfilesRoutes = new Elysia()
             exitNodeEndpointId: row?.exitNodeEndpointId,
             splitTunnelMode: row?.splitTunnelMode as "include" | "exclude",
             splitTunnelCidrs: row?.splitTunnelCidrs,
+            allowLocalLan: true,
             updatedAt: toIso(row?.updatedAt)!,
           };
         },

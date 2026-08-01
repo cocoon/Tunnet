@@ -1,4 +1,4 @@
-//! Datagram ingress readers: one bulk + one optional latency reader per peer.
+//! Datagram ingress readers: exactly one reader per peer.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,7 +11,6 @@ use tokio::task::JoinHandle;
 #[derive(Clone, Default)]
 pub struct IngressRegistry {
     readers: Arc<DashMap<EndpointId, JoinHandle<()>>>,
-    latency_readers: Arc<DashMap<EndpointId, JoinHandle<()>>>,
     generation: Arc<AtomicU64>,
 }
 
@@ -25,52 +24,28 @@ impl IngressRegistry {
         self.generation.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// Abort any existing bulk reader and start a new one.
+    /// Abort any existing reader and start a new one.
     pub fn force_spawn<F>(&self, peer: EndpointId, fut: F)
     where
         F: std::future::Future<Output = ()> + Send + 'static,
     {
-        Self::force_spawn_map(&self.readers, peer, fut);
-    }
-
-    /// Replace the latency-ALPN ingress reader.
-    pub fn force_spawn_latency<F>(&self, peer: EndpointId, fut: F)
-    where
-        F: std::future::Future<Output = ()> + Send + 'static,
-    {
-        Self::force_spawn_map(&self.latency_readers, peer, fut);
-    }
-
-    fn force_spawn_map<F>(map: &Arc<DashMap<EndpointId, JoinHandle<()>>>, peer: EndpointId, fut: F)
-    where
-        F: std::future::Future<Output = ()> + Send + 'static,
-    {
-        if let Some((_, h)) = map.remove(&peer) {
+        if let Some((_, h)) = self.readers.remove(&peer) {
             h.abort();
         }
-        Self::spawn_inner(map, peer, fut);
-    }
-
-    fn spawn_inner<F>(map: &Arc<DashMap<EndpointId, JoinHandle<()>>>, peer: EndpointId, fut: F)
-    where
-        F: std::future::Future<Output = ()> + Send + 'static,
-    {
-        let readers = map.clone();
+        let readers = self.readers.clone();
         let handle = tokio::spawn(async move {
             fut.await;
             readers.remove(&peer);
         });
-        map.insert(peer, handle);
+        self.readers.insert(peer, handle);
     }
 
     pub fn abort_all(&self) {
         self.bump_generation();
-        for map in [&self.readers, &self.latency_readers] {
-            let keys: Vec<_> = map.iter().map(|e| *e.key()).collect();
-            for k in keys {
-                if let Some((_, h)) = map.remove(&k) {
-                    h.abort();
-                }
+        let keys: Vec<_> = self.readers.iter().map(|e| *e.key()).collect();
+        for k in keys {
+            if let Some((_, h)) = self.readers.remove(&k) {
+                h.abort();
             }
         }
     }
@@ -78,13 +53,6 @@ impl IngressRegistry {
     #[cfg(test)]
     pub fn has_reader(&self, peer: EndpointId) -> bool {
         self.readers.get(&peer).is_some_and(|h| !h.is_finished())
-    }
-
-    #[cfg(test)]
-    pub fn has_latency_reader(&self, peer: EndpointId) -> bool {
-        self.latency_readers
-            .get(&peer)
-            .is_some_and(|h| !h.is_finished())
     }
 }
 
@@ -104,7 +72,7 @@ mod tests {
     }
 
     #[test]
-    fn force_spawn_replaces_bulk_reader() {
+    fn force_spawn_replaces_reader() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -122,40 +90,8 @@ mod tests {
             assert!(reg.has_reader(p));
             reg.force_spawn(p, async {});
             tokio::task::yield_now().await;
-            // Previous reader aborted; new one finishes immediately.
             assert!(!reg.has_reader(p));
             drop(tx);
-            tokio::task::yield_now().await;
-        });
-    }
-
-    #[test]
-    fn latency_reader_independent_of_bulk() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async {
-            let reg = IngressRegistry::new();
-            let mut bytes = [9u8; 32];
-            bytes[0] = 4;
-            let p = iroh::SecretKey::from(bytes).public();
-            let (tx1, rx1) = tokio::sync::oneshot::channel::<()>();
-            let (tx2, rx2) = tokio::sync::oneshot::channel::<()>();
-            reg.force_spawn(p, async move {
-                let _ = rx1.await;
-            });
-            reg.force_spawn_latency(p, async move {
-                let _ = rx2.await;
-            });
-            tokio::task::yield_now().await;
-            assert!(reg.has_reader(p));
-            assert!(reg.has_latency_reader(p));
-            reg.abort_all();
-            assert!(!reg.has_reader(p));
-            assert!(!reg.has_latency_reader(p));
-            drop(tx1);
-            drop(tx2);
             tokio::task::yield_now().await;
         });
     }

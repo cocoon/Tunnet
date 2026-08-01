@@ -40,6 +40,7 @@ ed25519-dalek.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 ipnet.workspace = true
+netdev.workspace = true
 sha2.workspace = true
 reqwest.workspace = true
 

@@ -7,6 +7,7 @@ use dashmap::DashMap;
 use ipnet::Ipv4Net;
 use iroh::EndpointId;
 use parking_lot::Mutex;
+use prefix_trie::PrefixMap;
 use tunnet_common::{
     DeviceProfile, DnsConfig, ExitNodeInfo, HostnameRoute, PeerEntry, SubnetRoute,
 };
@@ -52,8 +53,8 @@ pub struct Tables {
     pub by_network_ip: std::collections::HashMap<(Uuid, Ipv4Addr), Arc<PeerInfo>>,
     pub by_endpoint: std::collections::HashMap<String, Arc<PeerInfo>>,
     pub by_hostname: std::collections::HashMap<String, Arc<PeerInfo>>,
-    /// Longest-prefix-match candidates, sorted by prefix length descending.
-    pub subnets: Vec<(Ipv4Net, Arc<PeerInfo>)>,
+    /// Longest-prefix-match subnet routes (via PrefixMap).
+    pub subnets: PrefixMap<Ipv4Net, Arc<PeerInfo>>,
     /// CIDRs this node itself advertises (local LAN forwarding).
     pub advertised: Vec<Ipv4Net>,
     /// Exact hostname → gateway.
@@ -70,6 +71,8 @@ pub struct Tables {
     pub magic_ip: Ipv4Addr,
     /// Selected exit node peer (when device_profile chooses one).
     pub exit_node: Option<Arc<PeerInfo>>,
+    /// When true, RFC1918 destinations are not sent via the exit node.
+    pub allow_local_lan: bool,
     pub version: u64,
 }
 
@@ -97,7 +100,7 @@ impl RoutingTable {
                 by_network_ip: Default::default(),
                 by_endpoint: Default::default(),
                 by_hostname: Default::default(),
-                subnets: Default::default(),
+                subnets: PrefixMap::new(),
                 advertised: Default::default(),
                 hostname_exact: Default::default(),
                 hostname_wildcards: Default::default(),
@@ -107,6 +110,7 @@ impl RoutingTable {
                 network_name: String::new(),
                 magic_ip: Ipv4Addr::new(100, 100, 100, 53),
                 exit_node: None,
+                allow_local_lan: true,
                 version: 0,
             })),
             dynamic_synth: Arc::new(DashMap::new()),
@@ -147,13 +151,15 @@ impl RoutingTable {
         if let Some(peer) = self.dynamic_synth.get(ip) {
             return Some(peer.clone());
         }
-        for (net, peer) in &tables.subnets {
-            if net.contains(ip) {
+        if let Some((prefix, peer)) = tables.subnets.get_lpm(&Ipv4Net::from(*ip)) {
+            // Full-tunnel exit CIDR must not steal LAN when allow_local_lan is on.
+            if !(tables.allow_local_lan && is_rfc1918(ip) && prefix.prefix_len() == 0) {
                 return Some(peer.clone());
             }
         }
-        // Exit node catches remaining (non-mesh) destinations when configured.
+        // Exit node catches remaining (non-mesh, non-LAN when allowed) destinations.
         if !is_mesh_or_link_local(ip)
+            && !(tables.allow_local_lan && is_rfc1918(ip))
             && let Some(exit) = &tables.exit_node
         {
             return Some(exit.clone());
@@ -547,7 +553,7 @@ impl RoutingTable {
             std::collections::HashMap::new();
         let mut by_hostname: std::collections::HashMap<String, Arc<PeerInfo>> =
             std::collections::HashMap::new();
-        let mut subnets = Vec::new();
+        let mut subnets: PrefixMap<Ipv4Net, Arc<PeerInfo>> = PrefixMap::new();
         let mut advertised = Vec::new();
         let mut hostname_exact: std::collections::HashMap<String, Arc<HostnameRouteInfo>> =
             std::collections::HashMap::new();
@@ -556,6 +562,7 @@ impl RoutingTable {
         let mut synthetic_hosts: std::collections::HashMap<Ipv4Addr, String> =
             std::collections::HashMap::new();
         let mut exit_node = None;
+        let mut allow_local_lan = true;
         let mut dns_suffix = "tunnet".to_string();
         let mut magic_ip = Ipv4Addr::new(100, 100, 100, 53);
         let mut primary_network_name = String::new();
@@ -645,7 +652,10 @@ impl RoutingTable {
                     &slice.network_name,
                 );
                 let Some(peer) = peer else { continue };
-                subnets.push((route.cidr, peer));
+                // First-joined wins on overlapping exact prefixes.
+                if !subnets.contains_key(&route.cidr) {
+                    subnets.insert(route.cidr, peer);
+                }
             }
 
             for exit in &slice.exit_nodes {
@@ -668,12 +678,13 @@ impl RoutingTable {
                 );
                 if let Some(peer) = peer {
                     for cidr in &exit.allowed_cidrs {
-                        if !subnets.iter().any(|(n, _)| n == cidr) {
-                            subnets.push((*cidr, peer.clone()));
+                        if !subnets.contains_key(cidr) {
+                            subnets.insert(*cidr, peer.clone());
                         }
                     }
                     if exit_node.is_none() {
                         exit_node = Some(peer);
+                        allow_local_lan = slice.profile.allow_local_lan;
                     }
                 }
             }
@@ -709,7 +720,6 @@ impl RoutingTable {
             }
         }
 
-        subnets.sort_by_key(|subnet| std::cmp::Reverse(subnet.0.prefix_len()));
         hostname_wildcards.sort_by_key(|route| std::cmp::Reverse(route.hostname.len()));
 
         // Keep dynamic_synth across rebuild - it lives outside the tables Arc so
@@ -729,6 +739,7 @@ impl RoutingTable {
             network_name: primary_network_name,
             magic_ip,
             exit_node,
+            allow_local_lan,
             version,
         }));
     }
@@ -736,6 +747,10 @@ impl RoutingTable {
 
 fn is_mesh_or_link_local(ip: &Ipv4Addr) -> bool {
     ip.is_loopback() || ip.is_link_local() || ip.is_broadcast() || ip.is_unspecified()
+}
+
+fn is_rfc1918(ip: &Ipv4Addr) -> bool {
+    matches!(ip.octets(), [10, ..] | [172, 16..=31, ..] | [192, 168, ..])
 }
 
 /// Stable synthetic IP in 100.100.0.0/16 derived from hostname.
@@ -1114,5 +1129,39 @@ mod tests {
         );
         let found = table.lookup_ip(&"8.8.8.8".parse().unwrap()).unwrap();
         assert_eq!(found.endpoint_hex, exit);
+    }
+
+    #[test]
+    fn exit_node_skips_rfc1918_when_allow_local_lan() {
+        let table = RoutingTable::new();
+        let self_id = "a".repeat(64);
+        let exit = "b".repeat(64);
+        let mut profile = profile();
+        profile.exit_node_endpoint_id = Some(exit.clone());
+        profile.allow_local_lan = true;
+        table.replace(
+            &[peer(&exit, "10.7.0.5", "exit")],
+            &[],
+            &[],
+            &[ExitNodeInfo {
+                endpoint_id: exit.clone(),
+                via_ip: "10.7.0.5".parse().unwrap(),
+                allowed_cidrs: vec![Ipv4Net::from_str("0.0.0.0/0").unwrap()],
+            }],
+            &profile,
+            &dns(),
+            "office",
+            Uuid::nil(),
+            &self_id,
+            1,
+        );
+        assert!(table.lookup_ip(&"192.168.1.50".parse().unwrap()).is_none());
+        assert_eq!(
+            table
+                .lookup_ip(&"1.1.1.1".parse().unwrap())
+                .unwrap()
+                .endpoint_hex,
+            exit
+        );
     }
 }

@@ -385,6 +385,7 @@ async fn load_device_profile(
         exit_node_endpoint_id: exit_node,
         split_tunnel_mode,
         split_tunnel_cidrs,
+        allow_local_lan: true,
     })
 }
 

@@ -189,6 +189,11 @@ pub fn spawn_ws_processor(
                                     &self_hostname,
                                     Some(paths.dir.as_path()),
                                 );
+                                if let Some(hooks) = &agent_config_hooks
+                                    && let Some(on_m) = &hooks.on_membership_applied
+                                {
+                                    on_m(m);
+                                }
                                 save_snapshot_cache(&paths, &snap).ok();
                                 tracing::info!(
                                     v = m.version,
@@ -266,6 +271,11 @@ pub fn spawn_ws_processor(
                                                 &self_hostname,
                                                 Some(paths.dir.as_path()),
                                             );
+                                            if let Some(hooks) = &agent_config_hooks
+                                                && let Some(on_m) = &hooks.on_membership_applied
+                                            {
+                                                on_m(m);
+                                            }
                                             save_snapshot_cache(&paths, &snap).ok();
                                             tracing::info!(
                                                 v = m.version,

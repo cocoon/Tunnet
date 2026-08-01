@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use bytes::Bytes;
-use iroh::EndpointId;
 use iroh::endpoint::Connection;
 use tun_rs::{AsyncDevice, DeviceBuilder};
 use tunnet_common::policy::Direction;
@@ -16,18 +15,8 @@ use uuid::Uuid;
 use crate::dataplane::TunSlot;
 use crate::ip;
 use crate::metrics::AgentMetrics;
+use crate::qos::{self, OutboundScheduler};
 use crate::ssh_nat;
-
-const OUTBOUND_QUEUE_CAP: usize = 1024;
-const PRIORITY_QUEUE_CAP: usize = 256;
-
-#[derive(Clone, Copy)]
-enum OutPriority {
-    /// ICMP - dedicated worker so bulk TCP waits cannot stall ping.
-    Latency,
-    /// Everything else (TCP/UDP bulk + ACKs).
-    Bulk,
-}
 
 pub fn build_tun(
     ifname: &str,
@@ -89,162 +78,88 @@ pub async fn run_outbound(deps: OutboundDeps) -> anyhow::Result<()> {
         metrics,
     } = deps;
 
-    let (prio_tx, prio_rx) = tokio::sync::mpsc::channel::<(EndpointId, Bytes)>(PRIORITY_QUEUE_CAP);
-    let (bulk_tx, bulk_rx) = tokio::sync::mpsc::channel::<(EndpointId, Bytes)>(OUTBOUND_QUEUE_CAP);
-
-    // Two workers so a bulk `send_datagram_wait` cannot block ICMP.
-    // Latency worker uses a dedicated QUIC connection (own CWND).
-    let spawn_bulk_worker = |mut rx: tokio::sync::mpsc::Receiver<(EndpointId, Bytes)>,
-                             pool: ConnPool,
-                             metrics: AgentMetrics| {
-        tokio::spawn(async move {
-            while let Some((peer, payload)) = rx.recv().await {
-                let n = payload.len() as u64;
-                match pool.send_or_buffer(peer, payload).await {
-                    Ok(()) => {
-                        metrics.packets_inc("out");
-                        metrics.bytes_add("out", n);
-                        pool.record_bytes_out(peer, n);
-                    }
-                    Err(e) => {
-                        tracing::debug!(%peer, ?e, "send/buffer failed");
-                        metrics.dropped_inc("send_failed_bulk");
-                    }
-                }
-            }
-        })
-    };
-    let spawn_prio_worker = |mut rx: tokio::sync::mpsc::Receiver<(EndpointId, Bytes)>,
-                             pool: ConnPool,
-                             metrics: AgentMetrics| {
-        tokio::spawn(async move {
-            while let Some((peer, payload)) = rx.recv().await {
-                let n = payload.len() as u64;
-                match pool.send_latency(peer, payload).await {
-                    Ok(()) => {
-                        metrics.packets_inc("out");
-                        metrics.bytes_add("out", n);
-                        pool.record_bytes_out(peer, n);
-                    }
-                    Err(e) => {
-                        tracing::debug!(%peer, ?e, "icmp/interactive send failed");
-                        metrics.dropped_inc("send_failed_prio");
-                    }
-                }
-            }
-        })
-    };
-    let prio_worker = spawn_prio_worker(prio_rx, pool.clone(), metrics.clone());
-    let bulk_worker = spawn_bulk_worker(bulk_rx, pool.clone(), metrics.clone());
+    let scheduler = OutboundScheduler::new(pool.clone(), metrics.clone());
 
     let mut buf = vec![0u8; 65_536];
-    tracing::info!("outbound TUN→iroh loop started");
-    let read_result: anyhow::Result<()> = async {
-        loop {
-            let n = tun.recv(&mut buf).await?;
-            if n == 0 {
-                continue;
-            }
-            // SSH port NAT: replies from internal listen port → external :22.
-            let self_ip = acl.self_id.load().ip;
-            let _ = ssh_nat::rewrite_outbound(&mut buf[..n], self_ip);
-            let packet = &buf[..n];
-            let Some(parsed) = ip::parse_ipv4(packet) else {
-                metrics.dropped_inc("non_ipv4");
-                continue;
-            };
+    tracing::info!("outbound TUN→iroh Byte-DRR loop started");
+    loop {
+        let n = tun.recv(&mut buf).await?;
+        if n == 0 {
+            continue;
+        }
+        // SSH port NAT: replies from internal listen port → external :22.
+        let self_ip = acl.self_id.load().ip;
+        let _ = ssh_nat::rewrite_outbound(&mut buf[..n], self_ip);
+        let packet = &buf[..n];
+        let Some(parsed) = ip::parse_ipv4(packet) else {
+            metrics.dropped_inc("non_ipv4");
+            continue;
+        };
 
-            // PeerDNS magic IP is local - never mesh-forward.
-            if routes.is_magic_dns_destination(&parsed.dst) {
-                metrics.dropped_inc("magic_dns_local");
-                continue;
-            }
+        // PeerDNS magic IP is local - never mesh-forward.
+        if routes.is_magic_dns_destination(&parsed.dst) {
+            metrics.dropped_inc("magic_dns_local");
+            continue;
+        }
 
-            if routes.is_advertised_destination(&parsed.dst) {
-                metrics.dropped_inc("local_subnet");
-                continue;
-            }
+        if routes.is_advertised_destination(&parsed.dst) {
+            metrics.dropped_inc("local_subnet");
+            continue;
+        }
 
-            let Some(peer) = routes.lookup_ip(&parsed.dst) else {
-                metrics.dropped_inc("no_route");
-                continue;
-            };
+        let Some(peer) = routes.lookup_ip(&parsed.dst) else {
+            metrics.dropped_inc("no_route");
+            continue;
+        };
 
-            // Never mesh-forward to ourselves (PeerDNS injects self into the table).
-            if peer.ip == self_ip {
-                metrics.dropped_inc("self");
-                continue;
-            }
+        // Never mesh-forward to ourselves (PeerDNS injects self into the table).
+        if peer.ip == self_ip {
+            metrics.dropped_inc("self");
+            continue;
+        }
 
-            // Connection-level ACL (Managed + Direct peer accept).
-            if !acl.allow_packet(
-                &peer.endpoint_hex,
-                Some(parsed.dst),
-                parsed.dst_port,
-                parsed.protocol,
-                Direction::Outbound,
+        // Connection-level ACL (Managed + Direct peer accept).
+        if !acl.allow_packet(
+            &peer.endpoint_hex,
+            Some(parsed.dst),
+            parsed.dst_port,
+            parsed.protocol,
+            Direction::Outbound,
+        ) {
+            metrics.dropped_inc("policy_deny");
+            continue;
+        }
+
+        if let Some(fw) = firewalls.get(&peer.network_id) {
+            match fw.evaluate(
+                PacketDirection::Outbound,
+                packet,
+                Some(&peer.endpoint_hex),
+                Some(&peer.hostname),
+                Some(peer.network_id),
             ) {
-                metrics.dropped_inc("policy_deny");
-                continue;
-            }
-
-            if let Some(fw) = firewalls.get(&peer.network_id) {
-                match fw.evaluate(
-                    PacketDirection::Outbound,
-                    packet,
-                    Some(&peer.endpoint_hex),
-                    Some(&peer.hostname),
-                    Some(peer.network_id),
-                ) {
-                    EvalResult::Allow => {}
-                    EvalResult::Deny => {
-                        metrics.dropped_inc("fw_deny_out");
-                        continue;
-                    }
-                    EvalResult::Reject { reply } => {
-                        metrics.dropped_inc("fw_reject_out");
-                        if !reply.is_empty() {
-                            let _ = tun.send(&reply).await;
-                        }
-                        continue;
-                    }
+                EvalResult::Allow => {}
+                EvalResult::Deny => {
+                    metrics.dropped_inc("fw_deny_out");
+                    continue;
                 }
-            }
-
-            let priority = if parsed.protocol == tunnet_common::policy::Protocol::Icmp {
-                OutPriority::Latency
-            } else {
-                OutPriority::Bulk
-            };
-            let payload = Bytes::copy_from_slice(packet);
-            let tx = match priority {
-                OutPriority::Latency => &prio_tx,
-                OutPriority::Bulk => &bulk_tx,
-            };
-            match tx.try_send((peer.endpoint, payload)) {
-                Ok(()) => {}
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    metrics.dropped_inc(match priority {
-                        OutPriority::Latency => "prio_queue_full",
-                        OutPriority::Bulk => "outbound_queue_full",
-                    });
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                    anyhow::bail!("outbound send worker closed");
+                EvalResult::Reject { reply } => {
+                    metrics.dropped_inc("fw_reject_out");
+                    if !reply.is_empty() {
+                        let _ = tun.send(&reply).await;
+                    }
+                    continue;
                 }
             }
         }
-    }
-    .await;
 
-    drop(prio_tx);
-    drop(bulk_tx);
-    let _ = tokio::join!(prio_worker, bulk_worker);
-    read_result
+        let class = qos::classify(&parsed, n);
+        let payload = Bytes::copy_from_slice(packet);
+        scheduler.enqueue(peer.endpoint, class, payload);
+    }
 }
 
-/// Handle an already-accepted connection negotiated with [`tunnet_common::TUNNEL_ALPN`]
-/// or [`tunnet_common::TUNNEL_LATENCY_ALPN`].
+/// Handle an already-accepted (or dialed) connection negotiated with [`tunnet_common::TUNNEL_ALPN`].
 pub struct InboundDeps {
     pub conn: Connection,
     pub tun: TunSlot,
@@ -255,8 +170,6 @@ pub struct InboundDeps {
     pub pool: Option<ConnPool>,
     pub metrics: AgentMetrics,
     pub direct_auth: Option<AuthCache>,
-    /// When false (latency ALPN), do not install as the bulk canonical conn.
-    pub install_as_canonical: bool,
 }
 
 pub async fn serve_tunnel_connection(deps: InboundDeps) {
@@ -270,7 +183,6 @@ pub async fn serve_tunnel_connection(deps: InboundDeps) {
         pool,
         metrics,
         direct_auth,
-        install_as_canonical,
     } = deps;
     let remote_id = conn.remote_id();
     let remote_hex = format!("{remote_id}");
@@ -279,17 +191,19 @@ pub async fn serve_tunnel_connection(deps: InboundDeps) {
         conn.close(1u32.into(), b"policy_deny");
         return;
     }
-    tracing::info!(%remote_id, install_as_canonical, "peer connected");
+    tracing::info!(%remote_id, "peer connected");
     metrics.active_conns_inc();
     if let Some(p) = &pool {
         p.touch_peer(remote_id);
-        if install_as_canonical {
-            // Canonical install usually happened in accept/dial; keep pool in sync.
-            if !p.adopt(remote_id, conn.clone()).await {
-                tracing::debug!(%remote_id, "ingress conn not canonical; exiting reader");
-                metrics.active_conns_dec();
-                return;
-            }
+        // Canonical install usually happened in accept/dial; keep pool in sync.
+        if !p.adopt(remote_id, conn.clone()).await {
+            tracing::debug!(%remote_id, "ingress conn lost tie-break; exiting reader");
+            metrics.active_conns_dec();
+            return;
+        }
+        // Clamp awareness: log if TUN MTU may exceed datagram limit.
+        if let Some(max) = conn.max_datagram_size() {
+            tracing::debug!(%remote_id, max_datagram_size = max, "quic datagram limit");
         }
     }
     // Prefer network from auth cache; fall back to route table peer.

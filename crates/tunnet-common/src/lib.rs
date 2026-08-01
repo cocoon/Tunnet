@@ -27,10 +27,6 @@ pub type EndpointIdHex = String;
 /// ALPN identifier for our tunnel protocol (mesh datagrams).
 pub const TUNNEL_ALPN: &[u8] = b"tunnet/tunnel/1";
 
-/// Low-latency datagram path (ICMP / interactive). Separate QUIC connection so
-/// bulk TCP does not share the congestion window with ping/SSH-under-load probes.
-pub const TUNNEL_LATENCY_ALPN: &[u8] = b"tunnet/tunnel-lat/1";
-
 /// ALPN for agent ↔ public relay reverse tunnels.
 pub const RELAY_ALPN: &[u8] = b"tunnet/relay/1";
 
@@ -209,7 +205,11 @@ pub enum SplitTunnelMode {
     Exclude,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+fn default_allow_local_lan() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_node_endpoint_id: Option<EndpointIdHex>,
@@ -217,6 +217,20 @@ pub struct DeviceProfile {
     pub split_tunnel_mode: SplitTunnelMode,
     #[serde(default)]
     pub split_tunnel_cidrs: Vec<ipnet::Ipv4Net>,
+    /// When using an exit in Exclude mode, keep RFC1918 LAN via the original gateway.
+    #[serde(default = "default_allow_local_lan")]
+    pub allow_local_lan: bool,
+}
+
+impl Default for DeviceProfile {
+    fn default() -> Self {
+        Self {
+            exit_node_endpoint_id: None,
+            split_tunnel_mode: SplitTunnelMode::default(),
+            split_tunnel_cidrs: Vec::new(),
+            allow_local_lan: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

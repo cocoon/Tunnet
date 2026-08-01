@@ -13,7 +13,7 @@ use iroh::Endpoint;
 #[cfg(any(feature = "managed", feature = "direct"))]
 use iroh::SecretKey;
 #[cfg(any(feature = "managed", feature = "direct"))]
-use tunnet_common::{TUNNEL_ALPN, TUNNEL_LATENCY_ALPN};
+use tunnet_common::TUNNEL_ALPN;
 #[cfg(feature = "direct")]
 use uuid::Uuid;
 
@@ -85,9 +85,14 @@ pub type AgentPolicyHook = Arc<
     dyn Fn(tunnet_common::RemoteAgentPolicy) -> tunnet_common::EffectiveAgentConfig + Send + Sync,
 >;
 
+pub type MembershipAppliedHook =
+    Arc<dyn Fn(&tunnet_common::NetworkMembershipSnapshot) + Send + Sync>;
+
 #[derive(Clone, Default)]
 pub struct AgentConfigHooks {
     pub on_remote_policy: Option<AgentPolicyHook>,
+    /// Fired after routes/ACL are updated from a membership snapshot.
+    pub on_membership_applied: Option<MembershipAppliedHook>,
 }
 
 /// Per-Direct-network runtime (docs + firewall + state).
@@ -759,7 +764,6 @@ fn build_alpns(cfg: &CoreNodeConfig, direct: bool, enable_gossip: bool) -> Vec<V
     let mut alpns: Vec<Vec<u8>> = vec![TUNNEL_STREAM_ALPN.to_vec()];
     if cfg.advertise_datagram_alpn {
         alpns.push(TUNNEL_ALPN.to_vec());
-        alpns.push(TUNNEL_LATENCY_ALPN.to_vec());
     }
     if cfg.advertise_recording_alpn {
         #[cfg(feature = "recording")]

@@ -29,6 +29,7 @@ export const deviceProfileSchema = z.object({
   exitNodeEndpointId: z.string().length(64).nullable(),
   splitTunnelMode: splitTunnelModeSchema,
   splitTunnelCidrs: z.array(z.string()),
+  allowLocalLan: z.boolean().default(true),
   updatedAt: z.string().datetime(),
 });
 
@@ -36,6 +37,7 @@ export const upsertDeviceProfileBody = z.object({
   exitNodeEndpointId: z.string().length(64).nullable().optional(),
   splitTunnelMode: splitTunnelModeSchema.optional(),
   splitTunnelCidrs: z.array(ipv4CidrSchema).optional(),
+  allowLocalLan: z.boolean().optional(),
 });
 
 export const deviceProfileListResponse = z.object({

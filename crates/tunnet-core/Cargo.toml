@@ -57,6 +57,7 @@ uuid.workspace = true
 rand.workspace = true
 ed25519-dalek.workspace = true
 ipnet.workspace = true
+prefix-trie.workspace = true
 hickory-proto = { workspace = true, optional = true }
 
 iroh.workspace = true

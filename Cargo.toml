@@ -98,6 +98,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 ipnet = { version = "2", features = ["serde"] }
 ipnetwork = { version = "0.21", features = ["serde"] }
+netdev = { version = "0.45", default-features = false, features = ["gateway"] }
+prefix-trie = "0.10"
 hickory-proto = "0.26"
 
 metrics = "0.24"

@@ -68,12 +68,62 @@ pub async fn run(
     let config_store = tunnet_core::EffectiveConfigStore::new();
     let _ = config_store.recompute(&agent_cfg, Default::default());
 
+    let route_reconciler = crate::system_routes::RouteReconciler::new();
+    let underlay_hosts = {
+        let mut hosts = Vec::new();
+        if let Ok(managed) = persisted.require_managed() {
+            hosts.extend(crate::dataplane::underlay_hosts_from_url(
+                &managed.control_url,
+            ));
+        }
+        if let Some(info) = crate::underlay::UnderlayInfo::discover() {
+            for dns in info.dns_servers {
+                if let std::net::IpAddr::V4(ip) = dns
+                    && !ip.is_loopback()
+                    && !hosts.contains(&ip)
+                {
+                    hosts.push(ip);
+                }
+            }
+        }
+        hosts
+    };
+    let self_endpoint_hex = identity.endpoint_id_hex();
+
     let agent_config_hooks = if !is_direct {
-        Some(crate::posture::build_agent_config_hooks(
+        let mut hooks = crate::posture::build_agent_config_hooks(
             paths.clone(),
             config_store.clone(),
             posture_runtime.as_ref().map(|p| p.engine()),
-        ))
+        );
+        let reconciler = route_reconciler.clone();
+        let underlay = underlay_hosts.clone();
+        let ifname = args.ifname.clone();
+        let net_id = network_id;
+        let self_hex = self_endpoint_hex.clone();
+        hooks.on_membership_applied = Some(std::sync::Arc::new(move |m| {
+            if m.network_id != net_id {
+                return;
+            }
+            let remote_subnets: Vec<ipnet::Ipv4Net> = m
+                .subnet_routes
+                .iter()
+                .filter(|r| r.via_endpoint_id != self_hex)
+                .map(|r| r.cidr)
+                .collect();
+            let has_exit = m.device_profile.exit_node_endpoint_id.is_some();
+            crate::system_routes::apply(
+                &reconciler,
+                &ifname,
+                &m.device_profile,
+                &remote_subnets,
+                has_exit,
+                &underlay,
+            );
+            let advertise_exit = m.exit_nodes.iter().any(|e| e.endpoint_id == self_hex);
+            crate::forward::ensure_exit_nat(advertise_exit);
+        }));
+        Some(hooks)
     } else {
         None
     };
@@ -266,7 +316,7 @@ pub async fn run(
     }));
     let ingress = IngressRegistry::new();
 
-    crate::forward::ensure_ip_forwarding(!node.routes.advertised_subnets().is_empty());
+    crate::forward::ensure_exit_nat(node.routes.is_exit_node());
 
     let recording_store = match RecordingStore::open(recordings_dir(&node.paths.dir)) {
         Ok(s) => Some(Arc::new(s)),
@@ -450,6 +500,7 @@ pub async fn run(
             .map(|r| r.cidr)
             .collect();
         crate::system_routes::apply(
+            &route_reconciler,
             &args.ifname,
             &membership_snap.device_profile,
             &remote_subnets,
@@ -457,6 +508,7 @@ pub async fn run(
                 .device_profile
                 .exit_node_endpoint_id
                 .is_some(),
+            &underlay_hosts,
         );
     }
 
@@ -491,6 +543,7 @@ pub async fn run(
             dns_cfg: dns_cfg.clone(),
             is_direct,
             network_id,
+            underlay_hosts: underlay_hosts.clone(),
             #[cfg(windows)]
             wintun_file,
         },
@@ -498,6 +551,7 @@ pub async fn run(
         initial,
         ingress,
         events: api_state.events.clone(),
+        routes: route_reconciler,
     });
 
     if !args.disable_gossip {

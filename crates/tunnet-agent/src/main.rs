@@ -17,6 +17,7 @@ mod magic_dns;
 mod metrics;
 mod policy_api;
 mod posture;
+mod qos;
 mod recorder;
 mod runtime;
 #[cfg(unix)]
@@ -29,6 +30,7 @@ mod system_firewall;
 mod system_info;
 mod system_routes;
 mod tun_io;
+mod underlay;
 #[cfg(unix)]
 mod upgrade;
 #[cfg(windows)]

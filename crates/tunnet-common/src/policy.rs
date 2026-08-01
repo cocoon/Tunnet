@@ -125,7 +125,7 @@ pub enum Selector {
     Endpoint(String),
     Tag(String),
     Network(String),
-    Cidr(String),
+    Cidr(ipnet::IpNet),
     /// User email or id (`user:<email>`).
     User(String),
 }
@@ -348,10 +348,7 @@ impl Selector {
             Selector::Endpoint(id) => id.eq_ignore_ascii_case(endpoint_hex),
             Selector::Tag(t) => tags.iter().any(|x| x == t),
             Selector::Network(n) => n == network,
-            Selector::Cidr(cidr) => match (ip, cidr.parse::<ipnet::Ipv4Net>()) {
-                (Some(ip), Ok(net)) => net.contains(&ip),
-                _ => false,
-            },
+            Selector::Cidr(net) => ip.is_some_and(|ip| net.contains(&std::net::IpAddr::V4(ip))),
             Selector::User(id) => {
                 let marker = format!("user:{id}");
                 tags.iter()
@@ -372,10 +369,7 @@ impl Selector {
             Selector::Endpoint(id) => id.eq_ignore_ascii_case(endpoint_hex),
             Selector::Tag(t) => tags.iter().any(|x| x == t),
             Selector::Network(n) => n == network,
-            Selector::Cidr(cidr) => match (ipv6, cidr.parse::<ipnet::IpNet>()) {
-                (Some(ip), Ok(net)) => net.contains(&std::net::IpAddr::V6(ip)),
-                _ => false,
-            },
+            Selector::Cidr(net) => ipv6.is_some_and(|ip| net.contains(&std::net::IpAddr::V6(ip))),
             Selector::User(id) => {
                 let marker = format!("user:{id}");
                 tags.iter()

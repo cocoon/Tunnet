@@ -156,6 +156,7 @@ pub fn build_agent_config_hooks(
 
     AgentConfigHooks {
         on_remote_policy: Some(on_remote_policy),
+        on_membership_applied: None,
     }
 }
 

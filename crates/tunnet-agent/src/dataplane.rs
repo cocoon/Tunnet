@@ -3,7 +3,6 @@
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-use anyhow::Context;
 use ipnet::Ipv4Net;
 use parking_lot::Mutex;
 use tun_rs::AsyncDevice;
@@ -17,6 +16,7 @@ use uuid::Uuid;
 use crate::ingress::IngressRegistry;
 use crate::metrics::AgentMetrics;
 use crate::system_dns::DnsGuard;
+use crate::system_routes::RouteReconciler;
 use crate::tun_io::{build_tun, run_outbound};
 
 pub struct TunSlotState {
@@ -34,6 +34,7 @@ pub struct DataPlaneConfig {
     pub dns_cfg: DnsConfig,
     pub is_direct: bool,
     pub network_id: Uuid,
+    pub underlay_hosts: Vec<Ipv4Addr>,
     #[cfg(windows)]
     pub wintun_file: Option<String>,
 }
@@ -42,9 +43,6 @@ pub(crate) struct LivePlane {
     tun: Arc<AsyncDevice>,
     dns_guard: Option<DnsGuard>,
     outbound: tokio::task::JoinHandle<()>,
-    remote_subnets: Vec<Ipv4Net>,
-    device_profile: DeviceProfile,
-    has_exit: bool,
 }
 
 /// Inputs for [`spawn_controller`].
@@ -59,6 +57,7 @@ pub struct ControllerSpawn {
     pub initial: LivePlane,
     pub ingress: IngressRegistry,
     pub events: tokio::sync::broadcast::Sender<LocalEvent>,
+    pub routes: RouteReconciler,
 }
 
 /// Spawns the data-plane controller that listens for up/down IPC commands.
@@ -74,6 +73,7 @@ pub fn spawn_controller(spawn: ControllerSpawn) {
         initial,
         ingress,
         events,
+        routes,
     } = spawn;
     let state = Arc::new(Mutex::new(Some(initial)));
     tokio::spawn(async move {
@@ -88,6 +88,7 @@ pub fn spawn_controller(spawn: ControllerSpawn) {
                     &peer_dns_active,
                     &state,
                     &events,
+                    &routes,
                 )
                 .await
             } else {
@@ -100,6 +101,7 @@ pub fn spawn_controller(spawn: ControllerSpawn) {
                     &ingress,
                     &node.tunnel_pool,
                     &events,
+                    &routes,
                 )
                 .await
             };
@@ -116,14 +118,11 @@ pub fn build_initial_plane(
     is_direct: bool,
     network_id: Uuid,
 ) -> LivePlane {
-    let (remote_subnets, device_profile, has_exit) = route_snapshot(node, is_direct, network_id);
+    let _ = (node, is_direct, network_id);
     LivePlane {
         tun,
         dns_guard,
         outbound,
-        remote_subnets,
-        device_profile,
-        has_exit,
     }
 }
 
@@ -160,6 +159,7 @@ async fn bring_down(
     ingress: &IngressRegistry,
     tunnel_pool: &tunnet_core::ConnPool,
     events: &tokio::sync::broadcast::Sender<LocalEvent>,
+    routes: &RouteReconciler,
 ) -> anyhow::Result<()> {
     if !handle.is_up() {
         return Ok(());
@@ -171,12 +171,8 @@ async fn bring_down(
     live.outbound.abort();
     ingress.abort_all();
     tunnel_pool.close_all().await;
-    crate::system_routes::unapply(
-        &cfg.ifname,
-        &live.device_profile,
-        &live.remote_subnets,
-        live.has_exit,
-    );
+    crate::system_routes::unapply(routes);
+    crate::forward::teardown_exit_nat();
     drop(live.dns_guard);
     peer_dns_active.store(false, std::sync::atomic::Ordering::SeqCst);
     {
@@ -185,6 +181,7 @@ async fn bring_down(
         slot.generation = slot.generation.wrapping_add(1);
     }
     drop(live.tun);
+    let _ = cfg;
     handle.set_up(false);
     let _ = events.send(LocalEvent::DataPlaneChanged { up: false });
     tracing::info!("data plane down");
@@ -201,6 +198,7 @@ async fn bring_up(
     peer_dns_active: &std::sync::atomic::AtomicBool,
     state: &Mutex<Option<LivePlane>>,
     events: &tokio::sync::broadcast::Sender<LocalEvent>,
+    routes: &RouteReconciler,
 ) -> anyhow::Result<()> {
     if handle.is_up() {
         return Ok(());
@@ -236,8 +234,16 @@ async fn bring_up(
     let (remote_subnets, device_profile, has_exit) =
         route_snapshot(node, cfg.is_direct, cfg.network_id);
     if !cfg.is_direct {
-        crate::system_routes::apply(&cfg.ifname, &device_profile, &remote_subnets, has_exit);
+        crate::system_routes::apply(
+            routes,
+            &cfg.ifname,
+            &device_profile,
+            &remote_subnets,
+            has_exit,
+            &cfg.underlay_hosts,
+        );
     }
+    crate::forward::ensure_exit_nat(node.routes.is_exit_node());
 
     let firewalls: std::collections::HashMap<_, _> = node
         .direct
@@ -257,9 +263,6 @@ async fn bring_up(
         tun,
         dns_guard,
         outbound,
-        remote_subnets,
-        device_profile,
-        has_exit,
     });
     handle.set_up(true);
     let _ = events.send(LocalEvent::DataPlaneChanged { up: true });
@@ -286,16 +289,27 @@ pub fn spawn_outbound(
         })
         .await
         {
-            tracing::error!(?e, "outbound crashed");
+            tracing::error!(?e, "outbound TUN loop exited");
         }
     })
 }
 
-#[allow(dead_code)]
-pub async fn tun_or_err(slot: &TunSlot) -> anyhow::Result<Arc<AsyncDevice>> {
-    slot.read()
-        .await
-        .device
-        .clone()
-        .context("data plane is down")
+/// Resolve IPv4 underlay pins from a control-plane URL (host literal or hostname skip).
+pub fn underlay_hosts_from_url(control_url: &str) -> Vec<Ipv4Addr> {
+    let host = control_url
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split(['/', ':', '?'])
+        .next()
+        .unwrap_or("");
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let mut out = Vec::new();
+    if let Ok(ip) = host.parse::<Ipv4Addr>()
+        && !ip.is_loopback()
+        && !ip.is_unspecified()
+    {
+        out.push(ip);
+    }
+    out
 }

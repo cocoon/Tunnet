@@ -1,61 +1,200 @@
-//! Install OS routes for subnet routes, exit nodes, and split tunnels.
+//! OS route installation with diff-based reconciliation.
+//!
+//! Tracks routes Tunnet installed and adds/removes on each desired-state update
+//! without requiring a restart. Gateway discovery uses [`crate::underlay`] (netdev).
 
+use std::collections::BTreeSet;
 use std::net::Ipv4Addr;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 
 use ipnet::Ipv4Net;
 use tunnet_common::{DeviceProfile, SplitTunnelMode};
 
-/// Apply system routes for the given profile and remote subnet CIDRs.
-pub fn apply(ifname: &str, profile: &DeviceProfile, remote_subnets: &[Ipv4Net], has_exit: bool) {
-    // Always route advertised remote subnets into the TUN.
-    for cidr in remote_subnets {
-        add_route(ifname, cidr);
-    }
+use crate::underlay;
 
-    match profile.split_tunnel_mode {
-        SplitTunnelMode::Include => {
-            for cidr in &profile.split_tunnel_cidrs {
-                add_route(ifname, cidr);
-            }
+fn rfc1918_nets() -> [Ipv4Net; 3] {
+    [
+        "10.0.0.0/8".parse().expect("rfc1918"),
+        "172.16.0.0/12".parse().expect("rfc1918"),
+        "192.168.0.0/16".parse().expect("rfc1918"),
+    ]
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum RouteKind {
+    ViaTun(Ipv4Net),
+    ViaGw { cidr: Ipv4Net, gw: Ipv4Addr },
+}
+
+#[derive(Debug, Clone, Default)]
+struct Installed {
+    routes: BTreeSet<RouteKind>,
+    gateway: Option<Ipv4Addr>,
+    ifname: String,
+}
+
+/// Desired OS routing state for the agent dataplane.
+#[derive(Debug, Clone)]
+pub struct DesiredRoutes {
+    pub ifname: String,
+    pub profile: DeviceProfile,
+    pub remote_subnets: Vec<Ipv4Net>,
+    pub has_exit: bool,
+    pub underlay_hosts: Vec<Ipv4Addr>,
+}
+
+impl DesiredRoutes {
+    fn to_set(&self, gateway: Option<Ipv4Addr>) -> BTreeSet<RouteKind> {
+        let mut set = BTreeSet::new();
+        for cidr in &self.remote_subnets {
+            set.insert(RouteKind::ViaTun(*cidr));
         }
-        SplitTunnelMode::Exclude => {
-            if has_exit || profile.exit_node_endpoint_id.is_some() {
-                add_default_via_tun(ifname);
-                if let Some(gw) = detect_default_gateway() {
-                    for cidr in &profile.split_tunnel_cidrs {
-                        add_route_via_gateway(cidr, gw);
+
+        match self.profile.split_tunnel_mode {
+            SplitTunnelMode::Include => {
+                for cidr in &self.profile.split_tunnel_cidrs {
+                    set.insert(RouteKind::ViaTun(*cidr));
+                }
+            }
+            SplitTunnelMode::Exclude => {
+                if self.has_exit || self.profile.exit_node_endpoint_id.is_some() {
+                    set.insert(RouteKind::ViaTun("0.0.0.0/0".parse().expect("default")));
+                    if let Some(gw) = gateway {
+                        for cidr in &self.profile.split_tunnel_cidrs {
+                            set.insert(RouteKind::ViaGw { cidr: *cidr, gw });
+                        }
+                        if self.profile.allow_local_lan {
+                            for c in rfc1918_nets() {
+                                set.insert(RouteKind::ViaGw { cidr: c, gw });
+                            }
+                        }
+                        for host in &self.underlay_hosts {
+                            set.insert(RouteKind::ViaGw {
+                                cidr: Ipv4Net::from(*host),
+                                gw,
+                            });
+                        }
                     }
                 }
             }
         }
+        set
     }
 }
 
-/// Tear down system routes previously installed by [`apply`].
-pub fn unapply(ifname: &str, profile: &DeviceProfile, remote_subnets: &[Ipv4Net], has_exit: bool) {
-    for cidr in remote_subnets {
-        del_route(ifname, cidr);
+/// Diff-based OS route manager.
+#[derive(Clone, Default)]
+pub struct RouteReconciler {
+    inner: Arc<Mutex<Installed>>,
+}
+
+impl RouteReconciler {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    match profile.split_tunnel_mode {
-        SplitTunnelMode::Include => {
-            for cidr in &profile.split_tunnel_cidrs {
-                del_route(ifname, cidr);
-            }
+    pub fn reconcile(&self, desired: &DesiredRoutes) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+
+        if g.gateway.is_none() {
+            g.gateway = underlay::default_gateway_v4();
         }
-        SplitTunnelMode::Exclude => {
-            if has_exit || profile.exit_node_endpoint_id.is_some() {
-                let default: Ipv4Net = "0.0.0.0/0".parse().expect("default");
-                del_route(ifname, &default);
-                if let Some(gw) = detect_default_gateway() {
-                    for cidr in &profile.split_tunnel_cidrs {
-                        del_route_via_gateway(cidr, gw);
-                    }
-                }
+        if (desired.has_exit || desired.profile.exit_node_endpoint_id.is_some())
+            && desired.profile.split_tunnel_mode == SplitTunnelMode::Exclude
+            && g.gateway.is_none()
+        {
+            tracing::warn!(
+                "exit node enabled but underlay default gateway unknown; refusing default via TUN"
+            );
+        }
+
+        let gateway = g.gateway;
+        let want = if gateway.is_none()
+            && (desired.has_exit || desired.profile.exit_node_endpoint_id.is_some())
+            && desired.profile.split_tunnel_mode == SplitTunnelMode::Exclude
+        {
+            let mut d = desired.clone();
+            d.has_exit = false;
+            let mut profile = d.profile.clone();
+            profile.exit_node_endpoint_id = None;
+            d.profile = profile;
+            d.to_set(None)
+        } else {
+            desired.to_set(gateway)
+        };
+
+        let to_add: Vec<_> = want.difference(&g.routes).cloned().collect();
+        let to_del: Vec<_> = g.routes.difference(&want).cloned().collect();
+
+        for r in to_del {
+            match &r {
+                RouteKind::ViaTun(cidr) => del_route(&desired.ifname, cidr),
+                RouteKind::ViaGw { cidr, gw } => del_route_via_gateway(cidr, *gw),
             }
+            g.routes.remove(&r);
+        }
+
+        let mut ordered = to_add;
+        ordered.sort_by_key(|r| match r {
+            RouteKind::ViaGw { cidr, .. } if cidr.prefix_len() == 32 => 0u8,
+            RouteKind::ViaGw { .. } => 1,
+            RouteKind::ViaTun(c) if c.prefix_len() == 0 => 3,
+            RouteKind::ViaTun(_) => 2,
+        });
+
+        for r in ordered {
+            match &r {
+                RouteKind::ViaTun(cidr) => add_route(&desired.ifname, cidr),
+                RouteKind::ViaGw { cidr, gw } => add_route_via_gateway(cidr, *gw),
+            }
+            g.routes.insert(r);
+        }
+
+        g.ifname = desired.ifname.clone();
+        if gateway.is_some()
+            && (desired.has_exit || desired.profile.exit_node_endpoint_id.is_some())
+            && desired.underlay_hosts.is_empty()
+            && desired.profile.split_tunnel_mode == SplitTunnelMode::Exclude
+        {
+            tracing::warn!("exit enabled with empty underlay host list; control plane may loop");
         }
     }
+
+    pub fn clear(&self) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let ifname = g.ifname.clone();
+        let routes: Vec<_> = g.routes.iter().cloned().collect();
+        for r in routes {
+            match &r {
+                RouteKind::ViaTun(cidr) => del_route(&ifname, cidr),
+                RouteKind::ViaGw { cidr, gw } => del_route_via_gateway(cidr, *gw),
+            }
+        }
+        g.routes.clear();
+        g.gateway = None;
+    }
+}
+
+pub fn apply(
+    reconciler: &RouteReconciler,
+    ifname: &str,
+    profile: &DeviceProfile,
+    remote_subnets: &[Ipv4Net],
+    has_exit: bool,
+    underlay_hosts: &[Ipv4Addr],
+) {
+    reconciler.reconcile(&DesiredRoutes {
+        ifname: ifname.to_string(),
+        profile: profile.clone(),
+        remote_subnets: remote_subnets.to_vec(),
+        has_exit,
+        underlay_hosts: underlay_hosts.to_vec(),
+    });
+}
+
+pub fn unapply(reconciler: &RouteReconciler) {
+    reconciler.clear();
 }
 
 fn del_route(ifname: &str, cidr: &Ipv4Net) {
@@ -118,7 +257,6 @@ fn del_route_via_gateway(cidr: &Ipv4Net, gateway: Ipv4Addr) {
             ])
             .status();
     }
-    let _ = gateway;
     tracing::debug!(%cidr, "removed excluded CIDR route");
 }
 
@@ -150,11 +288,6 @@ fn add_route(ifname: &str, cidr: &Ipv4Net) {
             .status();
     }
     tracing::debug!(%cidr, ifname, "installed route via TUN");
-}
-
-fn add_default_via_tun(ifname: &str) {
-    let default: Ipv4Net = "0.0.0.0/0".parse().expect("default");
-    add_route(ifname, &default);
 }
 
 fn add_route_via_gateway(cidr: &Ipv4Net, gateway: Ipv4Addr) {
@@ -191,52 +324,48 @@ fn add_route_via_gateway(cidr: &Ipv4Net, gateway: Ipv4Addr) {
     tracing::debug!(%cidr, %gateway, "excluded CIDR via original gateway");
 }
 
-fn detect_default_gateway() -> Option<Ipv4Addr> {
-    #[cfg(target_os = "linux")]
-    {
-        let out = Command::new("ip")
-            .args(["route", "show", "default"])
-            .output()
-            .ok()?;
-        let text = String::from_utf8_lossy(&out.stdout);
-        // default via 192.168.1.1 dev eth0
-        for part in text.split_whitespace() {
-            if let Ok(ip) = part.parse::<Ipv4Addr>() {
-                return Some(ip);
-            }
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn desired_includes_rfc1918_when_allow_local_lan() {
+        let profile = DeviceProfile {
+            exit_node_endpoint_id: Some("abc".into()),
+            allow_local_lan: true,
+            ..Default::default()
+        };
+        let d = DesiredRoutes {
+            ifname: "tun0".into(),
+            profile,
+            remote_subnets: vec![],
+            has_exit: true,
+            underlay_hosts: vec!["1.2.3.4".parse().unwrap()],
+        };
+        let gw: Ipv4Addr = "192.168.1.1".parse().unwrap();
+        let set = d.to_set(Some(gw));
+        assert!(set.contains(&RouteKind::ViaTun("0.0.0.0/0".parse().unwrap())));
+        assert!(set.contains(&RouteKind::ViaGw {
+            cidr: "10.0.0.0/8".parse().unwrap(),
+            gw,
+        }));
+        assert!(set.contains(&RouteKind::ViaGw {
+            cidr: Ipv4Net::from("1.2.3.4".parse::<Ipv4Addr>().unwrap()),
+            gw,
+        }));
     }
-    #[cfg(target_os = "macos")]
-    {
-        let out = Command::new("route")
-            .args(["-n", "get", "default"])
-            .output()
-            .ok()?;
-        let text = String::from_utf8_lossy(&out.stdout);
-        for line in text.lines() {
-            if let Some(rest) = line.trim().strip_prefix("gateway:") {
-                if let Ok(ip) = rest.trim().parse::<Ipv4Addr>() {
-                    return Some(ip);
-                }
-            }
-        }
+
+    #[test]
+    fn reconciler_diff_is_idempotent() {
+        let r = RouteReconciler::new();
+        let profile = DeviceProfile::default();
+        r.reconcile(&DesiredRoutes {
+            ifname: "tun0".into(),
+            profile,
+            remote_subnets: vec!["10.99.0.0/24".parse().unwrap()],
+            has_exit: false,
+            underlay_hosts: vec![],
+        });
+        r.clear();
     }
-    #[cfg(target_os = "windows")]
-    {
-        let out = Command::new("route")
-            .args(["print", "0.0.0.0"])
-            .output()
-            .ok()?;
-        let text = String::from_utf8_lossy(&out.stdout);
-        for line in text.lines() {
-            let cols: Vec<_> = line.split_whitespace().collect();
-            if cols.len() >= 3
-                && cols[0] == "0.0.0.0"
-                && let Ok(ip) = cols[2].parse::<Ipv4Addr>()
-            {
-                return Some(ip);
-            }
-        }
-    }
-    None
 }

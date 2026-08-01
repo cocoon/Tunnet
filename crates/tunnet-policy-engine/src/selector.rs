@@ -1,3 +1,4 @@
+use ipnet::IpNet;
 use tunnet_common::policy::Selector;
 
 use crate::error::{PolicyError, Result};
@@ -7,7 +8,7 @@ pub enum ParsedSelector {
     Any,
     Endpoint(String),
     Tag(String),
-    Cidr(String),
+    Cidr(IpNet),
     User(String),
     HostAlias(String),
     IpSet(String),
@@ -38,8 +39,8 @@ pub fn parse_selector(raw: &str) -> Result<ParsedSelector> {
     if let Some(rest) = s.strip_prefix("ipset:") {
         return Ok(ParsedSelector::IpSet(rest.to_string()));
     }
-    if s.parse::<ipnet::IpNet>().is_ok() || s.parse::<ipnet::Ipv4Net>().is_ok() {
-        return Ok(ParsedSelector::Cidr(s.to_string()));
+    if let Ok(net) = s.parse::<IpNet>() {
+        return Ok(ParsedSelector::Cidr(net));
     }
     if is_endpoint_hex(s) {
         return Ok(ParsedSelector::Endpoint(s.to_string()));
@@ -52,7 +53,7 @@ pub fn to_policy_selector(parsed: &ParsedSelector) -> Selector {
         ParsedSelector::Any => Selector::Any,
         ParsedSelector::Endpoint(id) => Selector::Endpoint(id.clone()),
         ParsedSelector::Tag(name) => Selector::Tag(name.clone()),
-        ParsedSelector::Cidr(cidr) => Selector::Cidr(cidr.clone()),
+        ParsedSelector::Cidr(net) => Selector::Cidr(*net),
         ParsedSelector::User(id) => Selector::User(id.clone()),
         ParsedSelector::HostAlias(name) => Selector::Tag(format!("host:{name}")),
         ParsedSelector::IpSet(name) => Selector::Tag(format!("ipset:{name}")),
@@ -96,5 +97,20 @@ mod tests {
     fn rejects_group_device_selector() {
         let err = parse_selector("group:device:servers").unwrap_err();
         assert!(err.to_string().contains("group:device:servers"));
+    }
+
+    #[test]
+    fn parses_cidr_as_ipnet() {
+        let p = parse_selector("10.0.0.0/8").unwrap();
+        assert!(matches!(p, ParsedSelector::Cidr(_)));
+        let Selector::Cidr(net) = to_policy_selector(&p) else {
+            panic!("expected Cidr");
+        };
+        assert!(net.contains(&"10.1.2.3".parse::<std::net::IpAddr>().unwrap()));
+    }
+
+    #[test]
+    fn invalid_cidr_fails_at_parse() {
+        assert!(parse_selector("10.0.0.0/99").is_err());
     }
 }
