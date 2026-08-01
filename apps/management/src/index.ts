@@ -14,6 +14,7 @@ import { ensureBootstrapUser } from "./lib/bootstrap-user";
 import { repairStrippedMeshCidrs } from "./lib/repair-mesh-cidrs";
 
 const port = getManagementPort();
+const host = process.env.HOST?.trim() || "127.0.0.1";
 const webOrigin = getDashboardUrl();
 
 await repairStrippedMeshCidrs().catch((err) => {
@@ -57,12 +58,13 @@ const app = new Elysia()
   .get("/api/auth/.well-known/openid-configuration", ({ request }) =>
     openIdConfigMetadata(request),
   )
+  .get("/", () => ({ service: "tunnet-management", status: "ok" }))
   .mount(auth.handler)
   .use(cliAuthRoutes)
   .use(sshAuthBrowserRoutes)
   .use(apiV1)
   .get("/health", () => ({ status: "ok" }))
-  .listen(port);
+  .listen({ hostname: host, port });
 
 console.log(
   `Tunnet management server running at ${app.server?.hostname}:${app.server?.port}`,

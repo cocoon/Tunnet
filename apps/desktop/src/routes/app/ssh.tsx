@@ -1,12 +1,12 @@
 import { createRoute } from "@tanstack/react-router";
-import { Terminal } from "lucide-react";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
+} from "@tunnet/ui/components/card";
+import { Terminal } from "lucide-react";
 import { appRoute } from "../app";
 
 export const Route = createRoute({

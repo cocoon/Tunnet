@@ -1,10 +1,9 @@
+import { Button } from "@tunnet/ui/components/button";
+import { Input } from "@tunnet/ui/components/input";
+import { cn } from "@tunnet/ui/lib/utils";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
 
 type CopyFieldProps = {
   value: string;

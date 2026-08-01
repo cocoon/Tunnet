@@ -1,4 +1,3 @@
-import { type ReactNode, useState } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -8,9 +7,10 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+} from "@tunnet/ui/components/alert-dialog";
+import { Button } from "@tunnet/ui/components/button";
+import { cn } from "@tunnet/ui/lib/utils";
+import { type ReactNode, useState } from "react";
 
 interface ElevatedConfirmProps {
   title: string;

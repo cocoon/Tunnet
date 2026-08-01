@@ -1,8 +1,7 @@
+import { Input } from "@tunnet/ui/components/input";
+import { Label } from "@tunnet/ui/components/label";
+import { cn } from "@tunnet/ui/lib/utils";
 import { useId, useMemo, useState } from "react";
-
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { cn } from "@/lib/utils";
 
 export type PortRange = { start: number; end: number };
 

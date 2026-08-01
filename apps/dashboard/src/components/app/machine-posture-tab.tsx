@@ -1,3 +1,13 @@
+import { Badge } from "@tunnet/ui/components/badge";
+import { Button } from "@tunnet/ui/components/button";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@tunnet/ui/components/card";
+import { Skeleton } from "@tunnet/ui/components/skeleton";
+import { cn } from "@tunnet/ui/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import {
   AlertTriangleIcon,
@@ -8,11 +18,6 @@ import {
   XCircleIcon,
 } from "lucide-react";
 import { toast } from "sonner";
-
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
 import { useCan } from "@/hooks/use-permission";
 import {
   deriveOverallStatus,
@@ -24,7 +29,6 @@ import {
   useDevicePostureStatus,
   usePostureMutations,
 } from "@/lib/queries/management";
-import { cn } from "@/lib/utils";
 
 type OverallStatus = ReturnType<typeof deriveOverallStatus>;
 

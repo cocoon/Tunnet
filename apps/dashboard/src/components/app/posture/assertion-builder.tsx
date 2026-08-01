@@ -1,6 +1,20 @@
 import { move } from "@dnd-kit/helpers";
 import { DragDropProvider } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
+import { Badge } from "@tunnet/ui/components/badge";
+import { Button } from "@tunnet/ui/components/button";
+import { Input } from "@tunnet/ui/components/input";
+import { Label } from "@tunnet/ui/components/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@tunnet/ui/components/select";
+import { Switch } from "@tunnet/ui/components/switch";
+import { Textarea } from "@tunnet/ui/components/textarea";
+import { cn } from "@tunnet/ui/lib/utils";
 import {
   ChevronDownIcon,
   GripVerticalIcon,
@@ -9,21 +23,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { useId, useState } from "react";
-
 import { AttributeCombobox } from "@/components/app/posture/attribute-combobox";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
 import {
   ASSERTION_TEMPLATES,
   defaultOperatorFor,
@@ -38,7 +38,6 @@ import {
   describeAssertion,
   parseAssertionsToRows,
 } from "@/lib/posture-types";
-import { cn } from "@/lib/utils";
 
 const ALL_OPERATORS = Object.keys(OPERATOR_LABELS) as PostureOperator[];
 

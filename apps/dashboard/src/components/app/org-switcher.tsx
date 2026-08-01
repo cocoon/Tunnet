@@ -1,10 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { CheckIcon, ChevronsUpDownIcon, PlusIcon } from "lucide-react";
-import { useState } from "react";
-import { toast } from "sonner";
-
-import { CreateOrganizationDialog } from "@/components/app/create-organization-dialog";
-import { Button } from "@/components/ui/button";
+import { Button } from "@tunnet/ui/components/button";
 import {
   Command,
   CommandEmpty,
@@ -13,12 +8,17 @@ import {
   CommandItem,
   CommandList,
   CommandSeparator,
-} from "@/components/ui/command";
+} from "@tunnet/ui/components/command";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from "@/components/ui/popover";
+} from "@tunnet/ui/components/popover";
+import { cn } from "@tunnet/ui/lib/utils";
+import { CheckIcon, ChevronsUpDownIcon, PlusIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+import { CreateOrganizationDialog } from "@/components/app/create-organization-dialog";
 import { useFeature } from "@/hooks/use-entitlements";
 import {
   authClient,
@@ -26,15 +26,53 @@ import {
   useListOrganizations,
 } from "@/lib/auth-client";
 import { queryKeys } from "@/lib/query-keys";
-import { cn } from "@/lib/utils";
 
 export function OrgSwitcher() {
   const [open, setOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const queryClient = useQueryClient();
   const { data: organizations, isPending } = useListOrganizations();
-  const { data: activeOrganization } = useActiveOrganization();
+  const { data: activeOrganization, isPending: activeOrganizationPending } =
+    useActiveOrganization();
   const multiOrg = useFeature("multiOrganization");
+  const defaultOrganizationId = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (
+      isPending ||
+      activeOrganizationPending ||
+      activeOrganization ||
+      !organizations?.length
+    ) {
+      return;
+    }
+
+    const firstOrganization = organizations[0];
+    if (
+      !firstOrganization ||
+      defaultOrganizationId.current === firstOrganization.id
+    ) {
+      return;
+    }
+
+    defaultOrganizationId.current = firstOrganization.id;
+    void authClient.organization
+      .setActive({ organizationId: firstOrganization.id })
+      .then(({ error }) => {
+        if (error) {
+          defaultOrganizationId.current = null;
+          return;
+        }
+
+        void queryClient.invalidateQueries();
+      });
+  }, [
+    activeOrganization,
+    activeOrganizationPending,
+    isPending,
+    organizations,
+    queryClient,
+  ]);
 
   async function switchOrg(organizationId: string) {
     const { error } = await authClient.organization.setActive({

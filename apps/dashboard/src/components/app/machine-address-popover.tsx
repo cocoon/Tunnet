@@ -1,15 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { deviceAddressesResponse } from "@tunnet/api/management";
-import { memo, useState } from "react";
-
-import { CopyField } from "@/components/app/copy-field";
-import { Button } from "@/components/ui/button";
+import { Button } from "@tunnet/ui/components/button";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from "@/components/ui/popover";
-import { Skeleton } from "@/components/ui/skeleton";
+} from "@tunnet/ui/components/popover";
+import { Skeleton } from "@tunnet/ui/components/skeleton";
+import { memo, useState } from "react";
+import { CopyField } from "@/components/app/copy-field";
 import { createManagementClient } from "@/lib/management-client";
 import { formatNetworkName } from "@/lib/network-utils";
 import { queryKeys } from "@/lib/query-keys";

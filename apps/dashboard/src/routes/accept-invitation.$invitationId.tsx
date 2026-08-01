@@ -1,14 +1,14 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
+import { Button } from "@tunnet/ui/components/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
+} from "@tunnet/ui/components/card";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { getSession } from "@/lib/auth.functions";
 import { authClient } from "@/lib/auth-client";
 
@@ -48,7 +48,7 @@ function AcceptInvitationPage() {
       }
 
       toast.success("Invitation accepted");
-      void navigate({ to: "/app" });
+      void navigate({ to: "/" });
     })();
   }, [invitationId, navigate]);
 

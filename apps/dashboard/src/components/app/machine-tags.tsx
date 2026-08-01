@@ -1,16 +1,16 @@
-import { useState } from "react";
-import { toast } from "sonner";
-import { TagMultiCombobox } from "@/components/app/tag-combobox";
-import { Button } from "@/components/ui/button";
+import { Button } from "@tunnet/ui/components/button";
 import {
   Dialog,
   DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
-import { cn } from "@/lib/utils";
+} from "@tunnet/ui/components/dialog";
+import { Label } from "@tunnet/ui/components/label";
+import { cn } from "@tunnet/ui/lib/utils";
+import { useState } from "react";
+import { toast } from "sonner";
+import { TagMultiCombobox } from "@/components/app/tag-combobox";
 
 export function MachineTagsList({
   tags,

@@ -1,13 +1,12 @@
 import type { Network, RemoteAgentPolicy } from "@tunnet/api/management";
 import { inheritRemoteAgentPolicy } from "@tunnet/api/management";
+import { Button } from "@tunnet/ui/components/button";
+import { Input } from "@tunnet/ui/components/input";
+import { Label } from "@tunnet/ui/components/label";
+import { Skeleton } from "@tunnet/ui/components/skeleton";
+import { Switch } from "@tunnet/ui/components/switch";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
 import { useCan } from "@/hooks/use-permission";
 import { useNetworkMutations, useOrgSettings } from "@/lib/queries/management";
 

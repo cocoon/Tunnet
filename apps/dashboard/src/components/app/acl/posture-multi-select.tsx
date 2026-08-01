@@ -1,10 +1,9 @@
 import { Link } from "@tanstack/react-router";
+import { Badge } from "@tunnet/ui/components/badge";
+import { Skeleton } from "@tunnet/ui/components/skeleton";
+import { cn } from "@tunnet/ui/lib/utils";
 import { CheckIcon } from "lucide-react";
-
-import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
 import { useOrgPostures } from "@/lib/queries/management";
-import { cn } from "@/lib/utils";
 
 export function PostureMultiSelect({
   orgId,
@@ -52,7 +51,7 @@ export function PostureMultiSelect({
           or create definitions under Security → Posture.
         </p>
         <Link
-          to="/app/posture"
+          to="/posture"
           className="text-foreground mt-3 inline-flex h-8 items-center rounded-md border border-border px-3 text-xs font-medium hover:bg-muted/40"
         >
           Open posture

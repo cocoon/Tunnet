@@ -1,6 +1,6 @@
+import { cn } from "@tunnet/ui/lib/utils";
 import { format } from "date-fns";
 import { useEffect, useState } from "react";
-
 import {
   type ExpiryDevice,
   formatExpiryCountdown,
@@ -11,7 +11,6 @@ import {
   isExpiryCountdownActive,
   resolveExpiresAtMs,
 } from "@/lib/machine-expiry";
-import { cn } from "@/lib/utils";
 
 function useNow(intervalMs = 1000) {
   const [now, setNow] = useState(() => Date.now());

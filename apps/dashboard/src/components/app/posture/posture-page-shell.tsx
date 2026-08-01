@@ -1,24 +1,23 @@
 import { Link, useRouterState } from "@tanstack/react-router";
+import { Tabs, TabsList, TabsTrigger } from "@tunnet/ui/components/tabs";
 import type { ReactNode } from "react";
-
 import { PageHeader } from "@/components/app/page-header";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const TABS = [
   {
     value: "definitions",
     label: "Definitions",
-    to: "/app/posture" as const,
+    to: "/posture" as const,
   },
   {
     value: "compliance",
     label: "Compliance",
-    to: "/app/posture/compliance" as const,
+    to: "/posture/compliance" as const,
   },
   {
     value: "integrations",
     label: "Integrations",
-    to: "/app/posture/integrations" as const,
+    to: "/posture/integrations" as const,
   },
 ] as const;
 

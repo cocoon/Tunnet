@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun run --watch src/index.ts",
-    "start": "bun run src/index.ts"
+    "start": "portless api.tunnet bun run src/index.ts"
   },
   "dependencies": {
     "@better-auth/oauth-provider": "^1.6.25",

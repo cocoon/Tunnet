@@ -6,10 +6,8 @@ import type {
   HostnameRoute,
   SubnetRoute,
 } from "@tunnet/api/management";
-import { LockIcon, NetworkIcon, PlusIcon, TrashIcon } from "lucide-react";
-import { useEffect, useState } from "react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@tunnet/ui/components/badge";
+import { Button } from "@tunnet/ui/components/button";
 import {
   Dialog,
   DialogContent,
@@ -17,17 +15,19 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+} from "@tunnet/ui/components/dialog";
+import { Input } from "@tunnet/ui/components/input";
+import { Label } from "@tunnet/ui/components/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { cn } from "@/lib/utils";
+} from "@tunnet/ui/components/select";
+import { cn } from "@tunnet/ui/lib/utils";
+import { LockIcon, NetworkIcon, PlusIcon, TrashIcon } from "lucide-react";
+import { useEffect, useState } from "react";
 
 export type UnifiedRoute = {
   id: string;

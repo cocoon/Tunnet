@@ -1,4 +1,3 @@
-import { useMemo } from "react";
 import {
   Combobox,
   ComboboxEmpty,
@@ -6,10 +5,11 @@ import {
   ComboboxItem,
   ComboboxList,
   ComboboxPopup,
-} from "@/components/ui/combobox";
+} from "@tunnet/ui/components/combobox";
+import { cn } from "@tunnet/ui/lib/utils";
+import { useMemo } from "react";
 import type { AggregatedMachine } from "@/lib/machine-utils";
 import { useMachines } from "@/lib/queries/management";
-import { cn } from "@/lib/utils";
 
 export function shortEndpointId(id: string): string {
   return id.length <= 10 ? id : `${id.slice(0, 6)}…${id.slice(-4)}`;

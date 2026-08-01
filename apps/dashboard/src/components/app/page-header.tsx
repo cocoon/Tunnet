@@ -1,6 +1,5 @@
+import { cn } from "@tunnet/ui/lib/utils";
 import type { ReactNode } from "react";
-
-import { cn } from "@/lib/utils";
 
 type PageHeaderProps = {
   title: string;

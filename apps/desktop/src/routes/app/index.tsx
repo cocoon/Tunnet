@@ -1,16 +1,16 @@
 import { createRoute, Link } from "@tanstack/react-router";
-import { motion } from "motion/react";
-import { useEffect, useMemo, useState } from "react";
-import { CopyButton } from "@/components/CopyButton";
-import { PeerTable } from "@/components/PeerTable";
-import { Button } from "@/components/ui/button";
+import { Button } from "@tunnet/ui/components/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
+} from "@tunnet/ui/components/card";
+import { motion } from "motion/react";
+import { useEffect, useMemo, useState } from "react";
+import { CopyButton } from "@/components/CopyButton";
+import { PeerTable } from "@/components/PeerTable";
 import { useApp } from "@/lib/app-context";
 import { useDirectNetwork } from "@/lib/direct-network-context";
 import { api } from "@/lib/invoke";

@@ -5,15 +5,8 @@ import {
   type ApiKey,
   type ApiKeyScope,
 } from "@tunnet/api/management";
-import { PlusIcon, TrashIcon } from "lucide-react";
-import { useMemo, useState } from "react";
-import { toast } from "sonner";
-
-import { ConfirmDialog } from "@/components/app/confirm-dialog";
-import { CopyField } from "@/components/app/copy-field";
-import { DataTable } from "@/components/app/data-table";
-import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Button } from "@tunnet/ui/components/button";
+import { Checkbox } from "@tunnet/ui/components/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -21,10 +14,16 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Skeleton } from "@/components/ui/skeleton";
+} from "@tunnet/ui/components/dialog";
+import { Input } from "@tunnet/ui/components/input";
+import { Label } from "@tunnet/ui/components/label";
+import { Skeleton } from "@tunnet/ui/components/skeleton";
+import { PlusIcon, TrashIcon } from "lucide-react";
+import { useMemo, useState } from "react";
+import { toast } from "sonner";
+import { ConfirmDialog } from "@/components/app/confirm-dialog";
+import { CopyField } from "@/components/app/copy-field";
+import { DataTable } from "@/components/app/data-table";
 import { useCan } from "@/hooks/use-permission";
 import { useActiveOrganization } from "@/lib/auth-client";
 import { createManagementClient } from "@/lib/management-client";

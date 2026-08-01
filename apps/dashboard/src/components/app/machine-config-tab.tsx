@@ -2,18 +2,22 @@ import type {
   ConfigSource,
   EffectiveAgentConfig,
 } from "@tunnet/api/management";
+import { Badge } from "@tunnet/ui/components/badge";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@tunnet/ui/components/card";
+import { Skeleton } from "@tunnet/ui/components/skeleton";
+import { cn } from "@tunnet/ui/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import type { ReactNode } from "react";
-
 import { EmptyState } from "@/components/app/empty-state";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
   useDeviceEffectiveConfig,
   useNetworks,
 } from "@/lib/queries/management";
-import { cn } from "@/lib/utils";
 
 type ResolvedSetting<T> = {
   value: T;

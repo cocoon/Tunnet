@@ -1,0 +1,43 @@
+{
+  "name": "@tunnet/cloud",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "imports": {
+    "#/*": "./src/*"
+  },
+  "scripts": {
+    "dev": "portless tunnet vite dev",
+    "generate-routes": "tsr generate",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@tanstack/react-devtools": "^0.10.9",
+    "@tanstack/react-router": "^1.170.18",
+    "@tanstack/react-router-devtools": "^1.167.0",
+    "@tanstack/react-start": "^1.168.34",
+    "@tunnet/ui": "workspace:*",
+    "@gsap/react": "^2.1.2",
+    "cobe": "^2.0.1",
+    "lucide-react": "^1.28.0",
+    "gsap": "^3.15.0",
+    "nitro": "3.0.260610-beta",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tailwindcss": "^4.3.3",
+    "motion": "^12.43.0",
+    "react-icons": "^5.7.0"
+  },
+  "devDependencies": {
+    "@tanstack/devtools-vite": "^0.8.3",
+    "@tanstack/router-cli": "^1.167.21",
+    "@types/node": "^26.1.2",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.0"
+  }
+}

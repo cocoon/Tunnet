@@ -1,5 +1,8 @@
 import { useQueries } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { Button } from "@tunnet/ui/components/button";
+import { Skeleton } from "@tunnet/ui/components/skeleton";
+import { cn } from "@tunnet/ui/lib/utils";
 import {
   Background,
   type Connection,
@@ -16,7 +19,6 @@ import {
 } from "@xyflow/react";
 import { PlusIcon, ShieldIcon, WaypointsIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-
 import { CreateNetworkDialog } from "@/components/app/create-network-dialog";
 import { AccessCanvas } from "@/components/topology/AccessCanvas";
 import { DetailPanel } from "@/components/topology/DetailPanel";
@@ -44,8 +46,6 @@ import type {
   ServeSatelliteData,
   TunnelSatelliteData,
 } from "@/components/topology/types";
-import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
 import { useCan } from "@/hooks/use-permission";
 import { createManagementClient } from "@/lib/management-client";
 import { usePresenceClock } from "@/lib/presence-clock";
@@ -56,7 +56,6 @@ import {
   useTunnels,
 } from "@/lib/queries/management";
 import { queryKeys } from "@/lib/query-keys";
-import { cn } from "@/lib/utils";
 
 const FIT_VIEW_OPTIONS = { padding: 0.2 };
 const DEFAULT_EDGE_OPTIONS = { interactionWidth: 24 };
@@ -396,7 +395,7 @@ function TopologyOverviewInner({ orgId }: { orgId: string }) {
             if (node.type !== "networkGroup") return;
             const data = node.data as NetworkGroupNodeData;
             void navigate({
-              to: "/app/networks/$networkId",
+              to: "/networks/$networkId",
               params: { networkId: data.networkId },
             });
           }}

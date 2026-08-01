@@ -1,15 +1,14 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { useState } from "react";
-import { toast } from "sonner";
-
-import { Button } from "@/components/ui/button";
+import { Button } from "@tunnet/ui/components/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
+} from "@tunnet/ui/components/card";
+import { useState } from "react";
+import { toast } from "sonner";
 import { getSession } from "@/lib/auth.functions";
 import { authClient } from "@/lib/auth-client";
 

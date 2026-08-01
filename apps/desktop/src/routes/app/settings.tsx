@@ -1,20 +1,20 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { useEffect, useState } from "react";
-import { toast } from "sonner";
-import { CapabilityGate } from "@/components/CapabilityGate";
-import { ElevatedConfirm } from "@/components/ElevatedConfirm";
-import { Button } from "@/components/ui/button";
+import { Button } from "@tunnet/ui/components/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
-import { Switch } from "@/components/ui/switch";
+} from "@tunnet/ui/components/card";
+import { Label } from "@tunnet/ui/components/label";
+import { Separator } from "@tunnet/ui/components/separator";
+import { Switch } from "@tunnet/ui/components/switch";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
+import { CapabilityGate } from "@/components/CapabilityGate";
+import { ElevatedConfirm } from "@/components/ElevatedConfirm";
 import { useApp } from "@/lib/app-context";
 import { useDirectNetwork } from "@/lib/direct-network-context";
 import { api } from "@/lib/invoke";

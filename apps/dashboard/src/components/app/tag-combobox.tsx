@@ -1,4 +1,3 @@
-import { useMemo } from "react";
 import {
   Combobox,
   ComboboxChip,
@@ -10,9 +9,10 @@ import {
   ComboboxList,
   ComboboxPopup,
   ComboboxValue,
-} from "@/components/ui/combobox";
+} from "@tunnet/ui/components/combobox";
+import { cn } from "@tunnet/ui/lib/utils";
+import { useMemo } from "react";
 import { useTagDefinitions } from "@/lib/queries/management";
-import { cn } from "@/lib/utils";
 
 function normalizeTagName(value: string): string {
   return value.trim().replace(/^tag:/i, "").toLowerCase();

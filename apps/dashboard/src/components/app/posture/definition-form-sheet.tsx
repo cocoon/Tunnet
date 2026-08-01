@@ -1,9 +1,6 @@
-import { useEffect, useState } from "react";
-
-import { AssertionBuilder } from "@/components/app/posture/assertion-builder";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Button } from "@tunnet/ui/components/button";
+import { Input } from "@tunnet/ui/components/input";
+import { Label } from "@tunnet/ui/components/label";
 import {
   Sheet,
   SheetContent,
@@ -11,7 +8,9 @@ import {
   SheetFooter,
   SheetHeader,
   SheetTitle,
-} from "@/components/ui/sheet";
+} from "@tunnet/ui/components/sheet";
+import { useEffect, useState } from "react";
+import { AssertionBuilder } from "@/components/app/posture/assertion-builder";
 import {
   type AssertionRow,
   createEmptyAssertionRow,

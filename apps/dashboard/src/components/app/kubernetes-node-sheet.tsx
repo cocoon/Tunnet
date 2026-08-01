@@ -1,15 +1,14 @@
 import { Link } from "@tanstack/react-router";
 import type { KubernetesHubNode } from "@tunnet/api/management";
-import { ChevronRightIcon } from "lucide-react";
-
 import {
   Sheet,
   SheetContent,
   SheetHeader,
   SheetTitle,
-} from "@/components/ui/sheet";
+} from "@tunnet/ui/components/sheet";
+import { cn } from "@tunnet/ui/lib/utils";
+import { ChevronRightIcon } from "lucide-react";
 import { deviceKindLabel } from "@/lib/device-type";
-import { cn } from "@/lib/utils";
 
 export function KubernetesNodeSheet({
   node,
@@ -74,7 +73,7 @@ export function KubernetesNodeSheet({
 
             <div className="mt-6 space-y-2 px-1">
               <Link
-                to="/app/machines/$endpointId"
+                to="/machines/$endpointId"
                 params={{ endpointId: node.endpointId }}
                 className="panel hover:border-border group flex items-start gap-3 p-3 transition-colors"
               >
@@ -89,7 +88,7 @@ export function KubernetesNodeSheet({
                 <ChevronRightIcon className="text-muted-foreground mt-0.5 size-4 shrink-0 opacity-60 transition-transform group-hover:translate-x-0.5" />
               </Link>
               <Link
-                to="/app/kubernetes/networks/$networkId"
+                to="/kubernetes/networks/$networkId"
                 params={{ networkId: node.networkId }}
                 className="panel hover:border-border group flex items-start gap-3 p-3 transition-colors"
               >
@@ -104,7 +103,7 @@ export function KubernetesNodeSheet({
                 <ChevronRightIcon className="text-muted-foreground mt-0.5 size-4 shrink-0 opacity-60 transition-transform group-hover:translate-x-0.5" />
               </Link>
               <Link
-                to="/app/networks/$networkId"
+                to="/networks/$networkId"
                 params={{ networkId: node.networkId }}
                 search={{ kind: "k8s" }}
                 className="panel hover:border-border group flex items-start gap-3 p-3 transition-colors"

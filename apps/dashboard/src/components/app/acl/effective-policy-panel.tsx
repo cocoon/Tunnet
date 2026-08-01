@@ -1,12 +1,11 @@
 import type { Policy } from "@tunnet/api/management";
+import { Badge } from "@tunnet/ui/components/badge";
+import { cn } from "@tunnet/ui/lib/utils";
 import type { ReactNode } from "react";
 import { useMemo } from "react";
-
 import { describePolicyRule } from "@/components/app/acl/describe-policy";
 import { buildEndpointLabelMap } from "@/components/app/acl/policy-labels";
-import { Badge } from "@/components/ui/badge";
 import { useMachines } from "@/lib/queries/management";
-import { cn } from "@/lib/utils";
 
 function PolicyStackItem({
   policy,

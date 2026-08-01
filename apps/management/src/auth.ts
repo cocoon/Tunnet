@@ -22,7 +22,32 @@ import { hasFeature } from "./lib/entitlements";
 const db = getDb();
 
 const dashboardOrigin = getDashboardUrl();
+const managementOrigin = getManagementUrl();
 const disablePublicSignUp = !(await hasFeature("openSignUp"));
+
+function getSharedCookieDomain(): string | undefined {
+  const configured = process.env.BETTER_AUTH_COOKIE_DOMAIN?.trim();
+  if (configured) return configured;
+
+  try {
+    const dashboardHost = new URL(dashboardOrigin).hostname.toLowerCase();
+    const managementHost = new URL(managementOrigin).hostname.toLowerCase();
+    if (
+      dashboardHost.endsWith(".localhost") &&
+      managementHost.endsWith(".localhost")
+    ) {
+      const dashboardRoot = dashboardHost.split(".").slice(-2).join(".");
+      const managementRoot = managementHost.split(".").slice(-2).join(".");
+      if (dashboardRoot === managementRoot) return dashboardRoot;
+    }
+  } catch {
+    // Invalid URL configuration is reported by the individual URL helpers.
+  }
+
+  return undefined;
+}
+
+const sharedCookieDomain = getSharedCookieDomain();
 
 export const OAUTH_CLIENT_DASHBOARD = "tunnet-dashboard";
 export const OAUTH_CLIENT_CLI = "tunnet-cli";
@@ -107,6 +132,16 @@ async function ssoTrustedOrigins(): Promise<string[]> {
 export const auth = betterAuth({
   appName: "Tunnet Management",
   baseURL: getManagementUrl(),
+  ...(sharedCookieDomain
+    ? {
+        advanced: {
+          crossSubDomainCookies: {
+            enabled: true,
+            domain: sharedCookieDomain,
+          },
+        },
+      }
+    : {}),
   database: drizzleAdapter(db, {
     provider: "pg",
     schema: {

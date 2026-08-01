@@ -1,8 +1,6 @@
-import { CapabilityGate } from "@/components/CapabilityGate";
-import { CopyButton } from "@/components/CopyButton";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@tunnet/ui/components/badge";
+import { Button } from "@tunnet/ui/components/button";
+import { Card, CardContent } from "@tunnet/ui/components/card";
 import {
   Table,
   TableBody,
@@ -10,7 +8,9 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table";
+} from "@tunnet/ui/components/table";
+import { CapabilityGate } from "@/components/CapabilityGate";
+import { CopyButton } from "@/components/CopyButton";
 import type { PeerSummary } from "@/lib/types";
 
 interface PeerTableProps {

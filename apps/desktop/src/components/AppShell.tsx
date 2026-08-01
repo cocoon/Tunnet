@@ -1,23 +1,12 @@
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
-import {
-  Activity,
-  LayoutDashboard,
-  Server,
-  Settings,
-  Share2,
-  Shield,
-  Terminal,
-} from "lucide-react";
-import { motion } from "motion/react";
-import { CopyButton } from "@/components/CopyButton";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@tunnet/ui/components/badge";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@tunnet/ui/components/select";
 import {
   Sidebar,
   SidebarContent,
@@ -34,7 +23,18 @@ import {
   SidebarProvider,
   SidebarRail,
   SidebarTrigger,
-} from "@/components/ui/sidebar";
+} from "@tunnet/ui/components/sidebar";
+import {
+  Activity,
+  LayoutDashboard,
+  Server,
+  Settings,
+  Share2,
+  Shield,
+  Terminal,
+} from "lucide-react";
+import { motion } from "motion/react";
+import { CopyButton } from "@/components/CopyButton";
 import { useApp } from "@/lib/app-context";
 import { useDirectNetwork } from "@/lib/direct-network-context";
 import type { NetworkSummary } from "@/lib/types";

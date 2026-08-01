@@ -7,7 +7,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+} from "@tunnet/ui/components/alert-dialog";
 
 type ConfirmDialogProps = {
   open: boolean;

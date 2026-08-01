@@ -1,51 +1,67 @@
-import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
-import { toast } from "sonner";
-
-import { Button } from "@/components/ui/button";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { Button } from "@tunnet/ui/components/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+} from "@tunnet/ui/components/card";
+import { Input } from "@tunnet/ui/components/input";
+import { Label } from "@tunnet/ui/components/label";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@tunnet/ui/components/tabs";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { useFeature } from "@/hooks/use-entitlements";
-import { getSession } from "@/lib/auth.functions";
 import { authClient, signIn, signUp } from "@/lib/auth-client";
 
 export const Route = createFileRoute("/login")({
   validateSearch: (search: Record<string, unknown>) => ({
     redirect: typeof search.redirect === "string" ? search.redirect : undefined,
   }),
-  beforeLoad: async ({ search }) => {
-    const session = await getSession();
-    if (!session) return;
-    if (search.redirect?.startsWith("/")) {
-      throw redirect({ href: search.redirect });
-    }
-    throw redirect({ to: "/app" });
-  },
   component: LoginPage,
 });
 
 function LoginPage() {
   const navigate = useNavigate();
   const { redirect: redirectTo } = Route.useSearch();
-  const showSignup = useFeature("openSignUp");
+  const signupEnabled = useFeature("openSignUp");
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void authClient.getSession().then(({ data }) => {
+      if (!cancelled && data) {
+        void navigate({ to: "/" });
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate]);
+
+  const showSignup = hydrated && signupEnabled;
 
   const [loading, setLoading] = useState(false);
   const [ssoLoading, setSsoLoading] = useState(false);
 
   async function afterAuth() {
     if (redirectTo) {
-      window.location.href = redirectTo;
+      void navigate({ to: redirectTo as "/" });
       return;
     }
-    void navigate({ to: "/app" });
+    void navigate({ to: "/" });
   }
 
   async function handleSignIn(e: React.FormEvent<HTMLFormElement>) {
@@ -94,7 +110,7 @@ function LoginPage() {
     const { error, data } = await authClient.signIn.sso({
       ...(email ? { email } : {}),
       ...(domain ? { domain } : {}),
-      callbackURL: redirectTo || `${window.location.origin}/app`,
+      callbackURL: redirectTo || `${window.location.origin}/`,
     });
     setSsoLoading(false);
     if (error) {

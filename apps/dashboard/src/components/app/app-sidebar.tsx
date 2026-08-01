@@ -1,4 +1,19 @@
 import { Link, useRouterState } from "@tanstack/react-router";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuBadge,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarRail,
+} from "@tunnet/ui/components/sidebar";
+import { cn } from "@tunnet/ui/lib/utils";
 import { type ComponentType, useEffect, useMemo, useState } from "react";
 import {
   HiOutlineArrowsRightLeft,
@@ -19,25 +34,9 @@ import {
   HiOutlineUsers,
 } from "react-icons/hi2";
 import { SiKubernetes } from "react-icons/si";
-
 import { UserMenu } from "@/components/app/user-menu";
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarFooter,
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarGroupLabel,
-  SidebarHeader,
-  SidebarMenu,
-  SidebarMenuBadge,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  SidebarRail,
-} from "@/components/ui/sidebar";
 import { useActiveOrganization } from "@/lib/auth-client";
 import { useServes, useTunnels } from "@/lib/queries/management";
-import { cn } from "@/lib/utils";
 
 type NavIcon = ComponentType<{ className?: string }>;
 
@@ -57,7 +56,7 @@ type NavSection = {
 };
 
 const overviewItem: NavItem = {
-  to: "/app",
+  to: "/",
   label: "Overview",
   icon: HiOutlineChartBarSquare,
   exact: true,
@@ -69,8 +68,8 @@ const navSections: NavSection[] = [
     label: "Mesh",
     defaultOpen: true,
     items: [
-      { to: "/app/networks", label: "Networks", icon: HiOutlineShare },
-      { to: "/app/kubernetes", label: "Kubernetes", icon: SiKubernetes },
+      { to: "/networks", label: "Networks", icon: HiOutlineShare },
+      { to: "/kubernetes", label: "Kubernetes", icon: SiKubernetes },
     ],
   },
   {
@@ -78,8 +77,8 @@ const navSections: NavSection[] = [
     label: "Fleet",
     defaultOpen: true,
     items: [
-      { to: "/app/machines", label: "Machines", icon: HiOutlineServer },
-      { to: "/app/relays", label: "Relays", icon: HiOutlineServerStack },
+      { to: "/machines", label: "Machines", icon: HiOutlineServer },
+      { to: "/relays", label: "Relays", icon: HiOutlineServerStack },
     ],
   },
   {
@@ -88,24 +87,24 @@ const navSections: NavSection[] = [
     defaultOpen: true,
     items: [
       {
-        to: "/app/tunnels",
+        to: "/tunnels",
         label: "Tunnels",
         icon: HiOutlineBolt,
         badge: "tunnels",
       },
       {
-        to: "/app/serves",
+        to: "/serves",
         label: "Serves",
         icon: HiOutlineCube,
         badge: "serves",
       },
       {
-        to: "/app/ssh-sessions",
+        to: "/ssh-sessions",
         label: "SSH",
         icon: HiOutlineCommandLine,
       },
       {
-        to: "/app/transfers",
+        to: "/transfers",
         label: "Transfers",
         icon: HiOutlineArrowsRightLeft,
       },
@@ -116,9 +115,9 @@ const navSections: NavSection[] = [
     label: "Security",
     defaultOpen: false,
     items: [
-      { to: "/app/posture", label: "Posture", icon: HiOutlineShieldCheck },
-      { to: "/app/access", label: "Access", icon: HiOutlineLockClosed },
-      { to: "/app/tags", label: "Tags", icon: HiOutlineTag },
+      { to: "/posture", label: "Posture", icon: HiOutlineShieldCheck },
+      { to: "/access", label: "Access", icon: HiOutlineLockClosed },
+      { to: "/tags", label: "Tags", icon: HiOutlineTag },
     ],
   },
   {
@@ -126,15 +125,15 @@ const navSections: NavSection[] = [
     label: "Administration",
     defaultOpen: false,
     items: [
-      { to: "/app/users", label: "Users", icon: HiOutlineUsers },
-      { to: "/app/roles", label: "Roles", icon: HiOutlineKey },
+      { to: "/users", label: "Users", icon: HiOutlineUsers },
+      { to: "/roles", label: "Roles", icon: HiOutlineKey },
       {
-        to: "/app/logs",
+        to: "/logs",
         label: "Logs",
         icon: HiOutlineClipboardDocumentList,
       },
       {
-        to: "/app/organization",
+        to: "/organization",
         label: "Organization",
         icon: HiOutlineCog6Tooth,
       },
@@ -144,7 +143,7 @@ const navSections: NavSection[] = [
 
 function isNavActive(pathname: string, to: string, exact?: boolean): boolean {
   if (exact) {
-    if (to === "/app") return pathname === "/app" || pathname === "/app/";
+    if (to === "/") return pathname === "/" || pathname === "/";
     return pathname === to;
   }
   return pathname === to || pathname.startsWith(`${to}/`);
@@ -273,7 +272,7 @@ export function AppSidebar() {
     <Sidebar collapsible="icon">
       <SidebarHeader className="border-sidebar-border gap-0 border-b">
         <Link
-          to="/app"
+          to="/"
           className="flex items-center gap-2.5 overflow-hidden rounded-lg py-2 transition-colors"
         >
           <img

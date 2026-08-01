@@ -1,18 +1,18 @@
 import type { CreatePolicyBody, Selector } from "@tunnet/api/management";
-import {
-  EndpointCombobox,
-  shortEndpointId,
-} from "@/components/app/endpoint-combobox";
-import { TagCombobox } from "@/components/app/tag-combobox";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Input } from "@tunnet/ui/components/input";
+import { Label } from "@tunnet/ui/components/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@tunnet/ui/components/select";
+import {
+  EndpointCombobox,
+  shortEndpointId,
+} from "@/components/app/endpoint-combobox";
+import { TagCombobox } from "@/components/app/tag-combobox";
 import slugify from "@/lib/slugify";
 
 export function PolicySelectorFields({

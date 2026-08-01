@@ -1,3 +1,4 @@
+import { cn } from "@tunnet/ui/lib/utils";
 import { Handle, type NodeProps, Position } from "@xyflow/react";
 import {
   BoxIcon,
@@ -9,7 +10,6 @@ import {
   ServerIcon,
   Share2Icon,
 } from "lucide-react";
-
 import type {
   AccessDestinationFlowNode,
   AccessPolicyFlowNode,
@@ -26,7 +26,6 @@ import type {
   SubnetFlowNode,
   TunnelFlowNode,
 } from "@/components/topology/types";
-import { cn } from "@/lib/utils";
 
 function NodeShell({
   selected,

@@ -1,8 +1,9 @@
 import { Link } from "@tanstack/react-router";
-import { LogOutIcon, UserIcon } from "lucide-react";
-import { toast } from "sonner";
-
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+} from "@tunnet/ui/components/avatar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,10 +12,12 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { SidebarMenuButton } from "@/components/ui/sidebar";
+} from "@tunnet/ui/components/dropdown-menu";
+import { SidebarMenuButton } from "@tunnet/ui/components/sidebar";
+import { cn } from "@tunnet/ui/lib/utils";
+import { LogOutIcon, UserIcon } from "lucide-react";
+import { toast } from "sonner";
 import { signOut, useSession } from "@/lib/auth-client";
-import { cn } from "@/lib/utils";
 
 function initials(name: string | undefined, email: string) {
   if (name?.trim()) {
@@ -91,9 +94,7 @@ export function UserMenu({ className }: { className?: string }) {
         <DropdownMenuSeparator />
         <DropdownMenuGroup>
           <DropdownMenuItem
-            render={
-              <Link to="/app/settings" search={{ user_code: undefined }} />
-            }
+            render={<Link to="/settings" search={{ user_code: undefined }} />}
           >
             <UserIcon className="mr-2 size-4" />
             Settings

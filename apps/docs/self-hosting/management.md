@@ -27,6 +27,9 @@ bun run management:start
 | `DATABASE_URL` | - | PostgreSQL connection string (required) |
 | `BETTER_AUTH_SECRET` | - | Auth signing secret, 32+ chars (required) |
 | `DASHBOARD_URL` | `http://localhost:5173` | Dashboard origin for CORS and OAuth |
-| `MANAGEMENT_URL` | `http://localhost:3000` | Public management API URL (listen port derived from this) |
+| `MANAGEMENT_URL` | `http://localhost:3000` | Public management API URL used by clients and auth redirects |
+| `BETTER_AUTH_COOKIE_DOMAIN` | - | Shared parent domain for auth cookies when dashboard and management use different subdomains; inferred for matching `*.localhost` URLs |
+| `PORT` | `MANAGEMENT_URL` port | Local bind port override; Portless injects this automatically |
+| `HOST` | `127.0.0.1` | Local bind host override; Portless injects this automatically |
 | `CONTROL_PLANE_URL` | `http://localhost:8080` | Control plane URL (admin API derived on port 9091) |
 | `TUNNET_SERVICE_SECRET` | - | Internal API shared secret (must match control plane) |

@@ -1,12 +1,11 @@
 import type { CreatePolicyBody, PatchPolicyBody } from "@tunnet/api/management";
+import { Button } from "@tunnet/ui/components/button";
+import { cn } from "@tunnet/ui/lib/utils";
 import { useState } from "react";
-
 import {
   type PolicyFormPrefill,
   PolicyFormSheet,
 } from "@/components/app/acl/policy-form-sheet";
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 
 export function SuggestAllowFromServe({
   orgId,

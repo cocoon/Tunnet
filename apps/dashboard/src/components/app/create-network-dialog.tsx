@@ -1,7 +1,4 @@
-import { useState } from "react";
-import { toast } from "sonner";
-
-import { Button } from "@/components/ui/button";
+import { Button } from "@tunnet/ui/components/button";
 import {
   Dialog,
   DialogContent,
@@ -9,11 +6,13 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+} from "@tunnet/ui/components/dialog";
+import { Input } from "@tunnet/ui/components/input";
+import { Label } from "@tunnet/ui/components/label";
+import { cn } from "@tunnet/ui/lib/utils";
+import { useState } from "react";
+import { toast } from "sonner";
 import { useNetworkMutations } from "@/lib/queries/management";
-import { cn } from "@/lib/utils";
 
 type CreateNetworkDialogProps = {
   orgId: string;

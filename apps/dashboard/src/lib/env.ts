@@ -26,17 +26,43 @@ function readBinding(
   return fallback;
 }
 
+function isPortlessHostname(hostname: string): boolean {
+  return hostname.endsWith(".localhost");
+}
+
+function getServerManagementUrl(url: string): string {
+  if (import.meta.env.SSR === false) return url;
+
+  const parsed = new URL(url);
+  if (!isPortlessHostname(parsed.hostname)) return url;
+
+  // Portless exposes the named HTTPS route on loopback. Browsers resolve
+  // *.localhost automatically, but the server runtime does not on Windows.
+  parsed.hostname = "127.0.0.1";
+  return parsed.toString().replace(/\/$/, "");
+}
+
 export function getManagementApiUrl(): string {
   const configured = readBinding("MANAGEMENT_URL", "");
   if (configured) {
-    return configured;
+    return getServerManagementUrl(configured);
   }
 
   if (typeof window !== "undefined") {
     return window.location.origin;
   }
 
-  return getManagementUrlFromEnv();
+  return getServerManagementUrl(getManagementUrlFromEnv());
+}
+
+export function getManagementHostHeader(): string | undefined {
+  if (import.meta.env.SSR === false) return undefined;
+
+  const configured = readBinding("MANAGEMENT_URL", "");
+  if (!configured) return undefined;
+
+  const parsed = new URL(configured);
+  return isPortlessHostname(parsed.hostname) ? parsed.host : undefined;
 }
 
 export function getControlPlaneUrl(): string {

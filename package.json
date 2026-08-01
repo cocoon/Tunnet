@@ -11,13 +11,13 @@
     "management:start": "bun --env-file=.env --filter @tunnet/management start",
     "dash:dev": "bun --env-file=.env --filter @tunnet/dashboard dev",
     "dash:build": "bun --env-file=.env --filter @tunnet/dashboard build",
-    "dash:preview": "bun --env-file=.env --filter @tunnet/dashboard preview",
+    "cloud:dev": "bun --env-file=.env --filter @tunnet/cloud dev",
+    "cloud:build": "bun --env-file=.env --filter @tunnet/cloud build",
     "db:generate": "bun --env-file=.env --filter @tunnet/db generate",
     "db:migrate": "bun --env-file=.env --filter @tunnet/db migrate",
     "db:studio": "bun --env-file=.env --filter @tunnet/db studio",
     "docs:dev": "bun --env-file=.env --filter @tunnet/docs dev",
     "docs:build": "bun --env-file=.env --filter @tunnet/docs build",
-    "docs:preview": "bun --env-file=.env --filter @tunnet/docs preview",
     "test:sdk": "bun --env-file=.env --filter @tunnet/sdk test",
     "test": "bun --env-file=.env --filter @tunnet/sdk test",
     "test:sdk:integration": "bun --env-file=.env --filter @tunnet/sdk test:integration",
@@ -29,6 +29,7 @@
     "@biomejs/biome": "2.5.6",
     "@types/bun": "^1.3.14",
     "lefthook": "^2.1.10",
+    "portless": "^0.15.5",
     "vitepress": "^2.0.0-alpha.18"
   },
   "dependencies": {

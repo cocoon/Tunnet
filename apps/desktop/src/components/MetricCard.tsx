@@ -1,12 +1,12 @@
-import type { ReactNode } from "react";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
-import { cn } from "@/lib/utils";
+} from "@tunnet/ui/components/card";
+import { cn } from "@tunnet/ui/lib/utils";
+import type { ReactNode } from "react";
 
 interface MetricCardProps {
   label: string;

@@ -1,14 +1,13 @@
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-
-import { useTopologyUi } from "@/components/topology/TopologyProvider";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+} from "@tunnet/ui/components/dropdown-menu";
+import { useEffect, useState } from "react";
+import { useTopologyUi } from "@/components/topology/TopologyProvider";
 
 type MenuState = {
   x: number;
@@ -73,7 +72,7 @@ export function TopologyContextMenus({
             <DropdownMenuItem
               onClick={() => {
                 void navigate({
-                  to: "/app/machines/$endpointId",
+                  to: "/machines/$endpointId",
                   params: { endpointId: menu.endpointId! },
                 });
               }}
@@ -110,7 +109,7 @@ export function TopologyContextMenus({
             <DropdownMenuItem
               onClick={() => {
                 void navigate({
-                  to: "/app/networks/$networkId",
+                  to: "/networks/$networkId",
                   params: { networkId: menu.networkId! },
                 });
               }}
@@ -120,7 +119,7 @@ export function TopologyContextMenus({
             <DropdownMenuItem
               onClick={() => {
                 void navigate({
-                  to: "/app/networks/$networkId/access",
+                  to: "/networks/$networkId/access",
                   params: { networkId: menu.networkId! },
                 });
               }}

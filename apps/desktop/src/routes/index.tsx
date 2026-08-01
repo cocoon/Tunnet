@@ -1,6 +1,6 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
+import { Skeleton } from "@tunnet/ui/components/skeleton";
 import { useEffect, useRef, useState } from "react";
-import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/invoke";
 import { Route as rootRoute } from "./__root";
 

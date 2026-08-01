@@ -1,6 +1,6 @@
 import { createRootRoute, Outlet } from "@tanstack/react-router";
-import { Toaster } from "@/components/ui/sonner";
-import { TooltipProvider } from "@/components/ui/tooltip";
+import { Toaster } from "@tunnet/ui/components/sonner";
+import { TooltipProvider } from "@tunnet/ui/components/tooltip";
 
 export const Route = createRootRoute({
   component: RootLayout,

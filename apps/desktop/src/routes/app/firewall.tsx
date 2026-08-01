@@ -1,10 +1,7 @@
 import { createRoute, redirect } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
-import { toast } from "sonner";
-import { CapabilityGate } from "@/components/CapabilityGate";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import { Badge } from "@tunnet/ui/components/badge";
+import { Button } from "@tunnet/ui/components/button";
+import { Card } from "@tunnet/ui/components/card";
 import {
   Dialog,
   DialogContent,
@@ -13,16 +10,16 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+} from "@tunnet/ui/components/dialog";
+import { Input } from "@tunnet/ui/components/input";
+import { Label } from "@tunnet/ui/components/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@tunnet/ui/components/select";
 import {
   Table,
   TableBody,
@@ -30,7 +27,10 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table";
+} from "@tunnet/ui/components/table";
+import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
+import { CapabilityGate } from "@/components/CapabilityGate";
 import { useDirectNetwork } from "@/lib/direct-network-context";
 import { api } from "@/lib/invoke";
 import type { DirectFirewallResponse } from "@/lib/types";

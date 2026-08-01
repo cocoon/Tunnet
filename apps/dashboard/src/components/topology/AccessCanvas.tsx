@@ -1,4 +1,9 @@
 import { useQueries } from "@tanstack/react-query";
+import { Button } from "@tunnet/ui/components/button";
+import { Input } from "@tunnet/ui/components/input";
+import { Skeleton } from "@tunnet/ui/components/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@tunnet/ui/components/tabs";
+import { cn } from "@tunnet/ui/lib/utils";
 import {
   Background,
   Controls,
@@ -12,7 +17,6 @@ import {
   useNodesState,
 } from "@xyflow/react";
 import { useEffect, useMemo, useRef } from "react";
-
 import { DetailPanel } from "@/components/topology/DetailPanel";
 import {
   mergeFlowEdges,
@@ -29,10 +33,6 @@ import type {
   AccessEntityTab,
   AccessPolicyNodeData,
 } from "@/components/topology/types";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getMachinePresence } from "@/lib/machine-utils";
 import { createManagementClient } from "@/lib/management-client";
 import { usePresenceClock } from "@/lib/presence-clock";
@@ -44,7 +44,6 @@ import {
   useTagDefinitions,
 } from "@/lib/queries/management";
 import { queryKeys } from "@/lib/query-keys";
-import { cn } from "@/lib/utils";
 
 function AccessCanvasInner({ orgId }: { orgId: string }) {
   const now = usePresenceClock();

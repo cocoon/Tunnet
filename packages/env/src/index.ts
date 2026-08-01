@@ -30,6 +30,9 @@ export function getControlPlaneUrl(
 export function getManagementPort(
   env: NodeJS.ProcessEnv = process.env,
 ): number {
+  const port = Number(env.PORT);
+  if (Number.isInteger(port) && port > 0 && port <= 65_535) return port;
+
   const url = new URL(getManagementUrl(env));
   if (url.port) return Number(url.port);
   return url.protocol === "https:" ? 443 : 80;

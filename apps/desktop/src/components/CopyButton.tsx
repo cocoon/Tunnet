@@ -1,8 +1,8 @@
+import { Button } from "@tunnet/ui/components/button";
+import { cn } from "@tunnet/ui/lib/utils";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 
 export function CopyButton({
   value,

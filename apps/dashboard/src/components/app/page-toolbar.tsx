@@ -1,9 +1,8 @@
+import { Badge } from "@tunnet/ui/components/badge";
+import { Input } from "@tunnet/ui/components/input";
+import { cn } from "@tunnet/ui/lib/utils";
 import { SearchIcon } from "lucide-react";
 import type { ReactNode } from "react";
-
-import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
 
 type PageToolbarProps = {
   search?: string;

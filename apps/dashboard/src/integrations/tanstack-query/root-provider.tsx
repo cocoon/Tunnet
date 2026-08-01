@@ -1,7 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { TooltipProvider } from "@tunnet/ui/components/tooltip";
 import type { ReactNode } from "react";
-
-import { TooltipProvider } from "@/components/ui/tooltip";
 
 export function getContext() {
   const queryClient = new QueryClient({

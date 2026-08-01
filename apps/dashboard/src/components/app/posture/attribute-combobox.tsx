@@ -1,7 +1,4 @@
-import { CheckIcon, ChevronsUpDownIcon } from "lucide-react";
-import { useState } from "react";
-
-import { Button } from "@/components/ui/button";
+import { Button } from "@tunnet/ui/components/button";
 import {
   Command,
   CommandEmpty,
@@ -9,17 +6,19 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
-} from "@/components/ui/command";
+} from "@tunnet/ui/components/command";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from "@/components/ui/popover";
+} from "@tunnet/ui/components/popover";
+import { cn } from "@tunnet/ui/lib/utils";
+import { CheckIcon, ChevronsUpDownIcon } from "lucide-react";
+import { useState } from "react";
 import {
   attributesByCategory,
   getAttributeByKey,
 } from "@/lib/posture-attributes";
-import { cn } from "@/lib/utils";
 
 export function AttributeCombobox({
   value,

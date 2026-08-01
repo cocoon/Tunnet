@@ -1,7 +1,4 @@
 import type { Policy } from "@tunnet/api/management";
-import { useState } from "react";
-import { toast } from "sonner";
-
 import {
   AlertDialog,
   AlertDialogAction,
@@ -11,17 +8,19 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
+} from "@tunnet/ui/components/alert-dialog";
+import { Button } from "@tunnet/ui/components/button";
+import { Label } from "@tunnet/ui/components/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { cn } from "@/lib/utils";
+} from "@tunnet/ui/components/select";
+import { cn } from "@tunnet/ui/lib/utils";
+import { useState } from "react";
+import { toast } from "sonner";
 
 type AccessMode = "allow" | "deny";
 type IcmpPolicy = "allow" | "acl" | "deny";

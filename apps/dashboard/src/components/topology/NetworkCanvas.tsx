@@ -1,4 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
+import { Skeleton } from "@tunnet/ui/components/skeleton";
+import { cn } from "@tunnet/ui/lib/utils";
 import {
   Background,
   type Connection,
@@ -17,7 +19,6 @@ import {
 } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
-
 import { DetailPanel } from "@/components/topology/DetailPanel";
 import {
   applySavedPositions,
@@ -50,9 +51,7 @@ import type {
   ServeSatelliteData,
   TunnelSatelliteData,
 } from "@/components/topology/types";
-import { Skeleton } from "@/components/ui/skeleton";
 import { useServes, useTopology, useTunnels } from "@/lib/queries/management";
-import { cn } from "@/lib/utils";
 
 type NetworkCanvasInnerProps = {
   orgId: string;
@@ -446,7 +445,7 @@ function NetworkCanvasInner({ orgId, networkId }: NetworkCanvasInnerProps) {
                     onClick={() => {
                       setKindFilter("all");
                       void navigate({
-                        to: "/app/networks/$networkId",
+                        to: "/networks/$networkId",
                         params: { networkId },
                         search: {},
                       });

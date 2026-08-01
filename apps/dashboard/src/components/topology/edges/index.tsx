@@ -1,12 +1,11 @@
+import { cn } from "@tunnet/ui/lib/utils";
 import {
   BaseEdge,
   EdgeLabelRenderer,
   type EdgeProps,
   getBezierPath,
 } from "@xyflow/react";
-
 import type { MeshEdgeData } from "@/components/topology/types";
-import { cn } from "@/lib/utils";
 
 export function MeshEdge({
   id,

@@ -1,16 +1,16 @@
 import { createRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
-import { CapabilityGate } from "@/components/CapabilityGate";
-import { Button } from "@/components/ui/button";
+import { Button } from "@tunnet/ui/components/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Progress } from "@/components/ui/progress";
+} from "@tunnet/ui/components/card";
+import { Input } from "@tunnet/ui/components/input";
+import { Progress } from "@tunnet/ui/components/progress";
+import { useCallback, useEffect, useState } from "react";
+import { CapabilityGate } from "@/components/CapabilityGate";
 import { api } from "@/lib/invoke";
 import type { ServeInfo, TransferInfo, TunnelInfo } from "@/lib/types";
 import { appRoute } from "../app";

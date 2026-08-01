@@ -1,9 +1,9 @@
 import type { Device } from "@tunnet/api/management";
+import { cn } from "@tunnet/ui/lib/utils";
 import { memo } from "react";
 import { useLivePresence } from "@/hooks/use-live-presence";
 import { formatLastSeenLabel, getMachinePresence } from "@/lib/machine-utils";
 import { usePresenceClock } from "@/lib/presence-clock";
-import { cn } from "@/lib/utils";
 
 export const LastSeenCell = memo(function LastSeenCell({
   orgId,

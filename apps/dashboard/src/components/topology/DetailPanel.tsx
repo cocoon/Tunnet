@@ -1,12 +1,12 @@
 import { Link } from "@tanstack/react-router";
+import { Button } from "@tunnet/ui/components/button";
+import { cn } from "@tunnet/ui/lib/utils";
 import { XIcon } from "lucide-react";
 import { useState } from "react";
 import { CreateServeDialog } from "@/components/app/create-serve-dialog";
 import { CreateTunnelDialog } from "@/components/app/create-tunnel-dialog";
 import { useTopologyUi } from "@/components/topology/TopologyProvider";
-import { Button } from "@/components/ui/button";
 import { deviceKindLabel, deviceTypeLabel } from "@/lib/device-type";
-import { cn } from "@/lib/utils";
 
 export function DetailPanel({
   orgId,
@@ -161,7 +161,7 @@ export function DetailPanel({
               nativeButton={false}
               render={
                 <Link
-                  to="/app/machines/$endpointId"
+                  to="/machines/$endpointId"
                   params={{ endpointId: selected.node.endpointId }}
                 />
               }
@@ -218,7 +218,7 @@ export function DetailPanel({
               nativeButton={false}
               render={
                 <Link
-                  to="/app/networks/$networkId"
+                  to="/networks/$networkId"
                   params={{ networkId: selected.data.networkId }}
                 />
               }
@@ -232,7 +232,7 @@ export function DetailPanel({
               nativeButton={false}
               render={
                 <Link
-                  to="/app/networks/$networkId/access"
+                  to="/networks/$networkId/access"
                   params={{ networkId: selected.data.networkId }}
                 />
               }
@@ -265,7 +265,7 @@ export function DetailPanel({
             nativeButton={false}
             render={
               <Link
-                to="/app/serves/$serveId"
+                to="/serves/$serveId"
                 params={{ serveId: selected.data.serveId }}
               />
             }
@@ -282,7 +282,7 @@ export function DetailPanel({
             nativeButton={false}
             render={
               <Link
-                to="/app/networks/$networkId/access"
+                to="/networks/$networkId/access"
                 params={{ networkId: selected.data.networkId }}
               />
             }
@@ -297,7 +297,7 @@ export function DetailPanel({
             variant="secondary"
             className="justify-start"
             nativeButton={false}
-            render={<Link to="/app/access" />}
+            render={<Link to="/access" />}
           >
             Edit org policies
           </Button>

@@ -1,17 +1,16 @@
-import { PlusIcon, Trash2Icon } from "lucide-react";
-import { useState } from "react";
-
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Button } from "@tunnet/ui/components/button";
+import { Input } from "@tunnet/ui/components/input";
+import { Label } from "@tunnet/ui/components/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+} from "@tunnet/ui/components/select";
+import { Switch } from "@tunnet/ui/components/switch";
+import { PlusIcon, Trash2Icon } from "lucide-react";
+import { useState } from "react";
 import type { PostureIntegration } from "@/lib/posture-types";
 
 export const INTEGRATION_PROVIDERS = [

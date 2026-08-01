@@ -1,13 +1,13 @@
 import { createRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@tunnet/ui/components/badge";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
+} from "@tunnet/ui/components/card";
+import { useEffect, useState } from "react";
 import { useDirectNetworkId } from "@/lib/direct-network-context";
 import { api } from "@/lib/invoke";
 import type {

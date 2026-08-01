@@ -1,10 +1,10 @@
 import type { Device } from "@tunnet/api/management";
+import { Badge } from "@tunnet/ui/components/badge";
+import { cn } from "@tunnet/ui/lib/utils";
 import { memo } from "react";
-import { Badge } from "@/components/ui/badge";
 import { useLivePresence } from "@/hooks/use-live-presence";
 import { getMachinePresence, type MachinePresence } from "@/lib/machine-utils";
 import { usePresenceClock } from "@/lib/presence-clock";
-import { cn } from "@/lib/utils";
 
 const labels: Record<MachinePresence, string> = {
   online: "Online",

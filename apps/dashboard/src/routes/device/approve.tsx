@@ -8,7 +8,7 @@ export const Route = createFileRoute("/device/approve")({
   }),
   beforeLoad: async ({ search }) => {
     throw redirect({
-      to: "/app/settings",
+      to: "/settings",
       search: search.user_code
         ? { user_code: search.user_code }
         : { user_code: undefined },

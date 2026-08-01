@@ -11,6 +11,7 @@ These three URLs are the only service bindings you need to configure. Set them i
 | `DASHBOARD_URL` | Dashboard origin (CORS, OAuth redirects, SSH browser auth) | `http://localhost:5173` |
 | `MANAGEMENT_URL` | Management API public URL (auth, REST API, CLI login) | `http://localhost:3000` |
 | `CONTROL_PLANE_URL` | Control plane URL (agent enroll, relay register) | `http://localhost:8080` |
+| `BETTER_AUTH_COOKIE_DOMAIN` | Optional shared parent domain for dashboard/management auth cookies | `example.com` |
 
 The management server derives the control plane admin API URL from `CONTROL_PLANE_URL` (same host, port `9091`).
 

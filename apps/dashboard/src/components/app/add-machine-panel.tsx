@@ -1,7 +1,11 @@
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@tunnet/ui/components/card";
+import { cn } from "@tunnet/ui/lib/utils";
 import { ExternalLinkIcon } from "lucide-react";
-
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
 
 const platforms = [
   { name: "Linux", href: "#", installed: false },

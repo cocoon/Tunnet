@@ -1,26 +1,25 @@
 import { useRouterState } from "@tanstack/react-router";
-import type { ReactNode } from "react";
-
-import { AppSidebar } from "@/components/app/app-sidebar";
-import { OrgSwitcher } from "@/components/app/org-switcher";
-import { Separator } from "@/components/ui/separator";
+import { Separator } from "@tunnet/ui/components/separator";
 import {
   SidebarInset,
   SidebarProvider,
   SidebarTrigger,
-} from "@/components/ui/sidebar";
+} from "@tunnet/ui/components/sidebar";
+import { cn } from "@tunnet/ui/lib/utils";
+import type { ReactNode } from "react";
+import { AppSidebar } from "@/components/app/app-sidebar";
+import { OrgSwitcher } from "@/components/app/org-switcher";
 import { usePresenceStream } from "@/hooks/use-presence-stream";
 import { useActiveOrganization } from "@/lib/auth-client";
-import { cn } from "@/lib/utils";
 
 type AppShellProps = {
   children: ReactNode;
 };
 
 function useCanvasMode(pathname: string): boolean {
-  if (pathname === "/app" || pathname === "/app/") return true;
-  if (/^\/app\/networks\/[^/]+\/?$/.test(pathname)) return true;
-  if (/^\/app\/kubernetes\/networks\/[^/]+\/?$/.test(pathname)) return true;
+  if (pathname === "/") return true;
+  if (/^\/networks\/[^/]+\/?$/.test(pathname)) return true;
+  if (/^\/kubernetes\/networks\/[^/]+\/?$/.test(pathname)) return true;
   return false;
 }
 

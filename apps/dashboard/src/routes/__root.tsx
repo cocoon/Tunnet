@@ -10,7 +10,7 @@ import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { Toaster } from "sonner";
 import TanStackQueryDevtools from "../integrations/tanstack-query/devtools";
 import { AppProviders } from "../integrations/tanstack-query/root-provider";
-import appCss from "../styles.css?url";
+import "../styles.css";
 
 interface MyRouterContext {
   queryClient: QueryClient;
@@ -23,7 +23,6 @@ export const Route = createRootRouteWithContext<MyRouterContext>()({
       { name: "viewport", content: "width=device-width, initial-scale=1" },
       { title: "Tunnet" },
     ],
-    links: [{ rel: "stylesheet", href: appCss }],
   }),
   component: RootComponent,
 });

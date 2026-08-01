@@ -1,10 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { toast } from "sonner";
-
-import { CopyField } from "@/components/app/copy-field";
-import { TagMultiCombobox } from "@/components/app/tag-combobox";
-import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Button } from "@tunnet/ui/components/button";
+import { Checkbox } from "@tunnet/ui/components/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -12,16 +7,20 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+} from "@tunnet/ui/components/dialog";
+import { Input } from "@tunnet/ui/components/input";
+import { Label } from "@tunnet/ui/components/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@tunnet/ui/components/select";
+import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
+import { CopyField } from "@/components/app/copy-field";
+import { TagMultiCombobox } from "@/components/app/tag-combobox";
 import { getMachinePresence } from "@/lib/machine-utils";
 import { useMachines, useServeMutations } from "@/lib/queries/management";
 

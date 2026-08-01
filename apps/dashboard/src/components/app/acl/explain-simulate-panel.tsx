@@ -8,25 +8,24 @@ import {
   selectorToString,
   simulateDocument,
 } from "@tunnet/policy-engine";
-import { useEffect, useMemo, useState } from "react";
-
-import type { EndpointLabelMap } from "@/components/app/acl/policy-labels";
-import {
-  buildPolicySelector,
-  PolicySelectorFields,
-} from "@/components/app/policy-selector-fields";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Badge } from "@tunnet/ui/components/badge";
+import { Button } from "@tunnet/ui/components/button";
+import { Input } from "@tunnet/ui/components/input";
+import { Label } from "@tunnet/ui/components/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { cn } from "@/lib/utils";
+} from "@tunnet/ui/components/select";
+import { cn } from "@tunnet/ui/lib/utils";
+import { useEffect, useMemo, useState } from "react";
+import type { EndpointLabelMap } from "@/components/app/acl/policy-labels";
+import {
+  buildPolicySelector,
+  PolicySelectorFields,
+} from "@/components/app/policy-selector-fields";
 
 function reasonInEnglish(
   reason: SimulateReason,

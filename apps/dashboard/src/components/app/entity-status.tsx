@@ -1,5 +1,5 @@
-import { Badge } from "@/components/ui/badge";
-import { cn } from "@/lib/utils";
+import { Badge } from "@tunnet/ui/components/badge";
+import { cn } from "@tunnet/ui/lib/utils";
 
 type EntityStatusTone =
   | "healthy"

@@ -9,57 +9,50 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
-import { Route as AppRouteRouteImport } from './routes/app/route'
+import { Route as AppRouteRouteImport } from './routes/_app/route'
 import { Route as ConsentRouteImport } from './routes/consent'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as AppAccessRouteImport } from './routes/_app/access'
+import { Route as AppLogsRouteImport } from './routes/_app/logs'
+import { Route as AppOnboardingRouteImport } from './routes/_app/onboarding'
+import { Route as AppOrganizationRouteImport } from './routes/_app/organization'
+import { Route as AppRolesRouteImport } from './routes/_app/roles'
+import { Route as AppSettingsRouteRouteImport } from './routes/_app/settings/route'
+import { Route as AppTagsRouteImport } from './routes/_app/tags'
+import { Route as AppUsersRouteImport } from './routes/_app/users'
 import { Route as AcceptInvitationInvitationIdRouteImport } from './routes/accept-invitation.$invitationId'
-import { Route as AppIndexRouteImport } from './routes/app/index'
-import { Route as AppAccessRouteImport } from './routes/app/access'
-import { Route as AppLogsRouteImport } from './routes/app/logs'
-import { Route as AppOnboardingRouteImport } from './routes/app/onboarding'
-import { Route as AppOrganizationRouteImport } from './routes/app/organization'
-import { Route as AppRolesRouteImport } from './routes/app/roles'
-import { Route as AppSettingsRouteRouteImport } from './routes/app/settings/route'
-import { Route as AppTagsRouteImport } from './routes/app/tags'
-import { Route as AppUsersRouteImport } from './routes/app/users'
 import { Route as AuthSshRouteImport } from './routes/auth/ssh'
 import { Route as DeviceIndexRouteImport } from './routes/device/index'
 import { Route as DeviceApproveRouteImport } from './routes/device/approve'
-import { Route as AppKubernetesIndexRouteImport } from './routes/app/kubernetes/index'
-import { Route as AppMachinesIndexRouteImport } from './routes/app/machines/index'
-import { Route as AppMachinesEndpointIdRouteImport } from './routes/app/machines/$endpointId'
-import { Route as AppNetworksIndexRouteImport } from './routes/app/networks/index'
-import { Route as AppNetworksNetworkIdRouteRouteImport } from './routes/app/networks/$networkId/route'
-import { Route as AppPostureIndexRouteImport } from './routes/app/posture/index'
-import { Route as AppPostureComplianceRouteImport } from './routes/app/posture/compliance'
-import { Route as AppPostureIntegrationsRouteImport } from './routes/app/posture/integrations'
-import { Route as AppRelaysIndexRouteImport } from './routes/app/relays/index'
-import { Route as AppRelaysRelayIdRouteImport } from './routes/app/relays/$relayId'
-import { Route as AppServesIndexRouteImport } from './routes/app/serves/index'
-import { Route as AppServesServeIdRouteImport } from './routes/app/serves/$serveId'
-import { Route as AppSettingsIndexRouteImport } from './routes/app/settings/index'
-import { Route as AppSshSessionsIndexRouteImport } from './routes/app/ssh-sessions/index'
-import { Route as AppTransfersIndexRouteImport } from './routes/app/transfers/index'
-import { Route as AppTunnelsIndexRouteImport } from './routes/app/tunnels/index'
-import { Route as AppTunnelsTunnelIdRouteImport } from './routes/app/tunnels/$tunnelId'
-import { Route as AppKubernetesNetworksNetworkIdRouteImport } from './routes/app/kubernetes/networks/$networkId'
-import { Route as AppNetworksNetworkIdIndexRouteImport } from './routes/app/networks/$networkId/index'
-import { Route as AppNetworksNetworkIdAccessRouteImport } from './routes/app/networks/$networkId/access'
-import { Route as AppNetworksNetworkIdEnrollmentRouteImport } from './routes/app/networks/$networkId/enrollment'
-import { Route as AppNetworksNetworkIdMachinesRouteImport } from './routes/app/networks/$networkId/machines'
-import { Route as AppNetworksNetworkIdMapRouteImport } from './routes/app/networks/$networkId/map'
-import { Route as AppNetworksNetworkIdPolicyRouteImport } from './routes/app/networks/$networkId/policy'
-import { Route as AppNetworksNetworkIdRoutesRouteImport } from './routes/app/networks/$networkId/routes'
+import { Route as AppKubernetesIndexRouteImport } from './routes/_app/kubernetes/index'
+import { Route as AppMachinesIndexRouteImport } from './routes/_app/machines/index'
+import { Route as AppMachinesEndpointIdRouteImport } from './routes/_app/machines/$endpointId'
+import { Route as AppNetworksIndexRouteImport } from './routes/_app/networks/index'
+import { Route as AppNetworksNetworkIdRouteRouteImport } from './routes/_app/networks/$networkId/route'
+import { Route as AppPostureIndexRouteImport } from './routes/_app/posture/index'
+import { Route as AppPostureComplianceRouteImport } from './routes/_app/posture/compliance'
+import { Route as AppPostureIntegrationsRouteImport } from './routes/_app/posture/integrations'
+import { Route as AppRelaysIndexRouteImport } from './routes/_app/relays/index'
+import { Route as AppRelaysRelayIdRouteImport } from './routes/_app/relays/$relayId'
+import { Route as AppServesIndexRouteImport } from './routes/_app/serves/index'
+import { Route as AppServesServeIdRouteImport } from './routes/_app/serves/$serveId'
+import { Route as AppSettingsIndexRouteImport } from './routes/_app/settings/index'
+import { Route as AppSshSessionsIndexRouteImport } from './routes/_app/ssh-sessions/index'
+import { Route as AppTransfersIndexRouteImport } from './routes/_app/transfers/index'
+import { Route as AppTunnelsIndexRouteImport } from './routes/_app/tunnels/index'
+import { Route as AppTunnelsTunnelIdRouteImport } from './routes/_app/tunnels/$tunnelId'
+import { Route as AppKubernetesNetworksNetworkIdRouteImport } from './routes/_app/kubernetes/networks/$networkId'
+import { Route as AppNetworksNetworkIdIndexRouteImport } from './routes/_app/networks/$networkId/index'
+import { Route as AppNetworksNetworkIdAccessRouteImport } from './routes/_app/networks/$networkId/access'
+import { Route as AppNetworksNetworkIdEnrollmentRouteImport } from './routes/_app/networks/$networkId/enrollment'
+import { Route as AppNetworksNetworkIdMachinesRouteImport } from './routes/_app/networks/$networkId/machines'
+import { Route as AppNetworksNetworkIdMapRouteImport } from './routes/_app/networks/$networkId/map'
+import { Route as AppNetworksNetworkIdPolicyRouteImport } from './routes/_app/networks/$networkId/policy'
+import { Route as AppNetworksNetworkIdRoutesRouteImport } from './routes/_app/networks/$networkId/routes'
 
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const AppRouteRoute = AppRouteRouteImport.update({
-  id: '/app',
-  path: '/app',
+  id: '/_app',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConsentRoute = ConsentRouteImport.update({
@@ -72,12 +65,6 @@ const LoginRoute = LoginRouteImport.update({
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AcceptInvitationInvitationIdRoute =
-  AcceptInvitationInvitationIdRouteImport.update({
-    id: '/accept-invitation/$invitationId',
-    path: '/accept-invitation/$invitationId',
-    getParentRoute: () => rootRouteImport,
-  } as any)
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -123,6 +110,12 @@ const AppUsersRoute = AppUsersRouteImport.update({
   path: '/users',
   getParentRoute: () => AppRouteRoute,
 } as any)
+const AcceptInvitationInvitationIdRoute =
+  AcceptInvitationInvitationIdRouteImport.update({
+    id: '/accept-invitation/$invitationId',
+    path: '/accept-invitation/$invitationId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const AuthSshRoute = AuthSshRouteImport.update({
   id: '/auth/ssh',
   path: '/auth/ssh',
@@ -273,269 +266,260 @@ const AppNetworksNetworkIdRoutesRoute =
   } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
-  '/app': typeof AppRouteRouteWithChildren
+  '/': typeof AppIndexRoute
   '/consent': typeof ConsentRoute
   '/login': typeof LoginRoute
-  '/app/settings': typeof AppSettingsRouteRouteWithChildren
+  '/settings': typeof AppSettingsRouteRouteWithChildren
+  '/access': typeof AppAccessRoute
+  '/logs': typeof AppLogsRoute
+  '/onboarding': typeof AppOnboardingRoute
+  '/organization': typeof AppOrganizationRoute
+  '/roles': typeof AppRolesRoute
+  '/tags': typeof AppTagsRoute
+  '/users': typeof AppUsersRoute
   '/accept-invitation/$invitationId': typeof AcceptInvitationInvitationIdRoute
-  '/app/access': typeof AppAccessRoute
-  '/app/logs': typeof AppLogsRoute
-  '/app/onboarding': typeof AppOnboardingRoute
-  '/app/organization': typeof AppOrganizationRoute
-  '/app/roles': typeof AppRolesRoute
-  '/app/tags': typeof AppTagsRoute
-  '/app/users': typeof AppUsersRoute
   '/auth/ssh': typeof AuthSshRoute
   '/device/approve': typeof DeviceApproveRoute
-  '/app/': typeof AppIndexRoute
   '/device/': typeof DeviceIndexRoute
-  '/app/networks/$networkId': typeof AppNetworksNetworkIdRouteRouteWithChildren
-  '/app/machines/$endpointId': typeof AppMachinesEndpointIdRoute
-  '/app/posture/compliance': typeof AppPostureComplianceRoute
-  '/app/posture/integrations': typeof AppPostureIntegrationsRoute
-  '/app/relays/$relayId': typeof AppRelaysRelayIdRoute
-  '/app/serves/$serveId': typeof AppServesServeIdRoute
-  '/app/tunnels/$tunnelId': typeof AppTunnelsTunnelIdRoute
-  '/app/kubernetes/': typeof AppKubernetesIndexRoute
-  '/app/machines/': typeof AppMachinesIndexRoute
-  '/app/networks/': typeof AppNetworksIndexRoute
-  '/app/posture/': typeof AppPostureIndexRoute
-  '/app/relays/': typeof AppRelaysIndexRoute
-  '/app/serves/': typeof AppServesIndexRoute
-  '/app/settings/': typeof AppSettingsIndexRoute
-  '/app/ssh-sessions/': typeof AppSshSessionsIndexRoute
-  '/app/transfers/': typeof AppTransfersIndexRoute
-  '/app/tunnels/': typeof AppTunnelsIndexRoute
-  '/app/kubernetes/networks/$networkId': typeof AppKubernetesNetworksNetworkIdRoute
-  '/app/networks/$networkId/access': typeof AppNetworksNetworkIdAccessRoute
-  '/app/networks/$networkId/enrollment': typeof AppNetworksNetworkIdEnrollmentRoute
-  '/app/networks/$networkId/machines': typeof AppNetworksNetworkIdMachinesRoute
-  '/app/networks/$networkId/map': typeof AppNetworksNetworkIdMapRoute
-  '/app/networks/$networkId/policy': typeof AppNetworksNetworkIdPolicyRoute
-  '/app/networks/$networkId/routes': typeof AppNetworksNetworkIdRoutesRoute
-  '/app/networks/$networkId/': typeof AppNetworksNetworkIdIndexRoute
+  '/networks/$networkId': typeof AppNetworksNetworkIdRouteRouteWithChildren
+  '/machines/$endpointId': typeof AppMachinesEndpointIdRoute
+  '/posture/compliance': typeof AppPostureComplianceRoute
+  '/posture/integrations': typeof AppPostureIntegrationsRoute
+  '/relays/$relayId': typeof AppRelaysRelayIdRoute
+  '/serves/$serveId': typeof AppServesServeIdRoute
+  '/tunnels/$tunnelId': typeof AppTunnelsTunnelIdRoute
+  '/kubernetes/': typeof AppKubernetesIndexRoute
+  '/machines/': typeof AppMachinesIndexRoute
+  '/networks/': typeof AppNetworksIndexRoute
+  '/posture/': typeof AppPostureIndexRoute
+  '/relays/': typeof AppRelaysIndexRoute
+  '/serves/': typeof AppServesIndexRoute
+  '/settings/': typeof AppSettingsIndexRoute
+  '/ssh-sessions/': typeof AppSshSessionsIndexRoute
+  '/transfers/': typeof AppTransfersIndexRoute
+  '/tunnels/': typeof AppTunnelsIndexRoute
+  '/kubernetes/networks/$networkId': typeof AppKubernetesNetworksNetworkIdRoute
+  '/networks/$networkId/access': typeof AppNetworksNetworkIdAccessRoute
+  '/networks/$networkId/enrollment': typeof AppNetworksNetworkIdEnrollmentRoute
+  '/networks/$networkId/machines': typeof AppNetworksNetworkIdMachinesRoute
+  '/networks/$networkId/map': typeof AppNetworksNetworkIdMapRoute
+  '/networks/$networkId/policy': typeof AppNetworksNetworkIdPolicyRoute
+  '/networks/$networkId/routes': typeof AppNetworksNetworkIdRoutesRoute
+  '/networks/$networkId/': typeof AppNetworksNetworkIdIndexRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
   '/consent': typeof ConsentRoute
   '/login': typeof LoginRoute
+  '/access': typeof AppAccessRoute
+  '/logs': typeof AppLogsRoute
+  '/onboarding': typeof AppOnboardingRoute
+  '/organization': typeof AppOrganizationRoute
+  '/roles': typeof AppRolesRoute
+  '/tags': typeof AppTagsRoute
+  '/users': typeof AppUsersRoute
   '/accept-invitation/$invitationId': typeof AcceptInvitationInvitationIdRoute
-  '/app/access': typeof AppAccessRoute
-  '/app/logs': typeof AppLogsRoute
-  '/app/onboarding': typeof AppOnboardingRoute
-  '/app/organization': typeof AppOrganizationRoute
-  '/app/roles': typeof AppRolesRoute
-  '/app/tags': typeof AppTagsRoute
-  '/app/users': typeof AppUsersRoute
   '/auth/ssh': typeof AuthSshRoute
   '/device/approve': typeof DeviceApproveRoute
-  '/app': typeof AppIndexRoute
+  '/': typeof AppIndexRoute
   '/device': typeof DeviceIndexRoute
-  '/app/machines/$endpointId': typeof AppMachinesEndpointIdRoute
-  '/app/posture/compliance': typeof AppPostureComplianceRoute
-  '/app/posture/integrations': typeof AppPostureIntegrationsRoute
-  '/app/relays/$relayId': typeof AppRelaysRelayIdRoute
-  '/app/serves/$serveId': typeof AppServesServeIdRoute
-  '/app/tunnels/$tunnelId': typeof AppTunnelsTunnelIdRoute
-  '/app/kubernetes': typeof AppKubernetesIndexRoute
-  '/app/machines': typeof AppMachinesIndexRoute
-  '/app/networks': typeof AppNetworksIndexRoute
-  '/app/posture': typeof AppPostureIndexRoute
-  '/app/relays': typeof AppRelaysIndexRoute
-  '/app/serves': typeof AppServesIndexRoute
-  '/app/settings': typeof AppSettingsIndexRoute
-  '/app/ssh-sessions': typeof AppSshSessionsIndexRoute
-  '/app/transfers': typeof AppTransfersIndexRoute
-  '/app/tunnels': typeof AppTunnelsIndexRoute
-  '/app/kubernetes/networks/$networkId': typeof AppKubernetesNetworksNetworkIdRoute
-  '/app/networks/$networkId/access': typeof AppNetworksNetworkIdAccessRoute
-  '/app/networks/$networkId/enrollment': typeof AppNetworksNetworkIdEnrollmentRoute
-  '/app/networks/$networkId/machines': typeof AppNetworksNetworkIdMachinesRoute
-  '/app/networks/$networkId/map': typeof AppNetworksNetworkIdMapRoute
-  '/app/networks/$networkId/policy': typeof AppNetworksNetworkIdPolicyRoute
-  '/app/networks/$networkId/routes': typeof AppNetworksNetworkIdRoutesRoute
-  '/app/networks/$networkId': typeof AppNetworksNetworkIdIndexRoute
+  '/machines/$endpointId': typeof AppMachinesEndpointIdRoute
+  '/posture/compliance': typeof AppPostureComplianceRoute
+  '/posture/integrations': typeof AppPostureIntegrationsRoute
+  '/relays/$relayId': typeof AppRelaysRelayIdRoute
+  '/serves/$serveId': typeof AppServesServeIdRoute
+  '/tunnels/$tunnelId': typeof AppTunnelsTunnelIdRoute
+  '/kubernetes': typeof AppKubernetesIndexRoute
+  '/machines': typeof AppMachinesIndexRoute
+  '/networks': typeof AppNetworksIndexRoute
+  '/posture': typeof AppPostureIndexRoute
+  '/relays': typeof AppRelaysIndexRoute
+  '/serves': typeof AppServesIndexRoute
+  '/settings': typeof AppSettingsIndexRoute
+  '/ssh-sessions': typeof AppSshSessionsIndexRoute
+  '/transfers': typeof AppTransfersIndexRoute
+  '/tunnels': typeof AppTunnelsIndexRoute
+  '/kubernetes/networks/$networkId': typeof AppKubernetesNetworksNetworkIdRoute
+  '/networks/$networkId/access': typeof AppNetworksNetworkIdAccessRoute
+  '/networks/$networkId/enrollment': typeof AppNetworksNetworkIdEnrollmentRoute
+  '/networks/$networkId/machines': typeof AppNetworksNetworkIdMachinesRoute
+  '/networks/$networkId/map': typeof AppNetworksNetworkIdMapRoute
+  '/networks/$networkId/policy': typeof AppNetworksNetworkIdPolicyRoute
+  '/networks/$networkId/routes': typeof AppNetworksNetworkIdRoutesRoute
+  '/networks/$networkId': typeof AppNetworksNetworkIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
-  '/app': typeof AppRouteRouteWithChildren
+  '/_app': typeof AppRouteRouteWithChildren
   '/consent': typeof ConsentRoute
   '/login': typeof LoginRoute
-  '/app/settings': typeof AppSettingsRouteRouteWithChildren
+  '/_app/settings': typeof AppSettingsRouteRouteWithChildren
+  '/_app/access': typeof AppAccessRoute
+  '/_app/logs': typeof AppLogsRoute
+  '/_app/onboarding': typeof AppOnboardingRoute
+  '/_app/organization': typeof AppOrganizationRoute
+  '/_app/roles': typeof AppRolesRoute
+  '/_app/tags': typeof AppTagsRoute
+  '/_app/users': typeof AppUsersRoute
   '/accept-invitation/$invitationId': typeof AcceptInvitationInvitationIdRoute
-  '/app/access': typeof AppAccessRoute
-  '/app/logs': typeof AppLogsRoute
-  '/app/onboarding': typeof AppOnboardingRoute
-  '/app/organization': typeof AppOrganizationRoute
-  '/app/roles': typeof AppRolesRoute
-  '/app/tags': typeof AppTagsRoute
-  '/app/users': typeof AppUsersRoute
   '/auth/ssh': typeof AuthSshRoute
   '/device/approve': typeof DeviceApproveRoute
-  '/app/': typeof AppIndexRoute
+  '/_app/': typeof AppIndexRoute
   '/device/': typeof DeviceIndexRoute
-  '/app/networks/$networkId': typeof AppNetworksNetworkIdRouteRouteWithChildren
-  '/app/machines/$endpointId': typeof AppMachinesEndpointIdRoute
-  '/app/posture/compliance': typeof AppPostureComplianceRoute
-  '/app/posture/integrations': typeof AppPostureIntegrationsRoute
-  '/app/relays/$relayId': typeof AppRelaysRelayIdRoute
-  '/app/serves/$serveId': typeof AppServesServeIdRoute
-  '/app/tunnels/$tunnelId': typeof AppTunnelsTunnelIdRoute
-  '/app/kubernetes/': typeof AppKubernetesIndexRoute
-  '/app/machines/': typeof AppMachinesIndexRoute
-  '/app/networks/': typeof AppNetworksIndexRoute
-  '/app/posture/': typeof AppPostureIndexRoute
-  '/app/relays/': typeof AppRelaysIndexRoute
-  '/app/serves/': typeof AppServesIndexRoute
-  '/app/settings/': typeof AppSettingsIndexRoute
-  '/app/ssh-sessions/': typeof AppSshSessionsIndexRoute
-  '/app/transfers/': typeof AppTransfersIndexRoute
-  '/app/tunnels/': typeof AppTunnelsIndexRoute
-  '/app/kubernetes/networks/$networkId': typeof AppKubernetesNetworksNetworkIdRoute
-  '/app/networks/$networkId/access': typeof AppNetworksNetworkIdAccessRoute
-  '/app/networks/$networkId/enrollment': typeof AppNetworksNetworkIdEnrollmentRoute
-  '/app/networks/$networkId/machines': typeof AppNetworksNetworkIdMachinesRoute
-  '/app/networks/$networkId/map': typeof AppNetworksNetworkIdMapRoute
-  '/app/networks/$networkId/policy': typeof AppNetworksNetworkIdPolicyRoute
-  '/app/networks/$networkId/routes': typeof AppNetworksNetworkIdRoutesRoute
-  '/app/networks/$networkId/': typeof AppNetworksNetworkIdIndexRoute
+  '/_app/networks/$networkId': typeof AppNetworksNetworkIdRouteRouteWithChildren
+  '/_app/machines/$endpointId': typeof AppMachinesEndpointIdRoute
+  '/_app/posture/compliance': typeof AppPostureComplianceRoute
+  '/_app/posture/integrations': typeof AppPostureIntegrationsRoute
+  '/_app/relays/$relayId': typeof AppRelaysRelayIdRoute
+  '/_app/serves/$serveId': typeof AppServesServeIdRoute
+  '/_app/tunnels/$tunnelId': typeof AppTunnelsTunnelIdRoute
+  '/_app/kubernetes/': typeof AppKubernetesIndexRoute
+  '/_app/machines/': typeof AppMachinesIndexRoute
+  '/_app/networks/': typeof AppNetworksIndexRoute
+  '/_app/posture/': typeof AppPostureIndexRoute
+  '/_app/relays/': typeof AppRelaysIndexRoute
+  '/_app/serves/': typeof AppServesIndexRoute
+  '/_app/settings/': typeof AppSettingsIndexRoute
+  '/_app/ssh-sessions/': typeof AppSshSessionsIndexRoute
+  '/_app/transfers/': typeof AppTransfersIndexRoute
+  '/_app/tunnels/': typeof AppTunnelsIndexRoute
+  '/_app/kubernetes/networks/$networkId': typeof AppKubernetesNetworksNetworkIdRoute
+  '/_app/networks/$networkId/access': typeof AppNetworksNetworkIdAccessRoute
+  '/_app/networks/$networkId/enrollment': typeof AppNetworksNetworkIdEnrollmentRoute
+  '/_app/networks/$networkId/machines': typeof AppNetworksNetworkIdMachinesRoute
+  '/_app/networks/$networkId/map': typeof AppNetworksNetworkIdMapRoute
+  '/_app/networks/$networkId/policy': typeof AppNetworksNetworkIdPolicyRoute
+  '/_app/networks/$networkId/routes': typeof AppNetworksNetworkIdRoutesRoute
+  '/_app/networks/$networkId/': typeof AppNetworksNetworkIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/app'
     | '/consent'
     | '/login'
-    | '/app/settings'
+    | '/settings'
+    | '/access'
+    | '/logs'
+    | '/onboarding'
+    | '/organization'
+    | '/roles'
+    | '/tags'
+    | '/users'
     | '/accept-invitation/$invitationId'
-    | '/app/access'
-    | '/app/logs'
-    | '/app/onboarding'
-    | '/app/organization'
-    | '/app/roles'
-    | '/app/tags'
-    | '/app/users'
     | '/auth/ssh'
     | '/device/approve'
-    | '/app/'
     | '/device/'
-    | '/app/networks/$networkId'
-    | '/app/machines/$endpointId'
-    | '/app/posture/compliance'
-    | '/app/posture/integrations'
-    | '/app/relays/$relayId'
-    | '/app/serves/$serveId'
-    | '/app/tunnels/$tunnelId'
-    | '/app/kubernetes/'
-    | '/app/machines/'
-    | '/app/networks/'
-    | '/app/posture/'
-    | '/app/relays/'
-    | '/app/serves/'
-    | '/app/settings/'
-    | '/app/ssh-sessions/'
-    | '/app/transfers/'
-    | '/app/tunnels/'
-    | '/app/kubernetes/networks/$networkId'
-    | '/app/networks/$networkId/access'
-    | '/app/networks/$networkId/enrollment'
-    | '/app/networks/$networkId/machines'
-    | '/app/networks/$networkId/map'
-    | '/app/networks/$networkId/policy'
-    | '/app/networks/$networkId/routes'
-    | '/app/networks/$networkId/'
+    | '/networks/$networkId'
+    | '/machines/$endpointId'
+    | '/posture/compliance'
+    | '/posture/integrations'
+    | '/relays/$relayId'
+    | '/serves/$serveId'
+    | '/tunnels/$tunnelId'
+    | '/kubernetes/'
+    | '/machines/'
+    | '/networks/'
+    | '/posture/'
+    | '/relays/'
+    | '/serves/'
+    | '/settings/'
+    | '/ssh-sessions/'
+    | '/transfers/'
+    | '/tunnels/'
+    | '/kubernetes/networks/$networkId'
+    | '/networks/$networkId/access'
+    | '/networks/$networkId/enrollment'
+    | '/networks/$networkId/machines'
+    | '/networks/$networkId/map'
+    | '/networks/$networkId/policy'
+    | '/networks/$networkId/routes'
+    | '/networks/$networkId/'
   fileRoutesByTo: FileRoutesByTo
   to:
-    | '/'
     | '/consent'
     | '/login'
+    | '/access'
+    | '/logs'
+    | '/onboarding'
+    | '/organization'
+    | '/roles'
+    | '/tags'
+    | '/users'
     | '/accept-invitation/$invitationId'
-    | '/app/access'
-    | '/app/logs'
-    | '/app/onboarding'
-    | '/app/organization'
-    | '/app/roles'
-    | '/app/tags'
-    | '/app/users'
     | '/auth/ssh'
     | '/device/approve'
-    | '/app'
+    | '/'
     | '/device'
-    | '/app/machines/$endpointId'
-    | '/app/posture/compliance'
-    | '/app/posture/integrations'
-    | '/app/relays/$relayId'
-    | '/app/serves/$serveId'
-    | '/app/tunnels/$tunnelId'
-    | '/app/kubernetes'
-    | '/app/machines'
-    | '/app/networks'
-    | '/app/posture'
-    | '/app/relays'
-    | '/app/serves'
-    | '/app/settings'
-    | '/app/ssh-sessions'
-    | '/app/transfers'
-    | '/app/tunnels'
-    | '/app/kubernetes/networks/$networkId'
-    | '/app/networks/$networkId/access'
-    | '/app/networks/$networkId/enrollment'
-    | '/app/networks/$networkId/machines'
-    | '/app/networks/$networkId/map'
-    | '/app/networks/$networkId/policy'
-    | '/app/networks/$networkId/routes'
-    | '/app/networks/$networkId'
+    | '/machines/$endpointId'
+    | '/posture/compliance'
+    | '/posture/integrations'
+    | '/relays/$relayId'
+    | '/serves/$serveId'
+    | '/tunnels/$tunnelId'
+    | '/kubernetes'
+    | '/machines'
+    | '/networks'
+    | '/posture'
+    | '/relays'
+    | '/serves'
+    | '/settings'
+    | '/ssh-sessions'
+    | '/transfers'
+    | '/tunnels'
+    | '/kubernetes/networks/$networkId'
+    | '/networks/$networkId/access'
+    | '/networks/$networkId/enrollment'
+    | '/networks/$networkId/machines'
+    | '/networks/$networkId/map'
+    | '/networks/$networkId/policy'
+    | '/networks/$networkId/routes'
+    | '/networks/$networkId'
   id:
     | '__root__'
-    | '/'
-    | '/app'
+    | '/_app'
     | '/consent'
     | '/login'
-    | '/app/settings'
+    | '/_app/settings'
+    | '/_app/access'
+    | '/_app/logs'
+    | '/_app/onboarding'
+    | '/_app/organization'
+    | '/_app/roles'
+    | '/_app/tags'
+    | '/_app/users'
     | '/accept-invitation/$invitationId'
-    | '/app/access'
-    | '/app/logs'
-    | '/app/onboarding'
-    | '/app/organization'
-    | '/app/roles'
-    | '/app/tags'
-    | '/app/users'
     | '/auth/ssh'
     | '/device/approve'
-    | '/app/'
+    | '/_app/'
     | '/device/'
-    | '/app/networks/$networkId'
-    | '/app/machines/$endpointId'
-    | '/app/posture/compliance'
-    | '/app/posture/integrations'
-    | '/app/relays/$relayId'
-    | '/app/serves/$serveId'
-    | '/app/tunnels/$tunnelId'
-    | '/app/kubernetes/'
-    | '/app/machines/'
-    | '/app/networks/'
-    | '/app/posture/'
-    | '/app/relays/'
-    | '/app/serves/'
-    | '/app/settings/'
-    | '/app/ssh-sessions/'
-    | '/app/transfers/'
-    | '/app/tunnels/'
-    | '/app/kubernetes/networks/$networkId'
-    | '/app/networks/$networkId/access'
-    | '/app/networks/$networkId/enrollment'
-    | '/app/networks/$networkId/machines'
-    | '/app/networks/$networkId/map'
-    | '/app/networks/$networkId/policy'
-    | '/app/networks/$networkId/routes'
-    | '/app/networks/$networkId/'
+    | '/_app/networks/$networkId'
+    | '/_app/machines/$endpointId'
+    | '/_app/posture/compliance'
+    | '/_app/posture/integrations'
+    | '/_app/relays/$relayId'
+    | '/_app/serves/$serveId'
+    | '/_app/tunnels/$tunnelId'
+    | '/_app/kubernetes/'
+    | '/_app/machines/'
+    | '/_app/networks/'
+    | '/_app/posture/'
+    | '/_app/relays/'
+    | '/_app/serves/'
+    | '/_app/settings/'
+    | '/_app/ssh-sessions/'
+    | '/_app/transfers/'
+    | '/_app/tunnels/'
+    | '/_app/kubernetes/networks/$networkId'
+    | '/_app/networks/$networkId/access'
+    | '/_app/networks/$networkId/enrollment'
+    | '/_app/networks/$networkId/machines'
+    | '/_app/networks/$networkId/map'
+    | '/_app/networks/$networkId/policy'
+    | '/_app/networks/$networkId/routes'
+    | '/_app/networks/$networkId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
   AppRouteRoute: typeof AppRouteRouteWithChildren
   ConsentRoute: typeof ConsentRoute
   LoginRoute: typeof LoginRoute
@@ -547,17 +531,10 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
-      path: '/'
+    '/_app': {
+      id: '/_app'
+      path: ''
       fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/app': {
-      id: '/app'
-      path: '/app'
-      fullPath: '/app'
       preLoaderRoute: typeof AppRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
@@ -575,75 +552,75 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_app/': {
+      id: '/_app/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRouteRoute
+    }
+    '/_app/access': {
+      id: '/_app/access'
+      path: '/access'
+      fullPath: '/access'
+      preLoaderRoute: typeof AppAccessRouteImport
+      parentRoute: typeof AppRouteRoute
+    }
+    '/_app/logs': {
+      id: '/_app/logs'
+      path: '/logs'
+      fullPath: '/logs'
+      preLoaderRoute: typeof AppLogsRouteImport
+      parentRoute: typeof AppRouteRoute
+    }
+    '/_app/onboarding': {
+      id: '/_app/onboarding'
+      path: '/onboarding'
+      fullPath: '/onboarding'
+      preLoaderRoute: typeof AppOnboardingRouteImport
+      parentRoute: typeof AppRouteRoute
+    }
+    '/_app/organization': {
+      id: '/_app/organization'
+      path: '/organization'
+      fullPath: '/organization'
+      preLoaderRoute: typeof AppOrganizationRouteImport
+      parentRoute: typeof AppRouteRoute
+    }
+    '/_app/roles': {
+      id: '/_app/roles'
+      path: '/roles'
+      fullPath: '/roles'
+      preLoaderRoute: typeof AppRolesRouteImport
+      parentRoute: typeof AppRouteRoute
+    }
+    '/_app/settings': {
+      id: '/_app/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof AppSettingsRouteRouteImport
+      parentRoute: typeof AppRouteRoute
+    }
+    '/_app/tags': {
+      id: '/_app/tags'
+      path: '/tags'
+      fullPath: '/tags'
+      preLoaderRoute: typeof AppTagsRouteImport
+      parentRoute: typeof AppRouteRoute
+    }
+    '/_app/users': {
+      id: '/_app/users'
+      path: '/users'
+      fullPath: '/users'
+      preLoaderRoute: typeof AppUsersRouteImport
+      parentRoute: typeof AppRouteRoute
+    }
     '/accept-invitation/$invitationId': {
       id: '/accept-invitation/$invitationId'
       path: '/accept-invitation/$invitationId'
       fullPath: '/accept-invitation/$invitationId'
       preLoaderRoute: typeof AcceptInvitationInvitationIdRouteImport
       parentRoute: typeof rootRouteImport
-    }
-    '/app/': {
-      id: '/app/'
-      path: '/'
-      fullPath: '/app/'
-      preLoaderRoute: typeof AppIndexRouteImport
-      parentRoute: typeof AppRouteRoute
-    }
-    '/app/access': {
-      id: '/app/access'
-      path: '/access'
-      fullPath: '/app/access'
-      preLoaderRoute: typeof AppAccessRouteImport
-      parentRoute: typeof AppRouteRoute
-    }
-    '/app/logs': {
-      id: '/app/logs'
-      path: '/logs'
-      fullPath: '/app/logs'
-      preLoaderRoute: typeof AppLogsRouteImport
-      parentRoute: typeof AppRouteRoute
-    }
-    '/app/onboarding': {
-      id: '/app/onboarding'
-      path: '/onboarding'
-      fullPath: '/app/onboarding'
-      preLoaderRoute: typeof AppOnboardingRouteImport
-      parentRoute: typeof AppRouteRoute
-    }
-    '/app/organization': {
-      id: '/app/organization'
-      path: '/organization'
-      fullPath: '/app/organization'
-      preLoaderRoute: typeof AppOrganizationRouteImport
-      parentRoute: typeof AppRouteRoute
-    }
-    '/app/roles': {
-      id: '/app/roles'
-      path: '/roles'
-      fullPath: '/app/roles'
-      preLoaderRoute: typeof AppRolesRouteImport
-      parentRoute: typeof AppRouteRoute
-    }
-    '/app/settings': {
-      id: '/app/settings'
-      path: '/settings'
-      fullPath: '/app/settings'
-      preLoaderRoute: typeof AppSettingsRouteRouteImport
-      parentRoute: typeof AppRouteRoute
-    }
-    '/app/tags': {
-      id: '/app/tags'
-      path: '/tags'
-      fullPath: '/app/tags'
-      preLoaderRoute: typeof AppTagsRouteImport
-      parentRoute: typeof AppRouteRoute
-    }
-    '/app/users': {
-      id: '/app/users'
-      path: '/users'
-      fullPath: '/app/users'
-      preLoaderRoute: typeof AppUsersRouteImport
-      parentRoute: typeof AppRouteRoute
     }
     '/auth/ssh': {
       id: '/auth/ssh'
@@ -666,178 +643,178 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DeviceApproveRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/app/kubernetes/': {
-      id: '/app/kubernetes/'
+    '/_app/kubernetes/': {
+      id: '/_app/kubernetes/'
       path: '/kubernetes'
-      fullPath: '/app/kubernetes/'
+      fullPath: '/kubernetes/'
       preLoaderRoute: typeof AppKubernetesIndexRouteImport
       parentRoute: typeof AppRouteRoute
     }
-    '/app/machines/': {
-      id: '/app/machines/'
+    '/_app/machines/': {
+      id: '/_app/machines/'
       path: '/machines'
-      fullPath: '/app/machines/'
+      fullPath: '/machines/'
       preLoaderRoute: typeof AppMachinesIndexRouteImport
       parentRoute: typeof AppRouteRoute
     }
-    '/app/machines/$endpointId': {
-      id: '/app/machines/$endpointId'
+    '/_app/machines/$endpointId': {
+      id: '/_app/machines/$endpointId'
       path: '/machines/$endpointId'
-      fullPath: '/app/machines/$endpointId'
+      fullPath: '/machines/$endpointId'
       preLoaderRoute: typeof AppMachinesEndpointIdRouteImport
       parentRoute: typeof AppRouteRoute
     }
-    '/app/networks/': {
-      id: '/app/networks/'
+    '/_app/networks/': {
+      id: '/_app/networks/'
       path: '/networks'
-      fullPath: '/app/networks/'
+      fullPath: '/networks/'
       preLoaderRoute: typeof AppNetworksIndexRouteImport
       parentRoute: typeof AppRouteRoute
     }
-    '/app/networks/$networkId': {
-      id: '/app/networks/$networkId'
+    '/_app/networks/$networkId': {
+      id: '/_app/networks/$networkId'
       path: '/networks/$networkId'
-      fullPath: '/app/networks/$networkId'
+      fullPath: '/networks/$networkId'
       preLoaderRoute: typeof AppNetworksNetworkIdRouteRouteImport
       parentRoute: typeof AppRouteRoute
     }
-    '/app/posture/': {
-      id: '/app/posture/'
+    '/_app/posture/': {
+      id: '/_app/posture/'
       path: '/posture'
-      fullPath: '/app/posture/'
+      fullPath: '/posture/'
       preLoaderRoute: typeof AppPostureIndexRouteImport
       parentRoute: typeof AppRouteRoute
     }
-    '/app/posture/compliance': {
-      id: '/app/posture/compliance'
+    '/_app/posture/compliance': {
+      id: '/_app/posture/compliance'
       path: '/posture/compliance'
-      fullPath: '/app/posture/compliance'
+      fullPath: '/posture/compliance'
       preLoaderRoute: typeof AppPostureComplianceRouteImport
       parentRoute: typeof AppRouteRoute
     }
-    '/app/posture/integrations': {
-      id: '/app/posture/integrations'
+    '/_app/posture/integrations': {
+      id: '/_app/posture/integrations'
       path: '/posture/integrations'
-      fullPath: '/app/posture/integrations'
+      fullPath: '/posture/integrations'
       preLoaderRoute: typeof AppPostureIntegrationsRouteImport
       parentRoute: typeof AppRouteRoute
     }
-    '/app/relays/': {
-      id: '/app/relays/'
+    '/_app/relays/': {
+      id: '/_app/relays/'
       path: '/relays'
-      fullPath: '/app/relays/'
+      fullPath: '/relays/'
       preLoaderRoute: typeof AppRelaysIndexRouteImport
       parentRoute: typeof AppRouteRoute
     }
-    '/app/relays/$relayId': {
-      id: '/app/relays/$relayId'
+    '/_app/relays/$relayId': {
+      id: '/_app/relays/$relayId'
       path: '/relays/$relayId'
-      fullPath: '/app/relays/$relayId'
+      fullPath: '/relays/$relayId'
       preLoaderRoute: typeof AppRelaysRelayIdRouteImport
       parentRoute: typeof AppRouteRoute
     }
-    '/app/serves/': {
-      id: '/app/serves/'
+    '/_app/serves/': {
+      id: '/_app/serves/'
       path: '/serves'
-      fullPath: '/app/serves/'
+      fullPath: '/serves/'
       preLoaderRoute: typeof AppServesIndexRouteImport
       parentRoute: typeof AppRouteRoute
     }
-    '/app/serves/$serveId': {
-      id: '/app/serves/$serveId'
+    '/_app/serves/$serveId': {
+      id: '/_app/serves/$serveId'
       path: '/serves/$serveId'
-      fullPath: '/app/serves/$serveId'
+      fullPath: '/serves/$serveId'
       preLoaderRoute: typeof AppServesServeIdRouteImport
       parentRoute: typeof AppRouteRoute
     }
-    '/app/settings/': {
-      id: '/app/settings/'
+    '/_app/settings/': {
+      id: '/_app/settings/'
       path: '/'
-      fullPath: '/app/settings/'
+      fullPath: '/settings/'
       preLoaderRoute: typeof AppSettingsIndexRouteImport
       parentRoute: typeof AppSettingsRouteRoute
     }
-    '/app/ssh-sessions/': {
-      id: '/app/ssh-sessions/'
+    '/_app/ssh-sessions/': {
+      id: '/_app/ssh-sessions/'
       path: '/ssh-sessions'
-      fullPath: '/app/ssh-sessions/'
+      fullPath: '/ssh-sessions/'
       preLoaderRoute: typeof AppSshSessionsIndexRouteImport
       parentRoute: typeof AppRouteRoute
     }
-    '/app/transfers/': {
-      id: '/app/transfers/'
+    '/_app/transfers/': {
+      id: '/_app/transfers/'
       path: '/transfers'
-      fullPath: '/app/transfers/'
+      fullPath: '/transfers/'
       preLoaderRoute: typeof AppTransfersIndexRouteImport
       parentRoute: typeof AppRouteRoute
     }
-    '/app/tunnels/': {
-      id: '/app/tunnels/'
+    '/_app/tunnels/': {
+      id: '/_app/tunnels/'
       path: '/tunnels'
-      fullPath: '/app/tunnels/'
+      fullPath: '/tunnels/'
       preLoaderRoute: typeof AppTunnelsIndexRouteImport
       parentRoute: typeof AppRouteRoute
     }
-    '/app/tunnels/$tunnelId': {
-      id: '/app/tunnels/$tunnelId'
+    '/_app/tunnels/$tunnelId': {
+      id: '/_app/tunnels/$tunnelId'
       path: '/tunnels/$tunnelId'
-      fullPath: '/app/tunnels/$tunnelId'
+      fullPath: '/tunnels/$tunnelId'
       preLoaderRoute: typeof AppTunnelsTunnelIdRouteImport
       parentRoute: typeof AppRouteRoute
     }
-    '/app/kubernetes/networks/$networkId': {
-      id: '/app/kubernetes/networks/$networkId'
+    '/_app/kubernetes/networks/$networkId': {
+      id: '/_app/kubernetes/networks/$networkId'
       path: '/kubernetes/networks/$networkId'
-      fullPath: '/app/kubernetes/networks/$networkId'
+      fullPath: '/kubernetes/networks/$networkId'
       preLoaderRoute: typeof AppKubernetesNetworksNetworkIdRouteImport
       parentRoute: typeof AppRouteRoute
     }
-    '/app/networks/$networkId/': {
-      id: '/app/networks/$networkId/'
+    '/_app/networks/$networkId/': {
+      id: '/_app/networks/$networkId/'
       path: '/'
-      fullPath: '/app/networks/$networkId/'
+      fullPath: '/networks/$networkId/'
       preLoaderRoute: typeof AppNetworksNetworkIdIndexRouteImport
       parentRoute: typeof AppNetworksNetworkIdRouteRoute
     }
-    '/app/networks/$networkId/access': {
-      id: '/app/networks/$networkId/access'
+    '/_app/networks/$networkId/access': {
+      id: '/_app/networks/$networkId/access'
       path: '/access'
-      fullPath: '/app/networks/$networkId/access'
+      fullPath: '/networks/$networkId/access'
       preLoaderRoute: typeof AppNetworksNetworkIdAccessRouteImport
       parentRoute: typeof AppNetworksNetworkIdRouteRoute
     }
-    '/app/networks/$networkId/enrollment': {
-      id: '/app/networks/$networkId/enrollment'
+    '/_app/networks/$networkId/enrollment': {
+      id: '/_app/networks/$networkId/enrollment'
       path: '/enrollment'
-      fullPath: '/app/networks/$networkId/enrollment'
+      fullPath: '/networks/$networkId/enrollment'
       preLoaderRoute: typeof AppNetworksNetworkIdEnrollmentRouteImport
       parentRoute: typeof AppNetworksNetworkIdRouteRoute
     }
-    '/app/networks/$networkId/machines': {
-      id: '/app/networks/$networkId/machines'
+    '/_app/networks/$networkId/machines': {
+      id: '/_app/networks/$networkId/machines'
       path: '/machines'
-      fullPath: '/app/networks/$networkId/machines'
+      fullPath: '/networks/$networkId/machines'
       preLoaderRoute: typeof AppNetworksNetworkIdMachinesRouteImport
       parentRoute: typeof AppNetworksNetworkIdRouteRoute
     }
-    '/app/networks/$networkId/map': {
-      id: '/app/networks/$networkId/map'
+    '/_app/networks/$networkId/map': {
+      id: '/_app/networks/$networkId/map'
       path: '/map'
-      fullPath: '/app/networks/$networkId/map'
+      fullPath: '/networks/$networkId/map'
       preLoaderRoute: typeof AppNetworksNetworkIdMapRouteImport
       parentRoute: typeof AppNetworksNetworkIdRouteRoute
     }
-    '/app/networks/$networkId/policy': {
-      id: '/app/networks/$networkId/policy'
+    '/_app/networks/$networkId/policy': {
+      id: '/_app/networks/$networkId/policy'
       path: '/policy'
-      fullPath: '/app/networks/$networkId/policy'
+      fullPath: '/networks/$networkId/policy'
       preLoaderRoute: typeof AppNetworksNetworkIdPolicyRouteImport
       parentRoute: typeof AppNetworksNetworkIdRouteRoute
     }
-    '/app/networks/$networkId/routes': {
-      id: '/app/networks/$networkId/routes'
+    '/_app/networks/$networkId/routes': {
+      id: '/_app/networks/$networkId/routes'
       path: '/routes'
-      fullPath: '/app/networks/$networkId/routes'
+      fullPath: '/networks/$networkId/routes'
       preLoaderRoute: typeof AppNetworksNetworkIdRoutesRouteImport
       parentRoute: typeof AppNetworksNetworkIdRouteRoute
     }
@@ -944,7 +921,6 @@ const AppRouteRouteWithChildren = AppRouteRoute._addFileChildren(
 )
 
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
   AppRouteRoute: AppRouteRouteWithChildren,
   ConsentRoute: ConsentRoute,
   LoginRoute: LoginRoute,
