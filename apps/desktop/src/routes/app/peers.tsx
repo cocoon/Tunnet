@@ -11,6 +11,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useApp } from "@/lib/app-context";
 import { useDirectNetwork } from "@/lib/direct-network-context";
 import { api } from "@/lib/invoke";
@@ -29,9 +37,10 @@ function PeersPage() {
   const networkName = activeNetwork?.network_name;
   const isDirect = meta?.mode === "direct";
   const canAdmit = hasPermission("network.admit");
+  const canInvite = isDirect && activeNetwork?.role === "coordinator";
 
   const effectiveNetworkId = isDirect
-    ? networkId
+    ? (activeNetwork?.network_id ?? networkId)
     : (node?.networks.find((n) => n.mode === "managed")?.network_id ?? "");
 
   const [peers, setPeers] = useState<PeerSummary[]>([]);
@@ -94,33 +103,54 @@ function PeersPage() {
 
   return (
     <div className="mx-auto w-full max-w-4xl space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Devices</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          People and machines on your network.
-        </p>
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold tracking-tight">Devices</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            People and machines on your network.
+          </p>
+        </div>
+        {canInvite ? (
+          <Button
+            className="shrink-0"
+            disabled={busy}
+            onClick={() => void createInvite()}
+          >
+            {busy ? "Creating…" : "Invite device"}
+          </Button>
+        ) : null}
       </div>
 
       {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
-      {isDirect ? (
-        <div className="flex flex-wrap items-center gap-3">
-          <CapabilityGate permission="network.invite">
-            <Button
-              disabled={busy || !networkId}
-              onClick={() => void createInvite()}
-            >
-              {busy ? "Creating…" : "Invite device"}
-            </Button>
-          </CapabilityGate>
-          {inviteCode ? (
-            <div className="flex items-center gap-1 rounded-md border bg-muted px-2 py-1">
-              <code className="font-mono text-sm">{inviteCode}</code>
+      <Dialog
+        open={inviteCode != null}
+        onOpenChange={(open) => {
+          if (!open) setInviteCode(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Invite code</DialogTitle>
+            <DialogDescription>
+              Share this code with the device you want to join.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center gap-2 rounded-lg border bg-muted/50 px-3 py-3">
+            <code className="min-w-0 flex-1 break-all font-mono text-sm">
+              {inviteCode}
+            </code>
+            {inviteCode ? (
               <CopyButton value={inviteCode} label="Invite code" />
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setInviteCode(null)}>
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {isDirect && requests.length > 0 ? (
         <Card>

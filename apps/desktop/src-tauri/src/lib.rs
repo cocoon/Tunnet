@@ -457,10 +457,8 @@ async fn service_restart() -> Result<OkResponse, String> {
 }
 
 #[tauri::command]
-fn service_install_and_start() -> Result<(), String> {
-    tunnet_service::ensure_admin().map_err(|e| e.to_string())?;
-    tunnet_service::install(None).map_err(|e| e.to_string())?;
-    tunnet_service::start(None).map_err(|e| e.to_string())
+async fn service_install_and_start() -> Result<OkResponse, String> {
+    elevated_rpc::run_elevated_op(elevated_rpc::ElevatedOp::ServiceInstallAndStart).await
 }
 
 #[tauri::command]
@@ -514,22 +512,11 @@ struct InstallResult {
 }
 
 #[cfg(windows)]
-fn default_install_dir() -> std::path::PathBuf {
+fn service_bin_dir() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("TUNNET_INSTALL_DIR") {
         return std::path::PathBuf::from(dir);
     }
-    let program_files =
-        std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
-    std::path::PathBuf::from(program_files).join("Tunnet")
-}
-
-#[cfg(windows)]
-fn resolve_install_dir() -> std::path::PathBuf {
-    let default = default_install_dir();
-    if default.join("tunnetd.exe").is_file() {
-        return default;
-    }
-    default
+    tunnet_service::installed_bin_dir(None)
 }
 
 fn find_file_recursive(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
@@ -591,17 +578,32 @@ fn append_machine_path(dir: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Register SCM against the staged daemon in `install_dir` (ProgramData bin).
+/// Runs `tunnet.exe service install|start` from that directory so staging and
+/// PathName stay unified.
 #[cfg(windows)]
 fn install_service_from_dir(install_dir: &std::path::Path) -> Result<(), String> {
     let tunnet = install_dir.join("tunnet.exe");
     if !tunnet.is_file() {
         return Err(format!("tunnet.exe not found in {}", install_dir.display()));
     }
+    let daemon = install_dir.join("tunnetd.exe");
+    if !daemon.is_file() {
+        return Err(format!(
+            "tunnetd.exe not found in {}",
+            install_dir.display()
+        ));
+    }
 
-    tunnet_service::ensure_admin().map_err(|e| e.to_string())?;
+    // Prefer elevated_rpc path when called from Tauri commands; this helper is
+    // used from install_daemon_from_github which may already be elevated.
+    if !tunnet_service::is_admin() {
+        return Err("administrator required to install the Tunnet service".into());
+    }
 
     let install = std::process::Command::new(&tunnet)
         .args(["service", "install"])
+        .current_dir(install_dir)
         .status()
         .map_err(|e| e.to_string())?;
     if !install.success() {
@@ -610,6 +612,7 @@ fn install_service_from_dir(install_dir: &std::path::Path) -> Result<(), String>
 
     let start = std::process::Command::new(&tunnet)
         .args(["service", "start"])
+        .current_dir(install_dir)
         .status()
         .map_err(|e| e.to_string())?;
     if !start.success() {
@@ -706,21 +709,40 @@ async fn install_daemon_from_github(app: AppHandle) -> Result<InstallResult, Str
 
     #[cfg(windows)]
     {
-        let install_dir = resolve_install_dir();
+        // Stage into %ProgramData%\tunnet\bin - the only active daemon location.
+        let install_dir = service_bin_dir();
         let _ = tunnet_service::stop(None);
         copy_release_binaries(&temp_dir, &install_dir)?;
-        if tunnet_service::ensure_admin().is_ok() {
-            let _ = append_machine_path(&install_dir);
-        }
 
-        if install_service_from_dir(&install_dir).is_ok() {
-            return Ok(InstallResult {
-                message: format!(
-                    "Installed to {} and started the Tunnet service",
-                    install_dir.display()
-                ),
-                opened_releases: false,
-            });
+        let elevated =
+            elevated_rpc::run_elevated_op(elevated_rpc::ElevatedOp::InstallServiceFromDir {
+                dir: install_dir.display().to_string(),
+            })
+            .await;
+        match elevated {
+            Ok(_) => {
+                let _ = append_machine_path(&install_dir);
+                return Ok(InstallResult {
+                    message: format!(
+                        "Installed to {} and started the Tunnet service",
+                        install_dir.display()
+                    ),
+                    opened_releases: false,
+                });
+            }
+            Err(_) => {
+                // Fall through: try direct install if already admin, else open releases.
+                if tunnet_service::is_admin() && install_service_from_dir(&install_dir).is_ok() {
+                    let _ = append_machine_path(&install_dir);
+                    return Ok(InstallResult {
+                        message: format!(
+                            "Installed to {} and started the Tunnet service",
+                            install_dir.display()
+                        ),
+                        opened_releases: false,
+                    });
+                }
+            }
         }
     }
 

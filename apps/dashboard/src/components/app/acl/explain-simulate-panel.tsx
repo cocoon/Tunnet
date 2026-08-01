@@ -1,12 +1,20 @@
 import type { Policy } from "@tunnet/api/management";
 import {
   documentFromRows,
+  resolveSimulationSelector,
+  SelectorParseError,
   type SimulateReason,
   type SimulateResult,
+  selectorToString,
   simulateDocument,
 } from "@tunnet/policy-engine";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+import type { EndpointLabelMap } from "@/components/app/acl/policy-labels";
+import {
+  buildPolicySelector,
+  PolicySelectorFields,
+} from "@/components/app/policy-selector-fields";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -47,32 +55,53 @@ function reasonInEnglish(
   }
 }
 
-function normalizeSelectorInput(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed || trimmed === "*" || trimmed.toLowerCase() === "any") {
-    return "*";
-  }
-  return trimmed;
+function selectorFieldToRaw(kind: string, value: string): string {
+  return selectorToString(buildPolicySelector(kind, value));
+}
+
+function isSelectorReady(kind: string, value: string): boolean {
+  if (kind === "any") return true;
+  return value.trim().length > 0;
 }
 
 export function ExplainSimulatePanel({
+  orgId,
+  networkId,
   orgPolicies,
   networkPolicies,
   defaultAction,
   icmpPolicy = "allow",
+  endpointLabels,
   className,
 }: {
+  orgId?: string;
+  networkId?: string;
   orgPolicies: Policy[];
   networkPolicies: Policy[];
   defaultAction: "allow" | "deny";
   icmpPolicy?: "allow" | "acl" | "deny";
+  endpointLabels?: EndpointLabelMap;
   className?: string;
 }) {
-  const [src, setSrc] = useState("*");
-  const [dst, setDst] = useState("*");
+  const [srcKind, setSrcKind] = useState("any");
+  const [srcValue, setSrcValue] = useState("");
+  const [dstKind, setDstKind] = useState("any");
+  const [dstValue, setDstValue] = useState("");
   const [protocol, setProtocol] = useState("tcp");
   const [port, setPort] = useState("80");
   const [result, setResult] = useState<SimulateResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const endpointEntries = useMemo(
+    () =>
+      [...(endpointLabels ?? new Map()).entries()].map(
+        ([endpointId, name]) => ({
+          endpointId,
+          name,
+        }),
+      ),
+    [endpointLabels],
+  );
 
   const doc = useMemo(
     () =>
@@ -104,16 +133,78 @@ export function ExplainSimulatePanel({
     [orgPolicies, networkPolicies, defaultAction, icmpPolicy],
   );
 
+  const policyResetKey = useMemo(
+    () =>
+      [
+        defaultAction,
+        icmpPolicy,
+        ...orgPolicies.map(
+          (p) => `${p.id}:${p.orderIndex}:${p.enabled}:${p.action}`,
+        ),
+        ...networkPolicies.map(
+          (p) => `${p.id}:${p.orderIndex}:${p.enabled}:${p.action}`,
+        ),
+      ].join("|"),
+    [orgPolicies, networkPolicies, defaultAction, icmpPolicy],
+  );
+
+  const scenarioResetKey = [
+    srcKind,
+    srcValue,
+    dstKind,
+    dstValue,
+    protocol,
+    port,
+  ].join("|");
+
+  useEffect(() => {
+    setResult(null);
+    setError(null);
+    void policyResetKey;
+    void scenarioResetKey;
+  }, [policyResetKey, scenarioResetKey]);
+
   function runSimulate() {
-    const portNum = Number(port);
-    const next = simulateDocument(doc, {
-      src: normalizeSelectorInput(src),
-      dst: normalizeSelectorInput(dst),
-      protocol,
-      port: protocol === "icmp" || Number.isNaN(portNum) ? undefined : portNum,
-      srcPostureOk: true,
-    });
-    setResult(next);
+    setError(null);
+    setResult(null);
+
+    if (!isSelectorReady(srcKind, srcValue)) {
+      setError("Choose a complete source selector.");
+      return;
+    }
+    if (!isSelectorReady(dstKind, dstValue)) {
+      setError("Choose a complete destination selector.");
+      return;
+    }
+
+    try {
+      const srcRaw = resolveSimulationSelector(
+        selectorFieldToRaw(srcKind, srcValue),
+        endpointEntries,
+      );
+      const dstRaw = resolveSimulationSelector(
+        selectorFieldToRaw(dstKind, dstValue),
+        endpointEntries,
+      );
+      const portNum = Number(port);
+      const next = simulateDocument(doc, {
+        src: srcRaw,
+        dst: dstRaw,
+        protocol,
+        port:
+          protocol === "icmp" || Number.isNaN(portNum) ? undefined : portNum,
+        srcPostureOk: true,
+      });
+      setResult(next);
+    } catch (err) {
+      const message =
+        err instanceof SelectorParseError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Simulation failed";
+      setError(message);
+    }
   }
 
   return (
@@ -126,24 +217,30 @@ export function ExplainSimulatePanel({
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-2">
-          <Label htmlFor="sim-src">Source</Label>
-          <Input
-            id="sim-src"
-            value={src}
-            onChange={(e) => setSrc(e.target.value)}
-            placeholder="tag:eng or endpoint id"
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="sim-dst">Destination</Label>
-          <Input
-            id="sim-dst"
-            value={dst}
-            onChange={(e) => setDst(e.target.value)}
-            placeholder="tag:db or endpoint id"
-          />
-        </div>
+        <PolicySelectorFields
+          orgId={orgId}
+          networkId={networkId}
+          label="Source"
+          kind={srcKind}
+          value={srcValue}
+          onKindChange={(kind) => {
+            setSrcKind(kind);
+            setSrcValue("");
+          }}
+          onValueChange={setSrcValue}
+        />
+        <PolicySelectorFields
+          orgId={orgId}
+          networkId={networkId}
+          label="Destination"
+          kind={dstKind}
+          value={dstValue}
+          onKindChange={(kind) => {
+            setDstKind(kind);
+            setDstValue("");
+          }}
+          onValueChange={setDstValue}
+        />
         <div className="space-y-2">
           <Label>Protocol</Label>
           <Select
@@ -175,9 +272,16 @@ export function ExplainSimulatePanel({
         </div>
       </div>
 
-      <Button type="button" size="sm" onClick={runSimulate}>
-        Simulate
-      </Button>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button type="button" size="sm" onClick={runSimulate}>
+          Simulate
+        </Button>
+        {error ? (
+          <p className="text-destructive text-xs" role="alert">
+            {error}
+          </p>
+        ) : null}
+      </div>
 
       {result ? (
         <div

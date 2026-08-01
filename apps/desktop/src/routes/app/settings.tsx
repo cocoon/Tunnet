@@ -97,7 +97,7 @@ function SettingsPage() {
     setBusy(true);
     try {
       await api.reset({ yes: true });
-      await navigate({ to: "/" });
+      await navigate({ to: "/setup" });
     } finally {
       setBusy(false);
     }

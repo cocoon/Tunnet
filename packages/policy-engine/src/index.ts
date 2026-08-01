@@ -8,6 +8,16 @@ export { exportDocument, exportHcl, exportJson, exportYaml } from "./export";
 export { canonicalJson, contentHash } from "./hash";
 export { MergeConflictError, mergeDocuments } from "./merge";
 export { type DocumentFormat, parseDocument, parseJsonDocument } from "./parse";
+export {
+  type EndpointResolveEntry,
+  type ParsedSelector,
+  parseSelector,
+  resolveSimulationSelector,
+  SelectorParseError,
+  selectorMatches,
+  simulationEndpoint,
+  simulationTags,
+} from "./selector";
 export { simulateDocument } from "./simulate";
 export { runTests } from "./test-runner";
 export {

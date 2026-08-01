@@ -14,7 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { authClient } from "@/lib/auth-client";
-import { slugifyOrganizationName } from "@/lib/slugify";
+import slugify from "@/lib/slugify";
 
 type CreateOrganizationDialogProps = {
   open: boolean;
@@ -50,7 +50,7 @@ export function CreateOrganizationDialog({
     const trimmed = name.trim();
     if (!trimmed) return;
 
-    const slug = slugifyOrganizationName(trimmed);
+    const slug = slugify(trimmed, 48);
     if (!slug) {
       toast.error("Organization name must contain letters or numbers");
       return;

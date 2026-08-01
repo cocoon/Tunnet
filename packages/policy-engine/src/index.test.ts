@@ -12,6 +12,9 @@ import {
   type PolicyRows,
   parseDocument,
   parseJsonDocument,
+  parseSelector,
+  resolveSimulationSelector,
+  SelectorParseError,
   simulateDocument,
   validateDocument,
 } from "./index";
@@ -324,5 +327,70 @@ describe("documentFromRows", () => {
     expect(doc.acls[0]?.dst).toEqual(["tag:staging"]);
     expect(doc.acls[0]?.ports).toEqual(["443"]);
     expect(doc.postures[0]?.name).toBe("disk");
+  });
+});
+
+describe("resolveSimulationSelector + network", () => {
+  const endpoints = [
+    {
+      endpointId:
+        "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+      name: "CTL",
+    },
+    {
+      endpointId:
+        "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff",
+      name: "DESKTOP-T85DJLS",
+    },
+  ];
+
+  test("resolves bare hostname to endpoint id", () => {
+    expect(resolveSimulationSelector("CTL", endpoints)).toBe(
+      endpoints[0]!.endpointId,
+    );
+    expect(resolveSimulationSelector("desktop-t85djls", endpoints)).toBe(
+      endpoints[1]!.endpointId,
+    );
+  });
+
+  test("parses network selectors and simulates", () => {
+    expect(parseSelector("network:prod")).toEqual({
+      kind: "network",
+      value: "prod",
+    });
+    const doc: PolicyDocument = {
+      ...emptyDocument(),
+      acls: [
+        {
+          name: "allow-net",
+          action: "allow",
+          src: ["network:prod"],
+          dst: ["*"],
+          ports: [],
+          protocol: null,
+          priority: 1,
+          orderIndex: 0,
+          scope: "network",
+          posture: [],
+          labels: {},
+          enabled: true,
+        },
+      ],
+      default_action: "deny",
+    };
+    const hit = simulateDocument(doc, {
+      src: "network:prod",
+      dst: "*",
+      protocol: "tcp",
+      port: 80,
+    });
+    expect(hit.verdict).toBe("allow");
+    expect(hit.reason).toBe("network_allow");
+  });
+
+  test("rejects unknown hostnames", () => {
+    expect(() => resolveSimulationSelector("NOPE", endpoints)).toThrow(
+      SelectorParseError,
+    );
   });
 });

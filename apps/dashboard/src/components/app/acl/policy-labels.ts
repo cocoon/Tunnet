@@ -1,7 +1,7 @@
 import type { Selector } from "@tunnet/api/management";
 
 import { shortEndpointId } from "@/components/app/endpoint-combobox";
-import { slugifyPolicyName } from "@/lib/slugify";
+import slugify from "@/lib/slugify";
 
 export type EndpointLabelMap = Map<string, string>;
 
@@ -37,21 +37,20 @@ export function selectorSlugToken(
   endpoints?: EndpointLabelMap,
 ): string {
   if (selector.kind === "any") return "any";
-  if (selector.kind === "tag")
-    return slugifyPolicyName(selector.value) || "tag";
+  if (selector.kind === "tag") return slugify(selector.value, 128) || "tag";
   if (selector.kind === "user") {
     const local = selector.value.split("@")[0] ?? selector.value;
-    return slugifyPolicyName(local) || "user";
+    return slugify(local, 128) || "user";
   }
   if (selector.kind === "network") {
-    return slugifyPolicyName(selector.value) || "network";
+    return slugify(selector.value, 128) || "network";
   }
   if (selector.kind === "cidr") {
-    return slugifyPolicyName(selector.value.replace(/\//g, "-")) || "cidr";
+    return slugify(selector.value.replace(/\//g, "-"), 128) || "cidr";
   }
   if (selector.kind === "endpoint") {
     const name = endpoints?.get(selector.value.toLowerCase());
-    if (name) return slugifyPolicyName(name) || "machine";
+    if (name) return slugify(name, 128) || "machine";
     return "machine";
   }
   return "peer";
@@ -100,5 +99,5 @@ export function suggestPolicySlug(input: {
     if (portTok) parts.push(portTok);
   }
 
-  return slugifyPolicyName(parts.join("-")).slice(0, 64);
+  return slugify(parts.join("-"), 128).slice(0, 64);
 }

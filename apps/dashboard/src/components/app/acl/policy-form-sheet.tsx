@@ -43,7 +43,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { useMachines } from "@/lib/queries/management";
-import { slugifyPolicyName } from "@/lib/slugify";
+import slugify from "@/lib/slugify";
 import { cn } from "@/lib/utils";
 
 type Step = "effect" | "who" | "to" | "traffic" | "conditions" | "review";
@@ -88,6 +88,7 @@ export function PolicyFormSheet({
   defaultAction = "allow",
   loading = false,
   prefill,
+  nextOrderIndex = 0,
   onSubmit,
 }: {
   open: boolean;
@@ -99,6 +100,8 @@ export function PolicyFormSheet({
   defaultAction?: "allow" | "deny";
   loading?: boolean;
   prefill?: PolicyFormPrefill | null;
+  /** Default order for new policies (max existing + 1). */
+  nextOrderIndex?: number;
   onSubmit: (body: CreatePolicyBody | PatchPolicyBody) => Promise<void>;
 }) {
   const orgOnlyDeny = scope === "organization";
@@ -129,6 +132,7 @@ export function PolicyFormSheet({
   const [slug, setSlug] = useState("");
   const [slugTouched, setSlugTouched] = useState(false);
   const [portsKey, setPortsKey] = useState(0);
+  const [orderIndex, setOrderIndex] = useState(0);
 
   useEffect(() => {
     if (!open) return;
@@ -146,6 +150,7 @@ export function PolicyFormSheet({
       setSrcPosture(editing.srcPosture ?? []);
       setSlug(editing.slug ?? "");
       setSlugTouched(Boolean(editing.slug));
+      setOrderIndex(editing.orderIndex);
       setPortsKey((k) => k + 1);
       return;
     }
@@ -163,8 +168,9 @@ export function PolicyFormSheet({
     setSrcPosture(prefill?.srcPosture ?? []);
     setSlug(prefill?.slug ?? "");
     setSlugTouched(Boolean(prefill?.slug));
+    setOrderIndex(nextOrderIndex);
     setPortsKey((k) => k + 1);
-  }, [open, editing, orgOnlyDeny, prefill]);
+  }, [open, editing, orgOnlyDeny, prefill, nextOrderIndex]);
 
   const srcSelector: Selector = buildPolicySelector(srcKind, srcValue);
   const dstSelector: Selector = buildPolicySelector(dstKind, dstValue);
@@ -204,7 +210,7 @@ export function PolicyFormSheet({
     [action, srcSelector, dstSelector, protocol, ports, endpointLabels],
   );
 
-  const effectiveSlug = slugTouched ? slugifyPolicyName(slug) : autoSlug;
+  const effectiveSlug = slugTouched ? slugify(slug, 128) : autoSlug;
 
   const srcComplete = isSelectorComplete(srcKind, srcValue);
   const dstComplete = isSelectorComplete(dstKind, dstValue);
@@ -291,7 +297,7 @@ export function PolicyFormSheet({
         protocol === "any" ? null : (protocol as "tcp" | "udp" | "icmp"),
       ports,
       priority: editing?.priority ?? 0,
-      orderIndex: editing?.orderIndex ?? 0,
+      orderIndex: Number.isFinite(orderIndex) ? orderIndex : 0,
       enabled: editing?.enabled ?? true,
       slug: effectiveSlug,
       srcPosture,
@@ -666,6 +672,23 @@ export function PolicyFormSheet({
                     Reset to suggested name
                   </Button>
                 ) : null}
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="policy-order">Order</Label>
+                <Input
+                  id="policy-order"
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={orderIndex}
+                  onChange={(e) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    setOrderIndex(Number.isNaN(n) ? 0 : n);
+                  }}
+                />
+                <p className="text-muted-foreground text-xs">
+                  Lower values are evaluated first within the same action phase.
+                </p>
               </div>
             </div>
           ) : null}

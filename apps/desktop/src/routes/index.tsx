@@ -1,5 +1,5 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/invoke";
 import { Route as rootRoute } from "./__root";
@@ -13,6 +13,7 @@ export const Route = createRoute({
 function BootPage() {
   const navigate = useNavigate();
   const [message, setMessage] = useState("Checking daemon…");
+  const startAttempted = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -30,6 +31,18 @@ function BootPage() {
 
         if (!probe.reachable) {
           setMessage("Starting daemon…");
+          if (probe.service.installed && !startAttempted.current) {
+            startAttempted.current = true;
+            void api.serviceStart().catch((err) => {
+              if (cancelled) return;
+              startAttempted.current = false;
+              setMessage(
+                err instanceof Error
+                  ? err.message
+                  : String(err ?? "Failed to start service"),
+              );
+            });
+          }
           return;
         }
 

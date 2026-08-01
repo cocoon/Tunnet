@@ -72,13 +72,24 @@ function ServePage() {
             <Button
               onClick={() =>
                 void api
-                  .servesStart({ port: Number(servePort) })
+                  .servesStart({
+                    port: Number(servePort),
+                    // Local desktop serve is TCP; HTTPS serves need dashboard certs.
+                    protocol: "tcp",
+                  })
                   .then(() => load())
+                  .catch((err) =>
+                    setError(err instanceof Error ? err.message : String(err)),
+                  )
               }
             >
               Start serve
             </Button>
           </div>
+          <p className="text-xs text-muted-foreground">
+            Starts a TCP mesh serve. Create HTTPS serves from the management
+            dashboard (certificates are pushed over WebSocket).
+          </p>
         </CapabilityGate>
         <ResourceList
           items={serves.map((s) => ({

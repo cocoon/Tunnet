@@ -122,9 +122,11 @@ pub async fn run_outbound(deps: OutboundDeps) -> anyhow::Result<()> {
         if !acl.allow_packet(
             &peer.endpoint_hex,
             Some(parsed.dst),
+            parsed.src_port,
             parsed.dst_port,
             parsed.protocol,
             Direction::Outbound,
+            parsed.tcp_flags,
         ) {
             metrics.dropped_inc("policy_deny");
             continue;
@@ -268,9 +270,11 @@ pub async fn serve_tunnel_connection(deps: InboundDeps) {
                 if !acl.allow_packet(
                     &remote_hex,
                     dst_for_acl,
+                    parsed.src_port,
                     parsed.dst_port,
                     parsed.protocol,
                     Direction::Inbound,
+                    parsed.tcp_flags,
                 ) {
                     metrics.dropped_inc("policy_deny_in");
                     continue;

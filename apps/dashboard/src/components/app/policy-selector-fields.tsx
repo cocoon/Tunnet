@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { slugifyPolicyName } from "@/lib/slugify";
+import slugify from "@/lib/slugify";
 
 export function PolicySelectorFields({
   orgId,
@@ -140,7 +140,7 @@ export function applyPolicyExtraFields(
   body: CreatePolicyBody,
   extra: PolicyExtraFields,
 ): CreatePolicyBody {
-  const slug = slugifyPolicyName(extra.slug);
+  const slug = slugify(extra.slug, 128);
   const posture = extra.srcPosture
     .split(",")
     .map((s) => s.trim())

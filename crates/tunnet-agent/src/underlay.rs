@@ -1,5 +1,3 @@
-//! Underlay (physical) network context via `netdev` — no shell output parsers.
-
 use std::net::{IpAddr, Ipv4Addr};
 
 use ipnet::{Ipv4Net, Ipv6Net};

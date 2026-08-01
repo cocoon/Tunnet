@@ -22,14 +22,25 @@ export const portRangeSchema = z.object({
 
 export const policyScopeSchema = z.enum(["network", "organization"]);
 
-/** Normalize free-form slug input to `allow-eng-prod` style. */
 export function slugifyPolicySlug(input: string): string {
-  return input
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 128);
+  const lower = input.toLowerCase().trim();
+  let out = "";
+  let pendingHyphen = false;
+  for (const ch of lower) {
+    if ((ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9")) {
+      if (pendingHyphen && out.length > 0) {
+        out += "-";
+      }
+      out += ch;
+      pendingHyphen = false;
+    } else {
+      pendingHyphen = true;
+    }
+    if (out.length >= 128) {
+      break;
+    }
+  }
+  return out;
 }
 
 export const policySlugSchema = z.preprocess(

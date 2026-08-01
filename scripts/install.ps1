@@ -75,7 +75,7 @@ if (-not $InstallDir) {
         $InstallDir = $env:TUNNET_INSTALL_DIR
     }
     else {
-        $InstallDir = Join-Path $env:ProgramFiles "Tunnet"
+        $InstallDir = Join-Path $env:ProgramData "tunnet\bin"
     }
 }
 
@@ -199,11 +199,9 @@ try {
     }
 
     $SERVICE_NAME = "tunnet"
-    $svcRunning = $false
     if (Get-Service -Name $SERVICE_NAME -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Running' }) {
         Write-Info "Stopping running service before update…"
         Stop-Service -Name $SERVICE_NAME -Force -ErrorAction SilentlyContinue
-        $svcRunning = $true
     }
 
     $installedCount = 0
@@ -248,18 +246,20 @@ try {
     $tunnet = Join-Path $InstallDir "tunnet.exe"
     if (-not $NoService -and (Test-Path $tunnet)) {
         if (Test-IsAdmin) {
-            if ($svcRunning) {
-                Write-Info "Restarting service…"
-                Start-Service -Name "tunnet" -ErrorAction SilentlyContinue
+            # Always re-run service install so binaries are staged into
+            # %ProgramData%\tunnet\bin and SCM PathName stays current.
+            Write-Info "Installing / updating Windows service…"
+            & $tunnet service install
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warn "service install returned exit code $LASTEXITCODE"
             }
-            elseif (-not (Get-Service -Name "tunnet" -ErrorAction SilentlyContinue)) {
-                & $tunnet service install
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Info "Windows service installed"
-                }
-                else {
-                    Write-Warn "service install returned exit code $LASTEXITCODE"
-                }
+            else {
+                Write-Info "Windows service installed (binaries in $InstallDir)"
+            }
+            Write-Info "Starting service…"
+            & $tunnet service start
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warn "service start returned exit code $LASTEXITCODE"
             }
         }
         else {

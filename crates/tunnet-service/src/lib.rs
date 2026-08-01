@@ -10,7 +10,10 @@ mod paths;
 mod win_service;
 
 pub use api_ready::wait_for_local_api;
-pub use paths::{resolve_state_dir, system_state_dir};
+pub use paths::{resolve_state_dir, system_state_dir, wipe_state_dir};
+
+#[cfg(windows)]
+pub use paths::{installed_bin_dir, installed_daemon_exe, stage_daemon_exe};
 
 #[cfg(windows)]
 pub use win_service::{args_for_clap, run_elevated, setup_elevation_capture};

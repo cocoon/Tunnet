@@ -169,6 +169,11 @@ function NetworkPoliciesPanel() {
   const saving = createPolicy.isPending || updatePolicy.isPending;
   const defaultAction = network?.defaultAction ?? "allow";
   const icmpPolicy = network?.icmpPolicy ?? "allow";
+  const nextOrderIndex = useMemo(() => {
+    const list = policies ?? [];
+    if (list.length === 0) return 0;
+    return Math.max(...list.map((p) => p.orderIndex)) + 1;
+  }, [policies]);
 
   const columns = useMemo<ColumnDef<Policy>[]>(
     () => [
@@ -357,10 +362,13 @@ function NetworkPoliciesPanel() {
         </TabsContent>
         <TabsContent value="explain" className="mt-4">
           <ExplainSimulatePanel
+            orgId={orgId}
+            networkId={networkId}
             orgPolicies={orgPolicies ?? []}
             networkPolicies={policies ?? []}
             defaultAction={defaultAction}
             icmpPolicy={icmpPolicy}
+            endpointLabels={endpointLabels}
           />
         </TabsContent>
       </Tabs>
@@ -379,6 +387,7 @@ function NetworkPoliciesPanel() {
         networkId={networkId}
         defaultAction={defaultAction}
         editing={editing}
+        nextOrderIndex={nextOrderIndex}
         prefill={
           prefillAllowAny
             ? {

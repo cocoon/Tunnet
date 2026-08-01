@@ -251,8 +251,18 @@ async fn wait_for_approval(
 }
 
 pub async fn run_reset(args: ResetArgs, state_dir: Option<&str>) -> anyhow::Result<()> {
-    let targets: Vec<std::path::PathBuf> = if state_dir.is_some() {
-        vec![paths(state_dir).dir]
+    tunnet_service::ensure_admin()?;
+
+    let targets: Vec<std::path::PathBuf> = if let Some(dir) = state_dir {
+        vec![std::path::PathBuf::from(dir)]
+    } else if let Ok(env_dir) = std::env::var("TUNNET_STATE_DIR") {
+        let env_dir = std::path::PathBuf::from(env_dir);
+        let system = tunnet_core::StatePaths::system_dir();
+        if env_dir == system {
+            vec![system]
+        } else {
+            vec![system, env_dir]
+        }
     } else {
         vec![tunnet_core::StatePaths::system_dir()]
     };
@@ -265,16 +275,38 @@ pub async fn run_reset(args: ResetArgs, state_dir: Option<&str>) -> anyhow::Resu
         return Ok(());
     }
 
+    // Daemon holds open files under the state dir; stop it before wiping.
+    match tunnet_service::stop_for_reset() {
+        Ok(()) => {
+            if tunnet_service::probe().installed {
+                println!("Stopped tunnet service.");
+            }
+        }
+        Err(e) => {
+            eprintln!("warning: could not stop service before reset: {e:#}");
+        }
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
     let mut wiped_any = false;
     for dir in &targets {
-        if dir.exists() {
-            std::fs::remove_dir_all(dir)?;
-            println!("Wiped {}", dir.display());
-            wiped_any = true;
+        if !dir.exists() {
+            continue;
         }
+        tunnet_service::wipe_state_dir(dir).with_context(|| format!("wipe {}", dir.display()))?;
+        println!("Wiped {}", dir.display());
+        wiped_any = true;
     }
     if !wiped_any {
         println!("Nothing to wipe.");
+    }
+
+    // Restart so the Local API comes back in idle bootstrap mode.
+    if tunnet_service::probe().installed {
+        match tunnet_service::start(state_dir) {
+            Ok(()) => println!("Started tunnet service."),
+            Err(e) => eprintln!("warning: could not start service after reset: {e:#}"),
+        }
     }
     Ok(())
 }

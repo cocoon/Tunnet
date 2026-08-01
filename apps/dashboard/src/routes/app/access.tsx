@@ -171,6 +171,11 @@ function OrganizationPoliciesPanel() {
   });
 
   const saving = createPolicy.isPending || updatePolicy.isPending;
+  const nextOrderIndex = useMemo(() => {
+    const list = policies ?? [];
+    if (list.length === 0) return 0;
+    return Math.max(...list.map((p) => p.orderIndex)) + 1;
+  }, [policies]);
 
   const columns = useMemo<ColumnDef<Policy>[]>(
     () => [
@@ -326,6 +331,7 @@ function OrganizationPoliciesPanel() {
         scope="organization"
         orgId={orgId}
         editing={editing}
+        nextOrderIndex={nextOrderIndex}
         loading={saving}
         onSubmit={async (body) => {
           try {

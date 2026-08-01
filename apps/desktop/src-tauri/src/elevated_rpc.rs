@@ -26,6 +26,8 @@ pub enum ElevatedOp {
     ServiceStart,
     ServiceStop,
     ServiceRestart,
+    ServiceInstallAndStart,
+    InstallServiceFromDir { dir: String },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -37,8 +39,6 @@ struct ElevatedResult {
     error: Option<String>,
 }
 
-/// If this process was launched as an elevated RPC worker, run and exit.
-/// Call before Tauri / single-instance init.
 pub fn maybe_run_worker() {
     let args: Vec<String> = std::env::args().collect();
     let Some(idx) = args.iter().position(|a| a == FLAG) else {
@@ -120,12 +120,106 @@ async fn execute(op: ElevatedOp) -> anyhow::Result<OkResponse> {
                 message: "Service restarted".into(),
             })
         }
+        ElevatedOp::ServiceInstallAndStart => {
+            // Stage sidecars beside this desktop exe into %ProgramData%\tunnet\bin,
+            // register SCM against that path, then start.
+            tunnet_service::install(None)?;
+            tunnet_service::start(None)?;
+            Ok(OkResponse {
+                message: "Service installed and started".into(),
+            })
+        }
+        ElevatedOp::InstallServiceFromDir { dir } => {
+            install_service_from_bin_dir(Path::new(&dir))?;
+            Ok(OkResponse {
+                message: format!("Service installed and started from {dir}"),
+            })
+        }
         ElevatedOp::NetworkCreate { body } => TunnetClient::connect().network_create(&body).await,
         ElevatedOp::NetworkJoin { body } => TunnetClient::connect().network_join(&body).await,
         ElevatedOp::Enroll { body } => TunnetClient::connect().enroll(&body).await,
         ElevatedOp::NetworkLeave { body } => TunnetClient::connect().network_leave(&body).await,
-        ElevatedOp::Reset { body } => TunnetClient::connect().reset(&body).await,
+        // Do reset in-process (not via daemon IPC): stop_for_reset would kill the
+        // daemon mid-request if we called TunnetClient::reset().
+        ElevatedOp::Reset { body } => reset_device(body).await,
     }
+}
+
+fn install_service_from_bin_dir(install_dir: &Path) -> anyhow::Result<()> {
+    let tunnet = install_dir.join("tunnet.exe");
+    if !tunnet.is_file() {
+        anyhow::bail!("tunnet.exe not found in {}", install_dir.display());
+    }
+    let daemon = install_dir.join("tunnetd.exe");
+    if !daemon.is_file() {
+        anyhow::bail!("tunnetd.exe not found in {}", install_dir.display());
+    }
+
+    let install = std::process::Command::new(&tunnet)
+        .args(["service", "install"])
+        .current_dir(install_dir)
+        .status()?;
+    if !install.success() {
+        anyhow::bail!("service install failed");
+    }
+
+    let start = std::process::Command::new(&tunnet)
+        .args(["service", "start"])
+        .current_dir(install_dir)
+        .status()?;
+    if !start.success() {
+        anyhow::bail!("service start failed");
+    }
+    Ok(())
+}
+
+async fn reset_device(body: ResetRequest) -> anyhow::Result<OkResponse> {
+    if !body.yes {
+        return Ok(OkResponse {
+            message: "confirmation required; set yes=true to wipe".into(),
+        });
+    }
+
+    let targets: Vec<PathBuf> = if let Ok(env_dir) = std::env::var("TUNNET_STATE_DIR") {
+        let env_dir = PathBuf::from(env_dir);
+        let system = tunnet_service::system_state_dir();
+        if env_dir == system {
+            vec![system]
+        } else {
+            vec![system, env_dir]
+        }
+    } else {
+        vec![tunnet_service::system_state_dir()]
+    };
+
+    match tunnet_service::stop_for_reset() {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("warning: could not stop service before reset: {e:#}");
+        }
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let mut wiped_any = false;
+    for dir in &targets {
+        if !dir.exists() {
+            continue;
+        }
+        tunnet_service::wipe_state_dir(dir)?;
+        wiped_any = true;
+    }
+
+    if tunnet_service::probe().installed {
+        tunnet_service::start(None)?;
+    }
+
+    Ok(OkResponse {
+        message: if wiped_any {
+            "state wiped".into()
+        } else {
+            "nothing to wipe".into()
+        },
+    })
 }
 
 fn write_result(path: &Path, result: &ElevatedResult) -> anyhow::Result<()> {

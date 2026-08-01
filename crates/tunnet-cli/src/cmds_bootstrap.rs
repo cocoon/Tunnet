@@ -135,13 +135,21 @@ pub async fn run_reset(args: ResetArgs, state_dir: Option<&str>) -> anyhow::Resu
         if !dir.exists() {
             continue;
         }
-        std::fs::remove_dir_all(dir)
-            .with_context(|| format!("wipe {} (is tunnetd still running?)", dir.display()))?;
+        // Preserve `bin/` (staged service binaries under %ProgramData%\tunnet\bin).
+        tunnet_service::wipe_state_dir(dir).with_context(|| format!("wipe {}", dir.display()))?;
         println!("Wiped {}", dir.display());
         wiped_any = true;
     }
     if !wiped_any {
         println!("Nothing to wipe.");
+    }
+
+    // Restart so Local API cold-boots into idle bootstrap (mode=idle / enroll).
+    if tunnet_service::probe().installed {
+        match tunnet_service::start(state_dir) {
+            Ok(()) => println!("Started tunnet service."),
+            Err(e) => eprintln!("warning: could not start service after reset: {e:#}"),
+        }
     }
     Ok(())
 }
