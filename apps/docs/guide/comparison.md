@@ -80,7 +80,6 @@ Raw WireGuard requires manual key exchange, manual IP allocation, and manual con
 | Policy as Code | Yes | Limited⁴ | No | Limited⁵ |
 | Audit logs (self-hosted) | Yes | Yes (vendor-hosted) | Partial | Yes |
 | P2P mode (no server) | Direct mode | No | No | No |
-| License | AGPL-3.0 | Proprietary | Proprietary | Proprietary |
 
 > ¹ Cloudflare provides official Kubernetes deployment guides for cloudflared but no first-party operator CRDs - community operators exist.
 > ² Cloudflare has API SDKs (Go, TypeScript, Python) but no embeddable tunnel/mesh SDK for in-process connectivity.

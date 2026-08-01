@@ -5,7 +5,7 @@ description = "Tunnet Desktop"
 authors = ["orielhaim"]
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license = "MPL-2.0"
 
 [lib]
 name = "tunnet_lib"

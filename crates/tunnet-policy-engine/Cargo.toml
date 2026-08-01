@@ -2,7 +2,7 @@
 name = "tunnet-policy-engine"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "Apache-2.0"
 description = "Policy-as-Code parser, validator, simulator, and exporter for Tunnet"
 publish = false
 

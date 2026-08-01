@@ -2,7 +2,7 @@
 name = "tunnet-policy-napi"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "Apache-2.0"
 publish = false
 
 [lib]

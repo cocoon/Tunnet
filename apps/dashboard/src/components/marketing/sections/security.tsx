@@ -32,7 +32,7 @@ const PILLARS = [
   {
     icon: EyeIcon,
     title: "You can read every line",
-    body: "Control plane, agent, dashboard, and relay are AGPL-3.0. Self-host the entire stack.",
+    body: "Control plane, management, dashboard, relay, and other server components are AGPL-3.0-only; embeddable runtime and SDK components are MPL-2.0. Self-host the entire stack.",
   },
   {
     icon: RadioIcon,

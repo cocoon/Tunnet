@@ -3,7 +3,7 @@ name = "tunnet-audit"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license = "AGPL-3.0-only"
 publish = false
 
 [features]

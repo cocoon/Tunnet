@@ -13,3 +13,7 @@ import { enroll, TunnetNode } from "tunnet";
 ```
 
 Prefer `@tunnet/sdk` in new projects. This package exists so `tunnet` on npm resolves to the same SDK.
+
+## License
+
+MPL-2.0. See the repository [license map](../../LICENSING.md).

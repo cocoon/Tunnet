@@ -17,3 +17,7 @@ async fn main() -> anyhow::Result<()> {
 ```
 
 Endpoint path defaults to `$TUNNET_RUNTIME_DIR/tunnetd.sock` on Unix, or the system pipe marker on Windows. Override with `TUNNET_API_PATH` / `TUNNET_IPC_PATH`.
+
+## License
+
+Apache-2.0. See the repository [license map](../../LICENSING.md).

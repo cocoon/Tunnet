@@ -5,7 +5,7 @@ import { NumberTicker } from "@/components/ui/number-ticker";
 
 const STATS = [
   { icon: CodeIcon, label: "Lines of open Rust", value: 148000 },
-  { icon: ScaleIcon, label: "License", suffix: "AGPL-3.0" },
+  { icon: ScaleIcon, label: "Licenses", suffix: "MPL · AGPL · Apache" },
   { icon: HeartHandshakeIcon, label: "Contributors", value: 42 },
   { icon: FaGithub, label: "GitHub stars", value: 3200, plus: true },
 ];
@@ -24,8 +24,8 @@ export function OpenSourceSection(): ReactNode {
             <p className="m-lead mt-6 max-w-[54ch]">
               Agent, control plane, management API, dashboard, relay - read
               every line, audit every path, self-host the whole thing.
-              Commercial licenses exist for when AGPL doesn't fit; the freedom
-              stays either way.
+              Commercial licenses exist for AGPL components when AGPL doesn't
+              fit; the freedom stays either way.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <a

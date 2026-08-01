@@ -77,7 +77,6 @@ Author ACLs, groups, tags, SSH, and posture in Git. Validate and simulate offlin
 | Embeddable SDKs | JS, Rust | Go, C | Go, Rust, Python, JS, Java | No² |
 | Policy as Code | **Yes** | Limited | No | Limited |
 | Audit logs | **Yes** (self-hostable) | Yes | Partial | Yes |
-| License | AGPL-3.0 | Proprietary | Proprietary | Proprietary |
 
 > ¹ Cloudflare has official K8s deployment guides for Tunnel but the operators are community-maintained.
 > ² Cloudflare offers API SDKs (Go, TS, Python) but no embeddable tunnel SDK.
@@ -107,4 +106,10 @@ irm https://github.com/tunnetio/Tunnet/releases/latest/download/install.ps1 | ie
 
 ## License
 
-AGPL-3.0. See [LICENSE](LICENSE). [Commercial licenses](COMMERCIAL-LICENSE.md) are available when AGPL does not fit.
+Tunnet uses component-level licensing:
+
+- MPL-2.0 for the embeddable runtime, agent, SDKs, and client-side runtime components.
+- AGPL-3.0-only for the control plane, management, dashboard, managed relay, audit, persistence, internal API, and deployment-orchestration components.
+- Apache-2.0 for protocol/common code, clients, contracts, policy formats, SDK tooling, examples, install scripts, and CI tooling.
+
+See the [full license map](LICENSING.md), the [standard license texts](licenses/), and the [Commercial License](COMMERCIAL-LICENSE.md). The Commercial License is an alternative to AGPL-3.0-only for the AGPL components; it is not required for MPL-2.0 or Apache-2.0 components.

@@ -1,6 +1,7 @@
 {
   "name": "@tunnet/client",
   "version": "0.0.0",
+  "license": "Apache-2.0",
   "description": "TypeScript client for the Tunnet Local Management API over Unix socket / named pipe",
   "type": "module",
   "exports": {

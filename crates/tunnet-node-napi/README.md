@@ -103,4 +103,4 @@ Prebuilt binaries are published for:
 
 ## License
 
-Apache-2.0
+MPL-2.0. See the repository [license map](../../LICENSING.md).

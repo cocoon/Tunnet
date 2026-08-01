@@ -1,5 +1,6 @@
 {
   "name": "@tunnet/docs",
+  "license": "Apache-2.0",
   "private": true,
   "scripts": {
     "dev": "vitepress dev",

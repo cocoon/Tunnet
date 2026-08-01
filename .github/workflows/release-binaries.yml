@@ -200,7 +200,8 @@ jobs:
               fi
             fi
 
-            cp LICENSE README.md "$staging/" 2>/dev/null || true
+            cp LICENSE LICENSING.md COMMERCIAL-LICENSE.md README.md "$staging/" 2>/dev/null || true
+            cp -R licenses "$staging/" 2>/dev/null || true
 
             if [[ "$target" == *windows* ]]; then
               7z a -bb0 "${staging}.zip" "$staging" >/dev/null

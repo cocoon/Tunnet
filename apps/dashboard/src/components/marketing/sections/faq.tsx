@@ -9,7 +9,7 @@ import {
 const FAQ = [
   {
     q: "How is Tunnet different from Tailscale or NetBird?",
-    a: "Tunnet packages six primitives - mesh, serve, tunnel, send, SSH, relay - under one identity system, and the entire stack is AGPL-3.0. That includes the control plane, dashboard, and relay, not just the agent. You can self-host everything.",
+    a: "Tunnet packages six primitives - mesh, serve, tunnel, send, SSH, relay - under one identity system. The control plane, dashboard, managed relay, and other server components are AGPL-3.0-only; the embeddable runtime and SDK surfaces are MPL-2.0, and protocol and tooling surfaces are Apache-2.0. You can self-host everything.",
   },
   {
     q: "Do I need to open firewall ports?",
@@ -37,7 +37,7 @@ const FAQ = [
   },
   {
     q: "What's the license?",
-    a: "AGPL-3.0 for the open source stack. Commercial licenses are available for use cases where AGPL doesn't fit. Contributions require a signed CLA.",
+    a: "Tunnet uses MPL-2.0, AGPL-3.0-only, and Apache-2.0 by component. A Commercial License is available as an alternative for AGPL components when AGPL doesn't fit. Contributions require a signed CLA.",
   },
 ];
 

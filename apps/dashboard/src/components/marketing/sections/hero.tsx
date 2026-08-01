@@ -187,7 +187,7 @@ export function HeroSection(): ReactNode {
             icon={<ZapIcon className="size-3.5" />}
           />
           <Stat
-            k="AGPL-3.0"
+            k="MPL · AGPL · Apache"
             v="Full stack open"
             icon={<StarIcon className="size-3.5" />}
           />

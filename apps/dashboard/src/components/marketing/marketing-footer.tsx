@@ -52,8 +52,8 @@ const COLUMNS = [
       { label: "Privacy", href: "/legal/privacy" },
       { label: "Terms", href: "/legal/terms" },
       {
-        label: "License (AGPL-3.0)",
-        href: "https://github.com/tunnetio/Tunnet/blob/main/LICENSE",
+        label: "Licenses",
+        href: "https://github.com/tunnetio/Tunnet/blob/main/LICENSING.md",
         external: true,
       },
       {
@@ -170,7 +170,7 @@ export function MarketingFooter(): ReactNode {
         <div className="m-hairline mt-16" />
         <div className="mt-6 flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
           <p className="text-xs text-white/50">
-            © {new Date().getFullYear()} Tunnet · Open source under AGPL-3.0
+            © {new Date().getFullYear()} Tunnet · Open source by component
           </p>
           <p className="text-xs text-white/50">
             Made by a team who spent too many years writing VPN docs.
