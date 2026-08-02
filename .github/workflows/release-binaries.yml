@@ -310,8 +310,6 @@ jobs:
           fi
           cp "$extracted/wintun.dll" "$dest/wintun.dll"
 
-          # Enable sidecar bundling for release builds only (keeps local tauri
-          # dev working when binaries are locked by a running service).
           node <<'NODE'
           const fs = require("fs");
           const confPath = "apps/desktop/src-tauri/tauri.conf.json";
@@ -319,6 +317,7 @@ jobs:
           conf.bundle = conf.bundle || {};
           conf.bundle.externalBin = ["binaries/tunnet", "binaries/tunnetd"];
           conf.bundle.resources = ["binaries/wintun.dll"];
+          conf.bundle.artifactName = "Tunnet_x64-setup.exe";
           fs.writeFileSync(confPath, JSON.stringify(conf, null, 2) + "\n");
           NODE
 
@@ -420,7 +419,7 @@ jobs:
             echo ""
             echo "### Windows Desktop"
             echo ""
-            echo "Download the \`Tunnet_*_x64-setup.exe\` installer from the assets below."
+            echo "Download the \`Tunnet_x64-setup.exe\` installer from the assets below."
           } > release-notes.md
 
       - uses: softprops/action-gh-release@v3

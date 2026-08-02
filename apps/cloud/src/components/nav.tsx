@@ -18,6 +18,7 @@ const HOME_LINKS = [
   { label: "Security", href: "#security" },
   { label: "CLI", href: "#cli" },
   { label: "Pricing", href: "/pricing" },
+  { label: "Download", href: "/download" },
   { label: "Docs", href: "https://docs.tunnet.io", external: true },
 ] as const;
 
@@ -27,15 +28,28 @@ const PRICING_LINKS = [
   { label: "Compare", href: "#compare" },
   { label: "FAQ", href: "#faq" },
   { label: "Home", href: "/" },
+  { label: "Download", href: "/download" },
+  { label: "Docs", href: "https://docs.tunnet.io", external: true },
+] as const;
+
+const DOWNLOAD_LINKS = [
+  { label: "Install", href: "#install" },
+  { label: "Home", href: "/" },
+  { label: "Pricing", href: "/pricing" },
   { label: "Docs", href: "https://docs.tunnet.io", external: true },
 ] as const;
 
 export function MarketingNav({
   variant = "home",
 }: {
-  variant?: "home" | "pricing";
+  variant?: "home" | "pricing" | "download";
 }): ReactNode {
-  const NAV_LINKS = variant === "pricing" ? PRICING_LINKS : HOME_LINKS;
+  const NAV_LINKS =
+    variant === "pricing"
+      ? PRICING_LINKS
+      : variant === "download"
+        ? DOWNLOAD_LINKS
+        : HOME_LINKS;
   const [scrolled, setScrolled] = useState(false);
   const [hidden, setHidden] = useState(false);
   const [open, setOpen] = useState(false);

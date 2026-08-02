@@ -11,6 +11,7 @@ const COLUMNS = [
       { label: "Relays", href: "#relay" },
       { label: "Security", href: "#security" },
       { label: "Pricing", href: "/pricing" },
+      { label: "Download", href: "/download" },
     ],
   },
   {
