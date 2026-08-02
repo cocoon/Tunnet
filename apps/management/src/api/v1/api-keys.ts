@@ -10,7 +10,7 @@ import { db } from "../../lib/db";
 import { requirePlanFeature } from "../../lib/org-billing";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { badRequest, sessionPlugin } from "./middleware/session";
+import { badRequest } from "./middleware/session";
 
 function serializeApiKey(row: typeof schema.apiKeys.$inferSelect) {
   return {
@@ -49,7 +49,6 @@ async function resolveNetworkIds(
 }
 
 export const apiKeysRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get("/organizations/:orgId/api-keys", async ({ authContext }) => {
     const auth = getAuth({ authContext });

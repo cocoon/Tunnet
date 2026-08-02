@@ -27,7 +27,7 @@ import {
 } from "../../lib/posture-eval";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { notFound, sessionPlugin } from "./middleware/session";
+import { notFound } from "./middleware/session";
 
 function serializeAttribute(row: typeof schema.postureAttributes.$inferSelect) {
   return {
@@ -282,7 +282,6 @@ async function findPostureDefinition(
 }
 
 export const postureRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get(
     "/organizations/:orgId/devices/:endpointId/posture",

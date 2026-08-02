@@ -12,10 +12,9 @@ import {
   serializePresencePatch,
 } from "../../lib/serialize-device";
 import { getAuth, requireAuth } from "./middleware/authz";
-import { notFound, sessionPlugin } from "./middleware/session";
+import { notFound } from "./middleware/session";
 
 export const presenceRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get(
     "/organizations/:orgId/presence/stream",

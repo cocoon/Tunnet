@@ -19,6 +19,23 @@ export type SessionUserContext = {
   session: { id: string };
 };
 
+function orgIdFromParams(params: unknown): string {
+  if (
+    typeof params === "object" &&
+    params !== null &&
+    "orgId" in params &&
+    typeof (params as { orgId: unknown }).orgId === "string"
+  ) {
+    return (params as { orgId: string }).orgId;
+  }
+  return "";
+}
+
+function orgIdFromPath(url: string): string {
+  const match = new URL(url).pathname.match(/\/organizations\/([^/?#]+)/);
+  return match?.[1] ?? "";
+}
+
 export async function resolveOrgContext(
   headers: Headers,
   orgIdParam: string,
@@ -33,25 +50,41 @@ export async function resolveOrgContext(
     headers.get("x-organization-id") ||
     sessionResult.session.activeOrganizationId ||
     "";
-
   if (!organizationId) {
     return null;
   }
 
-  // Ensure Better Auth active org matches the request org so permission APIs resolve correctly.
-  if (sessionResult.session.activeOrganizationId !== organizationId) {
+  let memberRole: string | undefined;
+  try {
+    if (sessionResult.session.activeOrganizationId === organizationId) {
+      const member = await auth.api.getActiveMember({ headers });
+      if (member && member.organizationId === organizationId) {
+        memberRole = member.role;
+      }
+    }
+  } catch {
+    // Fall through to getFullOrganization.
+  }
+
+  if (!memberRole) {
     try {
-      await auth.api.setActiveOrganization({
+      const organization = await auth.api.getFullOrganization({
         headers,
-        body: { organizationId },
+        query: { organizationId },
       });
+      if (!organization) return null;
+      const deletedAt = (organization as { deletedAt?: Date | string | null })
+        .deletedAt;
+      if (deletedAt) return null;
+      memberRole = organization.members?.find(
+        (member) => member.userId === sessionResult.user.id,
+      )?.role;
     } catch {
       return null;
     }
   }
 
-  const member = await auth.api.getActiveMember({ headers });
-  if (!member || member.organizationId !== organizationId) {
+  if (!memberRole) {
     return null;
   }
 
@@ -66,21 +99,26 @@ export async function resolveOrgContext(
       activeOrganizationId: organizationId,
     },
     organizationId,
-    memberRole: member.role,
+    memberRole,
   };
 }
+
+export const requireAuth = new Elysia({ name: "require-auth" })
+  .derive({ as: "scoped" }, async ({ request, params }) => {
+    const orgId = orgIdFromParams(params) || orgIdFromPath(request.url) || "";
+    const authContext = await resolveOrgContext(request.headers, orgId);
+    return { authContext };
+  })
+  .onBeforeHandle({ as: "scoped" }, ({ authContext }) => {
+    if (!authContext) {
+      return unauthorized();
+    }
+  });
 
 export const sessionPlugin = new Elysia({ name: "session" }).derive(
   { as: "scoped" },
   async ({ request, params }) => {
-    const orgId =
-      typeof params === "object" &&
-      params !== null &&
-      "orgId" in params &&
-      typeof params.orgId === "string"
-        ? params.orgId
-        : "";
-
+    const orgId = orgIdFromParams(params) || orgIdFromPath(request.url) || "";
     const authContext = await resolveOrgContext(request.headers, orgId);
     return { authContext };
   },

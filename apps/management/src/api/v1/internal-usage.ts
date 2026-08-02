@@ -15,7 +15,7 @@ function getServiceSecret(): string {
  * Auth: Bearer TUNNET_SERVICE_SECRET (same shared secret as control admin HMAC).
  */
 export const internalUsageRoutes = new Elysia({ prefix: "/internal" })
-  .onBeforeHandle({ as: "scoped" }, ({ request, set }) => {
+  .onBeforeHandle({ as: "local" }, ({ request, set }) => {
     const header = request.headers.get("authorization");
     const expected = `Bearer ${getServiceSecret()}`;
     if (header !== expected) {

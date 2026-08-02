@@ -8,7 +8,7 @@ import { db } from "../../lib/db";
 import { requirePlanFeature } from "../../lib/org-billing";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { notFound, sessionPlugin } from "./middleware/session";
+import { notFound } from "./middleware/session";
 
 function serializeSettings(
   row: typeof schema.organizationTunnelSettings.$inferSelect,
@@ -37,7 +37,6 @@ function defaultSettings(organizationId: string) {
 }
 
 export const tunnelSettingsRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get("/organizations/:orgId/tunnel-settings", async ({ authContext }) => {
     const auth = getAuth({ authContext });

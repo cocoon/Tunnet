@@ -15,7 +15,7 @@ import { writeAudit } from "../../lib/audit";
 import { db } from "../../lib/db";
 import { bumpOrgAndNotify } from "../../lib/notify";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { badRequest, sessionPlugin } from "./middleware/session";
+import { badRequest } from "./middleware/session";
 
 /** Store durations as PG-parseable interval text (`N seconds`). */
 function toStoredDuration(raw: string | null): string | null {
@@ -69,7 +69,6 @@ function mergeSettings(
 }
 
 export const orgSettingsRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get("/organizations/:orgId/settings", async ({ authContext }) => {
     const auth = getAuth({ authContext });

@@ -343,16 +343,17 @@ function buildAuth(license: LicenseManager) {
   return betterAuth({
     appName: "Tunnet Management",
     baseURL: getManagementUrl(),
-    ...(sharedCookieDomain
-      ? {
-          advanced: {
+    advanced: {
+      ...(sharedCookieDomain
+        ? {
             crossSubDomainCookies: {
               enabled: true,
               domain: sharedCookieDomain,
             },
-          },
-        }
-      : {}),
+          }
+        : {}),
+      useSecureCookies: managementOrigin.startsWith("https://"),
+    },
     database: drizzleAdapter(db, {
       provider: "pg",
       schema: {
@@ -469,7 +470,7 @@ function buildAuth(license: LicenseManager) {
               if (!plan) {
                 throw new APIError("BAD_REQUEST", {
                   message:
-                    'Organization plan is required. Choose "free", "team", or "business".',
+                    'Organization plan is required. Choose "free", "personal", "team", or "business".',
                 });
               }
               const allowed = await canUserCreateOrganization(user);

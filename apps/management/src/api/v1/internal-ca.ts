@@ -10,7 +10,6 @@ import {
 } from "../../lib/internal-ca";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { sessionPlugin } from "./middleware/session";
 
 function caStatus(
   row: typeof schema.organizationCas.$inferSelect | undefined,
@@ -21,7 +20,6 @@ function caStatus(
 }
 
 export const internalCaRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get("/organizations/:orgId/internal-ca", async ({ authContext }) => {
     const auth = getAuth({ authContext });

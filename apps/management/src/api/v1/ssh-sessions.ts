@@ -11,7 +11,7 @@ import { pushKillSshSession } from "../../lib/control-plane-client";
 import { db } from "../../lib/db";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { notFound, sessionPlugin } from "./middleware/session";
+import { notFound } from "./middleware/session";
 
 function serializeSession(row: typeof schema.sshSessions.$inferSelect) {
   return {
@@ -52,7 +52,6 @@ function serializeRecording(
 }
 
 export const sshSessionsRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get("/organizations/:orgId/ssh-sessions", async ({ authContext, query }) => {
     const auth = getAuth({ authContext });

@@ -12,7 +12,7 @@ import { bumpNetworkAndNotify } from "../../lib/notify";
 import { requirePlanFeature } from "../../lib/org-billing";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { notFound, sessionPlugin } from "./middleware/session";
+import { notFound } from "./middleware/session";
 
 async function assertSshRecordingAllowed(
   organizationId: string,
@@ -51,7 +51,6 @@ async function getNetworkInOrg(networkId: string, organizationId: string) {
 }
 
 export const sshPoliciesRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get(
     "/organizations/:orgId/networks/:networkId/ssh-policies",

@@ -2,20 +2,12 @@ import { LicenseRequiredError } from "@tunnet/license/server";
 import { Elysia } from "elysia";
 import { auth, license } from "../../../auth";
 import type { AuthContext, SessionUserContext } from "./session";
-import { forbidden, unauthorized } from "./session";
+import { forbidden, requireAuth, unauthorized } from "./session";
 
 export type PermissionCheck = Record<string, string[]>;
 
-export const requireAuth = new Elysia({ name: "require-auth" }).onBeforeHandle(
-  { as: "scoped" },
-  ({ authContext }) => {
-    if (!authContext) {
-      return unauthorized();
-    }
-  },
-);
+export { requireAuth };
 
-/** Require an authenticated session user (no organization membership). */
 export const requireSessionAuth = new Elysia({
   name: "require-session-auth",
 }).onBeforeHandle({ as: "scoped" }, ({ sessionUser }) => {
@@ -24,7 +16,6 @@ export const requireSessionAuth = new Elysia({
   }
 });
 
-/** Cloud admin access via Better Auth `auth.api.userHasPermission`. */
 export const requireCloudAccess = new Elysia({
   name: "require-cloud-access",
 }).onBeforeHandle({ as: "scoped" }, async ({ sessionUser }) => {

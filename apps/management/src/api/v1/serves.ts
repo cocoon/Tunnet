@@ -11,7 +11,7 @@ import { issueLeafCertificate } from "../../lib/internal-ca";
 import { bumpNetworkAndNotify, notifyEntityChanged } from "../../lib/notify";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { notFound, sessionPlugin } from "./middleware/session";
+import { notFound } from "./middleware/session";
 
 function serializeServe(
   row: typeof schema.serves.$inferSelect,
@@ -54,7 +54,6 @@ function deviceLabel(
 }
 
 export const servesRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get(
     "/organizations/:orgId/networks/:networkId/serves",

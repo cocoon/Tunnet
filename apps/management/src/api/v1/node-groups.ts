@@ -10,7 +10,7 @@ import { db } from "../../lib/db";
 import { bumpNetworkAndNotify } from "../../lib/notify";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { notFound, sessionPlugin } from "./middleware/session";
+import { notFound } from "./middleware/session";
 
 async function getNetworkInOrg(networkId: string, organizationId: string) {
   return db.query.networks.findFirst({
@@ -22,7 +22,6 @@ async function getNetworkInOrg(networkId: string, organizationId: string) {
 }
 
 export const nodeGroupsRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get(
     "/organizations/:orgId/networks/:networkId/node-groups",

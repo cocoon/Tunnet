@@ -12,7 +12,7 @@ import { deviceDisplayName } from "../../lib/device-metadata";
 import { bumpNetworkAndNotify } from "../../lib/notify";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { notFound, sessionPlugin } from "./middleware/session";
+import { notFound } from "./middleware/session";
 
 async function getNetworkInOrg(networkId: string, organizationId: string) {
   return db.query.networks.findFirst({
@@ -24,7 +24,6 @@ async function getNetworkInOrg(networkId: string, organizationId: string) {
 }
 
 export const deviceProfilesRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get(
     "/organizations/:orgId/networks/:networkId/exit-nodes",

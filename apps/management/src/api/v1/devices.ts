@@ -39,12 +39,7 @@ import {
   replaceDeviceTags,
 } from "../../lib/tag-ownership";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import {
-  badRequest,
-  forbidden,
-  notFound,
-  sessionPlugin,
-} from "./middleware/session";
+import { badRequest, forbidden, notFound } from "./middleware/session";
 import { getTagActor, requireTagAccess } from "./middleware/tag-auth";
 
 async function getNetworkInOrg(networkId: string, organizationId: string) {
@@ -101,7 +96,6 @@ async function listDevicesOnNetwork(networkId: string) {
 }
 
 export const devicesRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get(
     "/organizations/:orgId/networks/:networkId/devices",

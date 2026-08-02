@@ -13,7 +13,7 @@ import { db } from "../../lib/db";
 import { bumpNetworkAndNotify } from "../../lib/notify";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { notFound, sessionPlugin } from "./middleware/session";
+import { notFound } from "./middleware/session";
 
 function serializeRoute(
   row: typeof schema.hostnameRoutes.$inferSelect,
@@ -46,7 +46,6 @@ async function getNetworkInOrg(networkId: string, organizationId: string) {
 }
 
 export const hostnameRoutesRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get(
     "/organizations/:orgId/networks/:networkId/hostname-routes",

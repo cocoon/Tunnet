@@ -20,7 +20,7 @@ import { bumpNetworkAndNotify, notifyEntityChanged } from "../../lib/notify";
 import { assertPublicTunnelCapacity } from "../../lib/org-billing";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { conflict, notFound, sessionPlugin } from "./middleware/session";
+import { conflict, notFound } from "./middleware/session";
 
 function serializeTunnel(
   row: typeof schema.tunnels.$inferSelect,
@@ -160,7 +160,6 @@ function deviceLabel(
 }
 
 export const tunnelsRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get(
     "/organizations/:orgId/networks/:networkId/tunnels",

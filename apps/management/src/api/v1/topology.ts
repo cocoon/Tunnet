@@ -10,7 +10,7 @@ import {
 import { isAgentOnline } from "../../lib/presence";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth } from "./middleware/authz";
-import { notFound, sessionPlugin } from "./middleware/session";
+import { notFound } from "./middleware/session";
 
 async function getNetworkInOrg(networkId: string, organizationId: string) {
   return db.query.networks.findFirst({
@@ -22,7 +22,6 @@ async function getNetworkInOrg(networkId: string, organizationId: string) {
 }
 
 export const topologyRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get(
     "/organizations/:orgId/networks/:networkId/topology",

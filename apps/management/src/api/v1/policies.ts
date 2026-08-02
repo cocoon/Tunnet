@@ -13,7 +13,7 @@ import { db } from "../../lib/db";
 import { bumpNetworkAndNotify, bumpOrgAndNotify } from "../../lib/notify";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { notFound, sessionPlugin } from "./middleware/session";
+import { notFound } from "./middleware/session";
 
 function serializePolicy(row: typeof schema.policies.$inferSelect) {
   return {
@@ -45,7 +45,6 @@ async function getNetworkInOrg(networkId: string, organizationId: string) {
 }
 
 export const policiesRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get(
     "/organizations/:orgId/networks/:networkId/policies",

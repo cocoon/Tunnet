@@ -6,10 +6,8 @@ import {
 } from "../../lib/org-billing";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth } from "./middleware/authz";
-import { sessionPlugin } from "./middleware/session";
 
 export const billingUsageRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get("/organizations/:orgId/billing-usage", async ({ authContext }) => {
     const auth = getAuth({ authContext });

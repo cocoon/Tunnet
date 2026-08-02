@@ -10,7 +10,7 @@ import { db } from "../../lib/db";
 import { notifyEntityChanged } from "../../lib/notify";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { notFound, sessionPlugin } from "./middleware/session";
+import { notFound } from "./middleware/session";
 
 function serializeEdge(row: typeof schema.edges.$inferSelect) {
   return {
@@ -36,7 +36,6 @@ function serializeEdge(row: typeof schema.edges.$inferSelect) {
 }
 
 export const edgesRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get("/organizations/:orgId/edges", async ({ authContext }) => {
     const auth = getAuth({ authContext });

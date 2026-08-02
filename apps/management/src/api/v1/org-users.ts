@@ -4,7 +4,7 @@ import { auth, license } from "../../auth";
 import { writeAudit } from "../../lib/audit";
 import { db } from "../../lib/db";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { badRequest, sessionPlugin } from "./middleware/session";
+import { badRequest } from "./middleware/session";
 
 const createOrgUserBody = z.object({
   email: z.string().email(),
@@ -14,7 +14,6 @@ const createOrgUserBody = z.object({
 });
 
 export const orgUsersRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .use(requirePermission({ member: ["create"] }))
   .post(

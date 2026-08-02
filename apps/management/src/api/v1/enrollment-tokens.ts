@@ -13,12 +13,7 @@ import {
   normalizeTagName,
 } from "../../lib/tag-ownership";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import {
-  badRequest,
-  forbidden,
-  notFound,
-  sessionPlugin,
-} from "./middleware/session";
+import { badRequest, forbidden, notFound } from "./middleware/session";
 import { isOrgAdminRole } from "./middleware/tag-auth";
 
 function serializeToken(row: typeof schema.enrollmentTokens.$inferSelect) {
@@ -42,7 +37,6 @@ async function getNetworkInOrg(networkId: string, organizationId: string) {
 }
 
 export const enrollmentTokensRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get(
     "/organizations/:orgId/networks/:networkId/enrollment-tokens",

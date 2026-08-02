@@ -9,7 +9,7 @@ import { db } from "../../lib/db";
 import { requirePlanFeature } from "../../lib/org-billing";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { notFound, sessionPlugin } from "./middleware/session";
+import { notFound } from "./middleware/session";
 
 type OidcConfigStored = {
   clientId?: string;
@@ -46,7 +46,6 @@ function serializeProvider(row: typeof schema.ssoProvider.$inferSelect) {
 }
 
 export const ssoSettingsRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get("/organizations/:orgId/sso-settings", async ({ authContext }) => {
     const authCtx = getAuth({ authContext });

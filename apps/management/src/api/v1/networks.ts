@@ -13,7 +13,7 @@ import { bumpNetworkAndNotify } from "../../lib/notify";
 import { assertNetworkCapacity } from "../../lib/org-billing";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { notFound, sessionPlugin } from "./middleware/session";
+import { notFound } from "./middleware/session";
 
 function serializeNetwork(row: typeof schema.networks.$inferSelect) {
   return {
@@ -31,7 +31,6 @@ function serializeNetwork(row: typeof schema.networks.$inferSelect) {
 }
 
 export const networksRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get("/organizations/:orgId/networks", async ({ authContext }) => {
     const auth = getAuth({ authContext });

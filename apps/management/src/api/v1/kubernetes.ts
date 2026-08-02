@@ -14,7 +14,6 @@ import { requirePlanFeature } from "../../lib/org-billing";
 import { isAgentOnline } from "../../lib/presence";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth } from "./middleware/authz";
-import { sessionPlugin } from "./middleware/session";
 
 function safeFormatCidr(value: string): string | null {
   try {
@@ -33,7 +32,6 @@ function safeFormatIp(value: string): string {
 }
 
 export const kubernetesRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get("/organizations/:orgId/kubernetes", async ({ authContext }) => {
     const auth = getAuth({ authContext });

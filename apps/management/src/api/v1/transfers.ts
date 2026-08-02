@@ -19,7 +19,7 @@ import {
 import { db } from "../../lib/db";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { notFound, sessionPlugin } from "./middleware/session";
+import { notFound } from "./middleware/session";
 
 function serializeTransfer(row: typeof schema.fileTransfers.$inferSelect) {
   return fileTransferSchema.parse({
@@ -56,7 +56,6 @@ function serializeSettings(
 }
 
 export const transfersRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get("/organizations/:orgId/transfers", async ({ authContext, query }) => {
     const auth = getAuth({ authContext });

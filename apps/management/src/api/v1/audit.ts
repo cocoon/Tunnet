@@ -6,10 +6,8 @@ import { db } from "../../lib/db";
 import { auditRetentionCutoff } from "../../lib/org-billing";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth } from "./middleware/authz";
-import { sessionPlugin } from "./middleware/session";
 
 export const auditRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get("/organizations/:orgId/audit-log", async ({ authContext, query }) => {
     const auth = getAuth({ authContext });

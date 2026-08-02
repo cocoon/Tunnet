@@ -10,7 +10,7 @@ import { db } from "../../lib/db";
 import { notifyEntityChanged } from "../../lib/notify";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
-import { forbidden, notFound, sessionPlugin } from "./middleware/session";
+import { forbidden, notFound } from "./middleware/session";
 
 type DbLike = {
   query: typeof db.query;
@@ -111,7 +111,6 @@ async function ensureOrgRelayPolicyAugment(
 }
 
 export const relaysRoutes = new Elysia()
-  .use(sessionPlugin)
   .use(requireAuth)
   .get("/organizations/:orgId/relays", async ({ authContext }) => {
     const auth = getAuth({ authContext });
