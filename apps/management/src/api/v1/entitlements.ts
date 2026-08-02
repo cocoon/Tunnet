@@ -1,11 +1,7 @@
 import { Elysia } from "elysia";
-
-import { getEntitlements } from "../../lib/entitlements";
+import { license } from "../../auth";
 
 export const entitlementsRoutes = new Elysia({ prefix: "/entitlements" }).get(
   "/",
-  async () => {
-    const entitlements = await getEntitlements();
-    return entitlements;
-  },
+  () => license.snapshot(),
 );

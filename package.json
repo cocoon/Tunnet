@@ -23,14 +23,15 @@
     "test:sdk:integration": "bun --env-file=.env --filter @tunnet/sdk test:integration",
     "check": "biome check",
     "desktop:dev": "bun run --filter @tunnet/desktop tauri dev",
-    "desktop:build": "bun run --filter @tunnet/desktop tauri build"
+    "desktop:build": "bun run --filter @tunnet/desktop tauri build",
+    "cli": "bun ./packages/cli/src/cli.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.6",
     "@types/bun": "^1.3.14",
     "lefthook": "^2.1.10",
     "portless": "^0.15.5",
-    "vitepress": "^2.0.0-alpha.18"
+    "vitepress": "^2.0.0-alpha.19"
   },
   "dependencies": {
     "ip-address": "^10.4.0",

@@ -81,11 +81,12 @@ server-internal components are licensed under AGPL-3.0-only:
 - `crates/tunnet-edge`
 - `crates/tunnet-relay`
 - `crates/tunnet-audit`
+- `crates/tunnet-license`
 - `apps/management`
 - `apps/dashboard`
 - `packages/api` until its public contracts are split into a separate Apache-2.0 package
 - `packages/db`
-- `packages/entitlements`
+- `packages/license`
 - `packages/env`
 - `deploy`
 - `charts/tunnet-operator`, except `charts/tunnet-operator/crds`
@@ -101,10 +102,10 @@ running version.
 The license map above must not be represented as complete until these changes
 are made:
 
-1. Move `crates/tunnet-common/src/license.rs` and all deployment-license logic
-   into an AGPL component such as `crates/tunnet-server-license`.
-   `tunnet-common` cannot truthfully be distributed as Apache-2.0 while that
-   AGPL/server-entitlement implementation remains compiled into it.
+1. ~~Move deployment-license logic out of `tunnet-common`.~~ Done:
+   TypeScript verifier lives in `packages/license`; Rust control-plane verifier
+   is `crates/tunnet-license` (AGPL-3.0-only). `tunnet-common` no longer
+   contains license/entitlement code.
 
 2. Split reusable public schemas and generated client contracts out of
    `packages/api` into an Apache-2.0 package such as `packages/protocol` or

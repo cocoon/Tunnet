@@ -4,7 +4,7 @@ import {
   COMMUNITY_ENTITLEMENTS,
   type Entitlements,
   type Feature,
-} from "@tunnet/entitlements";
+} from "@tunnet/license";
 
 import { getManagementApiUrl } from "@/lib/env";
 
@@ -15,7 +15,9 @@ export async function fetchEntitlements(): Promise<Entitlements> {
   if (!response.ok) return COMMUNITY_ENTITLEMENTS;
   const data: unknown = await response.json();
   const parsed = entitlementsSchema.safeParse(data);
-  return parsed.success ? parsed.data : COMMUNITY_ENTITLEMENTS;
+  return parsed.success
+    ? (parsed.data as Entitlements)
+    : COMMUNITY_ENTITLEMENTS;
 }
 
 export function useEntitlements() {
@@ -26,8 +28,7 @@ export function useEntitlements() {
   });
 }
 
-/** Reactive feature check against the cached license. */
 export function useFeature(feature: Feature): boolean {
   const { data } = useEntitlements();
-  return data?.[feature] === true;
+  return data?.features[feature] === true;
 }

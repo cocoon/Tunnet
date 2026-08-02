@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 use ed25519_dalek::SigningKey;
 use sqlx::PgPool;
 use tunnet_audit::AuditEmitter;
-use tunnet_common::license::Entitlements;
+use tunnet_license::Entitlements;
 
 use crate::config::Args;
 use crate::pg_notify;

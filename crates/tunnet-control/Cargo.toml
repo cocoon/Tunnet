@@ -9,6 +9,7 @@ publish = false
 tunnet-common.workspace = true
 tunnet-posture.workspace = true
 tunnet-audit.workspace = true
+tunnet-license.workspace = true
 
 tokio.workspace = true
 tokio-util.workspace = true

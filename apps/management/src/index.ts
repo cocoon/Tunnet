@@ -4,18 +4,24 @@ import {
 } from "@better-auth/oauth-provider";
 import { cors } from "@elysiajs/cors";
 import { getDashboardUrl, getManagementPort } from "@tunnet/env";
+import {
+  LicenseLimitError,
+  LicenseRequiredError,
+} from "@tunnet/license/server";
 import { Elysia } from "elysia";
 
 import { cliAuthRoutes } from "./api/cli-auth";
 import { sshAuthBrowserRoutes } from "./api/ssh-auth-browser";
 import { apiV1 } from "./api/v1";
-import { auth, ensureTrustedOAuthClients } from "./auth";
+import { auth, ensureTrustedOAuthClients, initAuth, license } from "./auth";
 import { ensureBootstrapUser } from "./lib/bootstrap-user";
 import { repairStrippedMeshCidrs } from "./lib/repair-mesh-cidrs";
 
 const port = getManagementPort();
 const host = process.env.HOST?.trim() || "127.0.0.1";
 const webOrigin = getDashboardUrl();
+
+await initAuth();
 
 await repairStrippedMeshCidrs().catch((err) => {
   console.error("mesh CIDR repair failed:", err);
@@ -33,6 +39,16 @@ const oauthAuthServerMetadata = oauthProviderAuthServerMetadata(auth);
 const openIdConfigMetadata = oauthProviderOpenIdConfigMetadata(auth);
 
 const app = new Elysia()
+  .decorate("license", license)
+  .onError(({ error, set }) => {
+    if (
+      error instanceof LicenseRequiredError ||
+      error instanceof LicenseLimitError
+    ) {
+      set.status = 402;
+      return { error: error.message, code: error.code };
+    }
+  })
   .use(
     cors({
       origin: webOrigin,

@@ -1,0 +1,21 @@
+{
+  "name": "@tunnet/license",
+  "version": "0.0.0",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server.ts",
+    "./issuer": "./src/issuer.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.2.0"
+  },
+  "scripts": {
+    "test": "bun test",
+    "vectors": "bun run scripts/gen-vectors.ts"
+  }
+}

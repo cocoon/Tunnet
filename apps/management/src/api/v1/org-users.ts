@@ -1,10 +1,8 @@
 import { Elysia } from "elysia";
 import { z } from "zod";
-
-import { auth } from "../../auth";
+import { auth, license } from "../../auth";
 import { writeAudit } from "../../lib/audit";
 import { db } from "../../lib/db";
-import { hasFeature } from "../../lib/entitlements";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
 import { badRequest, sessionPlugin } from "./middleware/session";
 
@@ -30,7 +28,7 @@ export const orgUsersRoutes = new Elysia()
 
       const { email, password, name, role } = parsed.data;
 
-      if (await hasFeature("openSignUp")) {
+      if (license.has("openSignUp")) {
         return badRequest(
           "Use invitations to add users when public signup is enabled",
         );

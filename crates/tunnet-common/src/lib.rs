@@ -2,7 +2,6 @@ pub mod agent_policy;
 pub mod duration;
 pub mod edge;
 pub mod ipv6;
-pub mod license;
 pub mod local_api;
 pub mod policy;
 pub mod posture;

@@ -18,7 +18,7 @@ export const Route = createFileRoute("/cloud")({
     }
 
     const entitlements = await fetchEntitlements();
-    if (!entitlements.cloudInfrastructure) {
+    if (!entitlements.features.cloudInfrastructure) {
       throw redirect({ to: "/" });
     }
   },

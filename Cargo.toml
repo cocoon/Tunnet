@@ -18,6 +18,7 @@ members = [
   "crates/tunnet-posture",
   "crates/tunnet-policy-engine",
   "crates/tunnet-audit",
+  "crates/tunnet-license",
   "apps/desktop/src-tauri",
 ]
 
@@ -150,6 +151,7 @@ tunnet-service = { version = "0.8.0", path = "crates/tunnet-service" }
 tunnet-posture = { version = "0.8.0", path = "crates/tunnet-posture" }
 tunnet-policy-engine = { version = "0.8.0", path = "crates/tunnet-policy-engine" }
 tunnet-audit = { version = "0.8.0", path = "crates/tunnet-audit" }
+tunnet-license = { version = "0.8.0", path = "crates/tunnet-license" }
 yaml_serde = "0.10.4"
 hcl-rs = "0.19"
 

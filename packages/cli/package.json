@@ -1,0 +1,19 @@
+{
+  "name": "@tunnet/cli",
+  "version": "0.0.0",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "main": "./src/cli.ts",
+  "bin": {
+    "tunnet-cli": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.7.0",
+    "@tunnet/license": "workspace:*",
+    "citty": "^0.2.2"
+  }
+}

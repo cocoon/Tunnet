@@ -26,7 +26,7 @@
     "@tanstack/router-plugin": "^1.168.23",
     "@tunnet/api": "workspace:*",
     "@tunnet/db": "workspace:*",
-    "@tunnet/entitlements": "workspace:*",
+    "@tunnet/license": "workspace:*",
     "@tunnet/env": "workspace:*",
     "@tunnet/policy-engine": "workspace:*",
     "@tunnet/ui": "workspace:*",

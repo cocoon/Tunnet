@@ -44,7 +44,7 @@ use secrecy::ExposeSecret;
 use tunnet_audit::{
     AuditConfig, AuditSink, AuditStream, PostgresPgSink, WebhookStream, start_worker,
 };
-use tunnet_common::license::resolve_entitlements_from_env;
+use tunnet_license::{Feature, has_feature, resolve_entitlements_from_env};
 
 use crate::admin::AdminState;
 use crate::config::Args;
@@ -147,9 +147,10 @@ async fn run_serve(args: Args) -> anyhow::Result<()> {
 
     let entitlements = resolve_entitlements_from_env().await;
     crate::relay_map::set_license_tier(entitlements.tier);
+    let clickhouse_audit = has_feature(&entitlements, Feature::ClickhouseAudit);
     tracing::info!(
         tier = ?entitlements.tier,
-        clickhouse_audit = entitlements.clickhouse_audit,
+        clickhouse_audit,
         deployment_relay_mode = ?crate::relay_map::deployment_relay_mode(),
         "license entitlements loaded"
     );
@@ -176,7 +177,7 @@ async fn run_serve(args: Args) -> anyhow::Result<()> {
 
     // Phase 2: ClickHouse - refuse without entitlement.
     if std::env::var("TUNNET_AUDIT_CLICKHOUSE_URL").is_ok() {
-        if entitlements.clickhouse_audit {
+        if clickhouse_audit {
             tracing::warn!(
                 "TUNNET_AUDIT_CLICKHOUSE_URL set but ClickHouse sink not yet implemented; ignoring"
             );

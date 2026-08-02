@@ -2,8 +2,8 @@
 
 use std::sync::OnceLock;
 
-use tunnet_common::license::LicenseTier;
 use tunnet_common::{ConnectivityRelayConfig, ConnectivityRelayFallback, RelayPolicy};
+use tunnet_license::LicenseTier;
 
 /// Row shape used when composing effective relays (from DB / control plane).
 #[derive(Debug, Clone, PartialEq, Eq)]

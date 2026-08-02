@@ -11,6 +11,8 @@ import {
 } from "@tunnet/api/auth";
 import { getDb, schema } from "@tunnet/db";
 import { getDashboardUrl, getManagementUrl } from "@tunnet/env";
+import type { LicenseManager } from "@tunnet/license/server";
+import { createLicenseManager } from "@tunnet/license/server";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError } from "better-auth/api";
@@ -22,16 +24,13 @@ import {
   organization,
 } from "better-auth/plugins";
 import { eq } from "drizzle-orm";
-
 import { hierarchyBeforeHook } from "./auth/hierarchy-hooks";
 import { createDefaultNetwork } from "./lib/default-network";
-import { hasFeature } from "./lib/entitlements";
 
 const db = getDb();
 
 const dashboardOrigin = getDashboardUrl();
 const managementOrigin = getManagementUrl();
-const disablePublicSignUp = !(await hasFeature("openSignUp"));
 
 function getSharedCookieDomain(): string | undefined {
   const configured = process.env.BETTER_AUTH_COOKIE_DOMAIN?.trim();
@@ -71,236 +70,245 @@ export const TRUSTED_OAUTH_CLIENT_IDS = new Set<string>([
     : []),
 ]);
 
-async function canUserCreateOrganization(user: {
-  id: string;
-}): Promise<boolean> {
-  if (await hasFeature("multiOrganization")) return true;
+export let license!: LicenseManager;
+export let auth!: ReturnType<typeof buildAuth>;
 
-  const memberships = await db.query.member.findMany({
-    where: eq(schema.member.userId, user.id),
-  });
-  return memberships.length === 0;
-}
+function buildAuth(license: LicenseManager) {
+  const disablePublicSignUp = !license.has("openSignUp");
 
-async function hasReachedOrganizationLimit(user: {
-  id: string;
-}): Promise<boolean> {
-  if (await hasFeature("multiOrganization")) return false;
+  async function canUserCreateOrganization(user: {
+    id: string;
+  }): Promise<boolean> {
+    const memberships = await db.query.member.findMany({
+      where: eq(schema.member.userId, user.id),
+    });
+    return memberships.length + 1 <= license.limit("organizations");
+  }
 
-  const memberships = await db.query.member.findMany({
-    where: eq(schema.member.userId, user.id),
-  });
-  return memberships.length >= 1;
-}
+  async function hasReachedOrganizationLimit(user: {
+    id: string;
+  }): Promise<boolean> {
+    const memberships = await db.query.member.findMany({
+      where: eq(schema.member.userId, user.id),
+    });
+    return memberships.length >= license.limit("organizations");
+  }
 
-async function ssoTrustedOrigins(): Promise<string[]> {
-  const origins = new Set<string>([dashboardOrigin]);
-  try {
-    const providers = await db.query.ssoProvider.findMany();
-    for (const provider of providers) {
-      try {
-        origins.add(new URL(provider.issuer).origin);
-      } catch {
-        /* ignore invalid issuer */
-      }
-      if (provider.oidcConfig) {
+  async function ssoTrustedOrigins(): Promise<string[]> {
+    const origins = new Set<string>([dashboardOrigin]);
+    try {
+      const providers = await db.query.ssoProvider.findMany();
+      for (const provider of providers) {
         try {
-          const cfg = JSON.parse(provider.oidcConfig) as {
-            discoveryEndpoint?: string;
-            authorizationEndpoint?: string;
-            tokenEndpoint?: string;
-            jwksEndpoint?: string;
-            userInfoEndpoint?: string;
-          };
-          for (const url of [
-            cfg.discoveryEndpoint,
-            cfg.authorizationEndpoint,
-            cfg.tokenEndpoint,
-            cfg.jwksEndpoint,
-            cfg.userInfoEndpoint,
-          ]) {
-            if (!url) continue;
-            try {
-              origins.add(new URL(url).origin);
-            } catch {
-              /* ignore */
-            }
-          }
+          origins.add(new URL(provider.issuer).origin);
         } catch {
-          /* ignore */
+          /* ignore invalid issuer */
+        }
+        if (provider.oidcConfig) {
+          try {
+            const cfg = JSON.parse(provider.oidcConfig) as {
+              discoveryEndpoint?: string;
+              authorizationEndpoint?: string;
+              tokenEndpoint?: string;
+              jwksEndpoint?: string;
+              userInfoEndpoint?: string;
+            };
+            for (const url of [
+              cfg.discoveryEndpoint,
+              cfg.authorizationEndpoint,
+              cfg.tokenEndpoint,
+              cfg.jwksEndpoint,
+              cfg.userInfoEndpoint,
+            ]) {
+              if (!url) continue;
+              try {
+                origins.add(new URL(url).origin);
+              } catch {
+                /* ignore */
+              }
+            }
+          } catch {
+            /* ignore */
+          }
         }
       }
+    } catch {
+      /* table may not exist until migrations run */
     }
-  } catch {
-    /* table may not exist until migrations run */
+    return [...origins];
   }
-  return [...origins];
+
+  return betterAuth({
+    appName: "Tunnet Management",
+    baseURL: getManagementUrl(),
+    ...(sharedCookieDomain
+      ? {
+          advanced: {
+            crossSubDomainCookies: {
+              enabled: true,
+              domain: sharedCookieDomain,
+            },
+          },
+        }
+      : {}),
+    database: drizzleAdapter(db, {
+      provider: "pg",
+      schema: {
+        user: schema.user,
+        session: schema.session,
+        account: schema.account,
+        verification: schema.verification,
+        organization: schema.organization,
+        member: schema.member,
+        invitation: schema.invitation,
+        organizationRole: schema.organizationRole,
+        ssoProvider: schema.ssoProvider,
+        jwks: schema.jwks,
+        oauthClient: schema.oauthClient,
+        oauthRefreshToken: schema.oauthRefreshToken,
+        oauthAccessToken: schema.oauthAccessToken,
+        oauthConsent: schema.oauthConsent,
+        deviceCode: schema.deviceCode,
+      },
+    }),
+    experimental: {
+      joins: true,
+    },
+    emailAndPassword: {
+      enabled: true,
+      disableSignUp: disablePublicSignUp,
+    },
+    disabledPaths: ["/token"],
+    trustedOrigins: async (request) => {
+      const base = [dashboardOrigin];
+      if (!request) {
+        return [...base, ...(await ssoTrustedOrigins())];
+      }
+      const path = new URL(request.url).pathname;
+      if (
+        path.endsWith("/sso/register") ||
+        path.includes("/sso/") ||
+        path.includes("/sign-in/sso")
+      ) {
+        return [...base, ...(await ssoTrustedOrigins())];
+      }
+      return base;
+    },
+    hooks: {
+      before: hierarchyBeforeHook,
+    },
+    plugins: [
+      admin({
+        ac: adminPluginAc,
+        roles: {
+          admin: adminPluginAdminRole,
+          user: adminPluginUserRole,
+        },
+        defaultRole: "user",
+        adminRoles: ["admin"],
+      }),
+      organization({
+        ac,
+        roles: {
+          owner,
+          admin: orgAdmin,
+          member,
+        },
+        dynamicAccessControl: {
+          enabled: true,
+          maximumRolesPerOrganization: 50,
+        },
+        allowUserToCreateOrganization: async (user) =>
+          canUserCreateOrganization(user),
+        organizationLimit: async (user) => hasReachedOrganizationLimit(user),
+        schema: {
+          organization: {
+            additionalFields: {
+              quickEnrollEnabled: {
+                type: "boolean",
+                required: false,
+                defaultValue: true,
+                input: true,
+              },
+            },
+          },
+          organizationRole: {
+            additionalFields: {
+              position: {
+                type: "number",
+                required: true,
+                defaultValue: 101,
+                input: true,
+              },
+              color: {
+                type: "string",
+                required: false,
+                input: true,
+              },
+            },
+          },
+        },
+        organizationHooks: {
+          beforeCreateInvitation: async () => {
+            if (!license.has("openSignUp")) {
+              throw new APIError("BAD_REQUEST", {
+                message:
+                  "Invitations require cloud signup. Create users from the admin panel instead.",
+              });
+            }
+          },
+          afterCreateOrganization: async ({ organization, user }) => {
+            await createDefaultNetwork(organization.id, user.id);
+          },
+        },
+      }),
+      sso({
+        organizationProvisioning: {
+          disabled: false,
+          defaultRole: "member",
+        },
+      }),
+      jwt(),
+      bearer(),
+      deviceAuthorization({
+        verificationUri: `${dashboardOrigin}/app/settings/account`,
+        validateClient: async (clientId) => {
+          const client = await db.query.oauthClient.findFirst({
+            where: eq(schema.oauthClient.clientId, clientId),
+          });
+          return Boolean(client && !client.disabled);
+        },
+      }),
+      oauthProvider({
+        loginPage: `${dashboardOrigin}/login`,
+        consentPage: `${dashboardOrigin}/consent`,
+        scopes: [
+          "openid",
+          "profile",
+          "email",
+          "offline_access",
+          "mesh:connect",
+          "tunnel:create",
+          "serve:create",
+          "admin:read",
+          "admin:write",
+        ],
+        cachedTrustedClients: TRUSTED_OAUTH_CLIENT_IDS,
+        clientReference: ({ session }) =>
+          (session?.activeOrganizationId as string | undefined) ?? undefined,
+        silenceWarnings: {
+          oauthAuthServerConfig: true,
+        },
+      }),
+    ],
+  });
 }
 
-export const auth = betterAuth({
-  appName: "Tunnet Management",
-  baseURL: getManagementUrl(),
-  ...(sharedCookieDomain
-    ? {
-        advanced: {
-          crossSubDomainCookies: {
-            enabled: true,
-            domain: sharedCookieDomain,
-          },
-        },
-      }
-    : {}),
-  database: drizzleAdapter(db, {
-    provider: "pg",
-    schema: {
-      user: schema.user,
-      session: schema.session,
-      account: schema.account,
-      verification: schema.verification,
-      organization: schema.organization,
-      member: schema.member,
-      invitation: schema.invitation,
-      organizationRole: schema.organizationRole,
-      ssoProvider: schema.ssoProvider,
-      jwks: schema.jwks,
-      oauthClient: schema.oauthClient,
-      oauthRefreshToken: schema.oauthRefreshToken,
-      oauthAccessToken: schema.oauthAccessToken,
-      oauthConsent: schema.oauthConsent,
-      deviceCode: schema.deviceCode,
-    },
-  }),
-  experimental: {
-    joins: true,
-  },
-  emailAndPassword: {
-    enabled: true,
-    disableSignUp: disablePublicSignUp,
-  },
-  disabledPaths: ["/token"],
-  trustedOrigins: async (request) => {
-    const base = [dashboardOrigin];
-    if (!request) {
-      return [...base, ...(await ssoTrustedOrigins())];
-    }
-    const path = new URL(request.url).pathname;
-    if (
-      path.endsWith("/sso/register") ||
-      path.includes("/sso/") ||
-      path.includes("/sign-in/sso")
-    ) {
-      return [...base, ...(await ssoTrustedOrigins())];
-    }
-    return base;
-  },
-  hooks: {
-    before: hierarchyBeforeHook,
-  },
-  plugins: [
-    admin({
-      ac: adminPluginAc,
-      roles: {
-        admin: adminPluginAdminRole,
-        user: adminPluginUserRole,
-      },
-      defaultRole: "user",
-      adminRoles: ["admin"],
-    }),
-    organization({
-      ac,
-      roles: {
-        owner,
-        admin: orgAdmin,
-        member,
-      },
-      dynamicAccessControl: {
-        enabled: true,
-        maximumRolesPerOrganization: 50,
-      },
-      allowUserToCreateOrganization: async (user) =>
-        canUserCreateOrganization(user),
-      organizationLimit: async (user) => hasReachedOrganizationLimit(user),
-      schema: {
-        organization: {
-          additionalFields: {
-            quickEnrollEnabled: {
-              type: "boolean",
-              required: false,
-              defaultValue: true,
-              input: true,
-            },
-          },
-        },
-        organizationRole: {
-          additionalFields: {
-            position: {
-              type: "number",
-              required: true,
-              defaultValue: 101,
-              input: true,
-            },
-            color: {
-              type: "string",
-              required: false,
-              input: true,
-            },
-          },
-        },
-      },
-      organizationHooks: {
-        beforeCreateInvitation: async () => {
-          if (!(await hasFeature("openSignUp"))) {
-            throw new APIError("BAD_REQUEST", {
-              message:
-                "Invitations require cloud signup. Create users from the admin panel instead.",
-            });
-          }
-        },
-        afterCreateOrganization: async ({ organization, user }) => {
-          await createDefaultNetwork(organization.id, user.id);
-        },
-      },
-    }),
-    sso({
-      organizationProvisioning: {
-        disabled: false,
-        defaultRole: "member",
-      },
-    }),
-    jwt(),
-    bearer(),
-    deviceAuthorization({
-      verificationUri: `${dashboardOrigin}/app/settings/account`,
-      validateClient: async (clientId) => {
-        const client = await db.query.oauthClient.findFirst({
-          where: eq(schema.oauthClient.clientId, clientId),
-        });
-        return Boolean(client && !client.disabled);
-      },
-    }),
-    oauthProvider({
-      loginPage: `${dashboardOrigin}/login`,
-      consentPage: `${dashboardOrigin}/consent`,
-      scopes: [
-        "openid",
-        "profile",
-        "email",
-        "offline_access",
-        "mesh:connect",
-        "tunnel:create",
-        "serve:create",
-        "admin:read",
-        "admin:write",
-      ],
-      cachedTrustedClients: TRUSTED_OAUTH_CLIENT_IDS,
-      clientReference: ({ session }) =>
-        (session?.activeOrganizationId as string | undefined) ?? undefined,
-      silenceWarnings: {
-        oauthAuthServerConfig: true,
-      },
-    }),
-  ],
-});
+export async function initAuth(): Promise<LicenseManager> {
+  license = await createLicenseManager();
+  auth = buildAuth(license);
+  return license;
+}
 
 export async function ensureTrustedOAuthClients() {
   const apiOrigin = getManagementUrl();

@@ -15,7 +15,7 @@
     "@peculiar/x509": "^2.0.0",
     "@tunnet/api": "workspace:*",
     "@tunnet/db": "workspace:*",
-    "@tunnet/entitlements": "workspace:*",
+    "@tunnet/license": "workspace:*",
     "@tunnet/env": "workspace:*",
     "@tunnet/ip": "workspace:*",
     "@tunnet/policy-engine": "workspace:*",

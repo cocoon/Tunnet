@@ -85,7 +85,7 @@ export function NetworkGroupNode({
         selected && "ring-2 ring-ring",
       )}
     >
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center gap-2 border-b border-border/50 bg-card/80 px-3 py-2 backdrop-blur">
+      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center gap-2 border-b border-border/50 bg-card/80 px-3 py-2 backdrop-blur rounded-t-xl">
         <Share2Icon className="text-primary size-3.5 shrink-0" />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[12px] font-medium tracking-tight">

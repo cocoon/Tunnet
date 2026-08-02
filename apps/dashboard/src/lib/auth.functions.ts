@@ -46,7 +46,7 @@ export const getEntitlements = createServerFn({ method: "GET" }).handler(
       if (!response.ok) return null;
       return response.json() as Promise<{
         tier: string;
-        cloudInfrastructure: boolean;
+        features: { cloudInfrastructure: boolean };
       }>;
     } catch {
       return null;

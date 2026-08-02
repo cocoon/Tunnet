@@ -1,10 +1,9 @@
 import { getDb } from "@tunnet/db";
-import { auth } from "../auth";
-import { clearEntitlementsCache, hasFeature } from "./entitlements";
+import { auth, license } from "../auth";
 
 export async function ensureBootstrapUser(): Promise<void> {
   // Cloud SaaS: first user signs up publicly; no bootstrap owner seed.
-  if (await hasFeature("openSignUp")) {
+  if (license.has("openSignUp")) {
     return;
   }
 
@@ -42,6 +41,6 @@ export async function ensureBootstrapUser(): Promise<void> {
     },
   });
 
-  clearEntitlementsCache();
+  await license.refresh();
   console.log(`[bootstrap] Seeded owner account ${email} (admin)`);
 }

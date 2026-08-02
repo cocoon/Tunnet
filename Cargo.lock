@@ -10249,12 +10249,9 @@ dependencies = [
  "hex",
  "ipnet",
  "rand 0.10.2",
- "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
- "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -10304,6 +10301,7 @@ dependencies = [
  "tracing-subscriber",
  "tunnet-audit",
  "tunnet-common",
+ "tunnet-license",
  "tunnet-posture",
  "uuid",
 ]
@@ -10449,6 +10447,23 @@ dependencies = [
  "tunnet-common",
  "tunnet-core",
  "uuid",
+]
+
+[[package]]
+name = "tunnet-license"
+version = "0.8.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "ed25519-dalek 3.0.0-rc.0",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

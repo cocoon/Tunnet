@@ -16,8 +16,8 @@ todos.json
 **/.vitepress/cache/
 **/.vitepress/dist/
 license.json
+license.txt
 .secrets/
-scripts/sign-license.ts
 hack
 .cursor/
 bench-results/

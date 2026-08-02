@@ -1,7 +1,6 @@
+import { LicenseRequiredError } from "@tunnet/license/server";
 import { Elysia } from "elysia";
-
-import { auth } from "../../../auth";
-import { hasFeature } from "../../../lib/entitlements";
+import { auth, license } from "../../../auth";
 import type { AuthContext, SessionUserContext } from "./session";
 import { forbidden, unauthorized } from "./session";
 
@@ -47,9 +46,20 @@ export const requireCloudAccess = new Elysia({
 
 export const requireCloudInfrastructure = new Elysia({
   name: "require-cloud-infrastructure",
-}).onBeforeHandle({ as: "scoped" }, async () => {
-  if (!(await hasFeature("cloudInfrastructure"))) {
-    return forbidden();
+}).onBeforeHandle({ as: "scoped" }, () => {
+  try {
+    license.require("cloudInfrastructure");
+  } catch (err) {
+    if (err instanceof LicenseRequiredError) {
+      return new Response(
+        JSON.stringify({ error: err.message, code: err.code }),
+        {
+          status: 402,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    }
+    throw err;
   }
 });
 
