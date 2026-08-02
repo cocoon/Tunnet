@@ -20,6 +20,16 @@ import { createAuthClient } from "better-auth/react";
 
 import { getManagementApiUrl } from "@/lib/env";
 
+let authenticatedTransition = false;
+
+export function markAuthenticatedTransition() {
+  authenticatedTransition = true;
+}
+
+export function hasAuthenticatedTransition() {
+  return authenticatedTransition;
+}
+
 export const authClient = createAuthClient({
   baseURL: getManagementApiUrl(),
   fetchOptions: {
