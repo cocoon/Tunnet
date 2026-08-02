@@ -4,8 +4,8 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 
-RUN cargo fetch
-RUN cargo build --release --package tunnet-operator \
+RUN cargo fetch --locked
+RUN cargo build --release --locked --package tunnet-operator \
     && strip target/release/tunnet-operator
 
 FROM debian:bookworm-slim

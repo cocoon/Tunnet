@@ -5,16 +5,24 @@ WORKDIR /src
 ENV PATH=/src/node_modules/.bin:$PATH
 
 COPY package.json bun.lock ./
-COPY packages/db/package.json packages/db/
-COPY packages/api/package.json packages/api/
-COPY packages/ip/package.json packages/ip/
-COPY packages/core/package.json packages/core/
-COPY packages/env/package.json packages/env/
-COPY apps/management/package.json apps/management/
+COPY apps/cloud/package.json apps/cloud/
 COPY apps/dashboard/package.json apps/dashboard/
+COPY apps/desktop/package.json apps/desktop/
+COPY apps/docs/package.json apps/docs/
+COPY apps/management/package.json apps/management/
+COPY packages/api/package.json packages/api/
+COPY packages/cli/package.json packages/cli/
+COPY packages/client/package.json packages/client/
+COPY packages/db/package.json packages/db/
+COPY packages/env/package.json packages/env/
+COPY packages/ip/package.json packages/ip/
+COPY packages/license/package.json packages/license/
+COPY packages/policy-engine/package.json packages/policy-engine/
+COPY packages/tunnet/package.json packages/tunnet/
+COPY packages/ui/package.json packages/ui/
 COPY crates/tunnet-node-napi/package.json crates/tunnet-node-napi/
 
-RUN bun install --linker=hoisted
+RUN bun install --frozen-lockfile --linker=hoisted
 
 COPY packages/ packages/
 COPY apps/management/ apps/management/
@@ -22,6 +30,9 @@ COPY apps/management/ apps/management/
 FROM oven/bun:1-slim
 
 WORKDIR /app
+ENV NODE_ENV=production
+ENV HOST=0.0.0.0
+ENV PORT=3000
 
 COPY --from=builder /src/node_modules node_modules
 COPY --from=builder /src/packages packages

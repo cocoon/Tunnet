@@ -2,24 +2,26 @@ FROM oven/bun:1 AS builder
 
 WORKDIR /src
 
-# Copy ALL workspace package.json files - bun needs the full workspace
-# graph to resolve the lockfile correctly
 COPY package.json bun.lock ./
-COPY packages/db/package.json packages/db/
-COPY packages/api/package.json packages/api/
-COPY packages/ip/package.json packages/ip/
-COPY packages/core/package.json packages/core/
-COPY packages/env/package.json packages/env/
-COPY apps/management/package.json apps/management/
+COPY apps/cloud/package.json apps/cloud/
 COPY apps/dashboard/package.json apps/dashboard/
+COPY apps/desktop/package.json apps/desktop/
+COPY apps/docs/package.json apps/docs/
+COPY apps/management/package.json apps/management/
+COPY packages/api/package.json packages/api/
+COPY packages/cli/package.json packages/cli/
+COPY packages/client/package.json packages/client/
+COPY packages/db/package.json packages/db/
+COPY packages/env/package.json packages/env/
+COPY packages/ip/package.json packages/ip/
+COPY packages/license/package.json packages/license/
+COPY packages/policy-engine/package.json packages/policy-engine/
+COPY packages/tunnet/package.json packages/tunnet/
+COPY packages/ui/package.json packages/ui/
 COPY crates/tunnet-node-napi/package.json crates/tunnet-node-napi/
 
 # --linker=hoisted: flat node_modules layout that Vite can resolve
-# No --frozen-lockfile for now until lockfile is synced
-RUN bun install --linker=hoisted
-
-# Debug: verify vite is installed (remove after confirmed working)
-RUN ls /src/node_modules/.bin/vite && echo "vite found"
+RUN bun install --frozen-lockfile --linker=hoisted
 
 COPY packages/ packages/
 COPY apps/dashboard/ apps/dashboard/
@@ -38,6 +40,10 @@ FROM oven/bun:1-slim
 
 WORKDIR /app
 ENV NODE_ENV=production
+ENV HOST=0.0.0.0
+ENV PORT=3000
+ENV NITRO_HOST=0.0.0.0
+ENV NITRO_PORT=3000
 ARG MANAGEMENT_URL=http://management:3000
 ARG CONTROL_PLANE_URL=http://control:8080
 ARG DASHBOARD_URL=

@@ -4,8 +4,8 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 
-RUN cargo fetch
-RUN cargo build --release --package tunnet-relay \
+RUN cargo fetch --locked
+RUN cargo build --release --locked --package tunnet-relay \
     && strip target/release/tunnet-relay
 
 FROM debian:bookworm-slim

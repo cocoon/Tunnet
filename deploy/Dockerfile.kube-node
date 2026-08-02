@@ -4,8 +4,8 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 
-RUN cargo fetch
-RUN cargo build --release --package tunnet-kube-node \
+RUN cargo fetch --locked
+RUN cargo build --release --locked --package tunnet-kube-node \
     && strip target/release/tunnet-kube-node
 
 FROM debian:bookworm-slim
