@@ -6,6 +6,7 @@ mod metrics;
 mod registry;
 mod tcp;
 mod transport;
+mod usage;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -245,6 +246,7 @@ async fn run(cfg: RunConfig) -> anyhow::Result<()> {
                     edge_id = %reg.edge_id,
                     name = %reg.name,
                     domain = %reg.domain,
+                    metering = reg.metering_enabled,
                     "registered with control plane"
                 );
             }
@@ -253,6 +255,7 @@ async fn run(cfg: RunConfig) -> anyhow::Result<()> {
                 tracing::warn!(?e, "control plane register failed - continuing offline");
             }
         }
+        tcp_mgr.set_control(Some(client.clone()));
         control::spawn_heartbeat_loop(
             client.clone(),
             endpoint_id.clone(),

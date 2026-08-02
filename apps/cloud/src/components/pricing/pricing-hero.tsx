@@ -18,7 +18,7 @@ export function PricingHero(): ReactNode {
   return (
     <section
       ref={root}
-      className="relative isolate overflow-hidden pt-20 pb-14 sm:pt-28 sm:pb-20"
+      className="relative isolate overflow-hidden pt-20 pb-10 sm:pt-28 sm:pb-14"
     >
       <div aria-hidden className="pointer-events-none absolute inset-0 -z-10">
         <div className="absolute inset-0 bg-[var(--l1-bg)]" />
@@ -39,9 +39,9 @@ export function PricingHero(): ReactNode {
           <br />
           <span className="l1-copper-text">with your mesh.</span>
         </h1>
-        <p className="l1-reveal l1-lead mt-6 mx-auto max-w-[52ch]">
-          Direct mode is free forever. Managed plans from $29/month - billed by
-          seats and managed traffic, never per device.
+        <p className="l1-reveal l1-lead mt-6 mx-auto max-w-[48ch]">
+          Direct mode is free forever. Managed plans from $5/month - seats and
+          managed traffic, never per device.
         </p>
       </div>
     </section>

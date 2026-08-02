@@ -17,6 +17,7 @@ import { pushOpenTunnel, pushStopTunnel } from "../../lib/control-plane-client";
 import { db } from "../../lib/db";
 import { deviceDisplayName } from "../../lib/device-metadata";
 import { bumpNetworkAndNotify, notifyEntityChanged } from "../../lib/notify";
+import { assertPublicTunnelCapacity } from "../../lib/org-billing";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
 import { conflict, notFound, sessionPlugin } from "./middleware/session";
@@ -272,6 +273,7 @@ export const tunnelsRoutes = new Elysia()
         async ({ authContext, params, body }) => {
           const auth = getAuth({ authContext });
           const parsed = createTunnelBody.parse(body);
+          await assertPublicTunnelCapacity(auth.organizationId);
           const network = await getNetworkInOrg(
             params.networkId,
             auth.organizationId,

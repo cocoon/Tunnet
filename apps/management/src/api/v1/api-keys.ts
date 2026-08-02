@@ -7,6 +7,7 @@ import { Elysia } from "elysia";
 import { generateApiKeySecret } from "../../lib/api-key-secret";
 import { writeAudit } from "../../lib/audit";
 import { db } from "../../lib/db";
+import { requirePlanFeature } from "../../lib/org-billing";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
 import { badRequest, sessionPlugin } from "./middleware/session";
@@ -65,6 +66,7 @@ export const apiKeysRoutes = new Elysia()
       .use(requirePermission({ apiKey: ["create"] }))
       .post("/organizations/:orgId/api-keys", async ({ authContext, body }) => {
         const auth = getAuth({ authContext });
+        await requirePlanFeature(auth.organizationId, "apiAccess");
         const parsed = createApiKeyBody.parse(body);
         const { secret, secretPrefix } = generateApiKeySecret();
         const hashedSecret = await argon2.hash(secret);

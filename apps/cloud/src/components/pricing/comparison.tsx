@@ -8,27 +8,64 @@ import {
 
 type Cell = string | "yes" | "no";
 
-const HEADERS = ["Free", "Team", "Business", "Enterprise"];
+const HEADERS = ["Free", "Personal", "Team", "Business", "Enterprise"];
+const HIGHLIGHT = "Personal";
 
 const RAW_ROWS: { label: string; cells: Cell[] }[] = [
-  { label: "Price", cells: ["$0", "$29 /mo", "$149 /mo", "Custom"] },
-  { label: "Seats", cells: ["3", "5", "15", "Custom"] },
-  { label: "Additional seat", cells: ["-", "$5", "$8", "-"] },
-  { label: "Resources", cells: ["20", "100", "500", "Unlimited"] },
-  { label: "Managed traffic", cells: ["5 GB", "50 GB", "500 GB", "Custom"] },
   {
-    label: "Mesh · Serve · Tunnel · Send · SSH",
-    cells: ["yes", "yes", "yes", "yes"],
+    label: "Price",
+    cells: ["$0", "$5 /mo", "$5 /user", "$10 /user", "Custom"],
   },
-  { label: "SSO / OIDC", cells: ["no", "yes", "yes", "yes"] },
-  { label: "Roles & audit log", cells: ["no", "yes", "yes", "yes"] },
-  { label: "SSH session recording", cells: ["no", "yes", "yes", "yes"] },
-  { label: "REST API", cells: ["no", "yes", "yes", "yes"] },
-  { label: "Public tunnels", cells: ["no", "yes", "yes", "yes"] },
-  { label: "Policy as Code", cells: ["no", "no", "yes", "yes"] },
-  { label: "Dedicated edges", cells: ["no", "no", "yes", "yes"] },
-  { label: "Self-host control plane", cells: ["no", "no", "no", "yes"] },
-  { label: "24/7 support & SLA", cells: ["no", "no", "no", "yes"] },
+  {
+    label: "Seats",
+    cells: ["1", "1", "2 min", "5 min", "Custom"],
+  },
+  {
+    label: "Resources",
+    cells: ["20", "100", "100 + 25/extra", "500 + 50/extra", "Custom"],
+  },
+  {
+    label: "Networks",
+    cells: ["1", "5", "10", "50", "Custom"],
+  },
+  {
+    label: "Public tunnels",
+    cells: ["1", "5", "25", "100", "Custom"],
+  },
+  {
+    label: "Managed traffic",
+    cells: ["5 GB", "50 GB", "250 GB", "1 TB", "Custom"],
+  },
+  {
+    label: "Audit retention",
+    cells: ["24 hours", "30 days", "90 days", "365 days", "Custom"],
+  },
+  {
+    label: "Mesh · DNS · Serve · Send · SSH",
+    cells: ["yes", "yes", "yes", "yes", "yes"],
+  },
+  { label: "Invites", cells: ["no", "no", "yes", "yes", "yes"] },
+  { label: "Custom domains", cells: ["no", "yes", "yes", "yes", "yes"] },
+  { label: "REST API", cells: ["no", "yes", "yes", "yes", "yes"] },
+  { label: "Kubernetes", cells: ["no", "yes", "yes", "yes", "yes"] },
+  { label: "OIDC SSO", cells: ["no", "no", "yes", "yes", "yes"] },
+  { label: "Custom roles", cells: ["no", "no", "yes", "yes", "yes"] },
+  { label: "Policy as Code", cells: ["no", "no", "yes", "yes", "yes"] },
+  { label: "SAML / SCIM", cells: ["no", "no", "no", "yes", "yes"] },
+  { label: "SSH session recording", cells: ["no", "no", "no", "yes", "yes"] },
+  { label: "Log streaming", cells: ["no", "no", "no", "yes", "yes"] },
+  { label: "Compliance export", cells: ["no", "no", "no", "yes", "yes"] },
+  { label: "Domain claiming", cells: ["no", "no", "no", "yes", "yes"] },
+  { label: "Regional relays", cells: ["no", "no", "no", "yes", "yes"] },
+  {
+    label: "Dedicated edges & control plane",
+    cells: ["no", "no", "no", "no", "yes"],
+  },
+  {
+    label: "Self-host commercial license",
+    cells: ["no", "no", "no", "no", "yes"],
+  },
+  { label: "24/7 support & SLA", cells: ["no", "no", "no", "no", "yes"] },
 ];
 
 const ROWS = RAW_ROWS.map((r) => ({
@@ -49,6 +86,10 @@ function Cell({ value }: { value: Cell }) {
       {value}
     </span>
   );
+}
+
+function isHighlightCol(id: string): boolean {
+  return id.endsWith(`-${HIGHLIGHT}`);
 }
 
 export function Comparison(): ReactNode {
@@ -72,7 +113,7 @@ export function Comparison(): ReactNode {
 
         <div className="l1-reveal mt-9 overflow-hidden rounded-[var(--l1-r-lg)] border border-[var(--l1-steel)] bg-[var(--l1-panel)]/30">
           <div className="l1-scroll overflow-x-auto">
-            <table className="w-full min-w-[720px] border-collapse">
+            <table className="w-full min-w-[900px] border-collapse">
               <thead>
                 <tr className="border-b border-[var(--l1-steel)]">
                   <th className="px-6 py-5 text-left">
@@ -80,18 +121,18 @@ export function Comparison(): ReactNode {
                       plan
                     </span>
                   </th>
-                  {HEADERS.map((h, i) => (
+                  {HEADERS.map((h) => (
                     <th
                       key={h}
                       className={
-                        i === 1
+                        h === HIGHLIGHT
                           ? "border-l border-[oklch(0.75_0.115_58/0.3)] bg-[var(--l1-copper-soft)]/50 px-5 py-5 text-center"
                           : "border-l border-[var(--l1-steel)] px-5 py-5 text-center"
                       }
                     >
                       <span
                         className={
-                          i === 1
+                          h === HIGHLIGHT
                             ? "l1-label !text-[11px] text-[var(--l1-copper)]"
                             : "l1-label !text-[11px] text-[var(--l1-muted)]"
                         }
@@ -115,7 +156,7 @@ export function Comparison(): ReactNode {
                       <td
                         key={col.id}
                         className={
-                          col.id.endsWith("-Team")
+                          isHighlightCol(col.id)
                             ? "border-l border-[oklch(0.75_0.115_58/0.3)] bg-[var(--l1-copper-soft)]/25 px-5 py-4 text-center"
                             : "border-l border-[var(--l1-steel)] px-5 py-4 text-center"
                         }

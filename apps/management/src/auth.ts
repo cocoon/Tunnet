@@ -39,10 +39,10 @@ import {
   getEffectiveOrgPlan,
   isAdminOrOwnerRole,
   isOwnerRole,
-  isSeatPriceConfigured,
   memberRoleInOrg,
   ownershipCapForUser,
   parseCreatablePlan,
+  setCloudBillingEnabled,
   softDeleteOrganization,
 } from "./lib/org-billing";
 
@@ -93,10 +93,10 @@ export let license!: LicenseManager;
 export let auth!: ReturnType<typeof buildAuth>;
 
 function buildStripePlans() {
+  const personalPrice = process.env.STRIPE_PRICE_PERSONAL?.trim();
   const teamPrice = process.env.STRIPE_PRICE_TEAM?.trim();
   const businessPrice = process.env.STRIPE_PRICE_BUSINESS?.trim();
-  const teamSeatPrice = process.env.STRIPE_SEAT_PRICE_TEAM?.trim();
-  const businessSeatPrice = process.env.STRIPE_SEAT_PRICE_BUSINESS?.trim();
+  const personalAnnual = process.env.STRIPE_PRICE_PERSONAL_ANNUAL?.trim();
   const teamAnnual = process.env.STRIPE_PRICE_TEAM_ANNUAL?.trim();
   const businessAnnual = process.env.STRIPE_PRICE_BUSINESS_ANNUAL?.trim();
 
@@ -104,30 +104,47 @@ function buildStripePlans() {
     name: BillablePlanId;
     priceId: string;
     annualDiscountPriceId?: string;
-    seatPriceId?: string;
     limits: { seats: number; resources: number };
     freeTrial: { days: number };
   }> = [];
 
+  const personal = getPlan("personal");
   const team = getPlan("team");
   const business = getPlan("business");
-  if (teamPrice && team?.seats != null && team.resources != null) {
+
+  if (personalPrice && personal) {
+    plans.push({
+      name: "personal",
+      priceId: personalPrice,
+      ...(personalAnnual ? { annualDiscountPriceId: personalAnnual } : {}),
+      limits: {
+        seats: personal.limits.maxSeats ?? 1,
+        resources: personal.limits.baseResources ?? 100,
+      },
+      freeTrial: { days: personal.trialDays ?? 14 },
+    });
+  }
+  if (teamPrice && team) {
     plans.push({
       name: "team",
       priceId: teamPrice,
       ...(teamAnnual ? { annualDiscountPriceId: teamAnnual } : {}),
-      ...(teamSeatPrice ? { seatPriceId: teamSeatPrice } : {}),
-      limits: { seats: team.seats, resources: team.resources },
+      limits: {
+        seats: team.limits.minSeats ?? 2,
+        resources: team.limits.baseResources ?? 100,
+      },
       freeTrial: { days: team.trialDays ?? 14 },
     });
   }
-  if (businessPrice && business?.seats != null && business.resources != null) {
+  if (businessPrice && business) {
     plans.push({
       name: "business",
       priceId: businessPrice,
       ...(businessAnnual ? { annualDiscountPriceId: businessAnnual } : {}),
-      ...(businessSeatPrice ? { seatPriceId: businessSeatPrice } : {}),
-      limits: { seats: business.seats, resources: business.resources },
+      limits: {
+        seats: business.limits.minSeats ?? 5,
+        resources: business.limits.baseResources ?? 500,
+      },
       freeTrial: { days: business.trialDays ?? 14 },
     });
   }
@@ -140,7 +157,6 @@ function logStripeConfig(opts: {
   stripeWebhookSecret: string | undefined;
   planCount: number;
   enabled: boolean;
-  seatPricesConfigured: number;
 }) {
   if (!opts.isCloudBilling) {
     console.info("[stripe] skipped (license tier is not cloud)");
@@ -148,20 +164,15 @@ function logStripeConfig(opts: {
   }
   if (opts.enabled) {
     console.info(`[stripe] enabled (${opts.planCount} plan(s))`);
-    if (opts.seatPricesConfigured < opts.planCount) {
-      console.warn(
-        "[stripe] STRIPE_SEAT_PRICE_TEAM / STRIPE_SEAT_PRICE_BUSINESS missing. " +
-          "Use graduated seat prices (first N units $0, then per-seat). " +
-          "Without them, included seats are not billed separately and extras cannot sync.",
-      );
-    }
     return;
   }
   const missing: string[] = [];
   if (!opts.stripeSecret) missing.push("STRIPE_SECRET_KEY");
   if (!opts.stripeWebhookSecret) missing.push("STRIPE_WEBHOOK_SECRET");
   if (opts.planCount === 0) {
-    missing.push("STRIPE_PRICE_TEAM and/or STRIPE_PRICE_BUSINESS");
+    missing.push(
+      "STRIPE_PRICE_PERSONAL and/or STRIPE_PRICE_TEAM and/or STRIPE_PRICE_BUSINESS",
+    );
   }
   console.warn(
     `[stripe] disabled - /api/auth/subscription/* will 404. Missing: ${missing.join(", ")}`,
@@ -171,6 +182,7 @@ function logStripeConfig(opts: {
 function buildAuth(license: LicenseManager) {
   const disablePublicSignUp = !license.has("openSignUp");
   const isCloudBilling = license.snapshot().tier === "cloud";
+  setCloudBillingEnabled(isCloudBilling);
 
   async function canUserCreateOrganization(user: {
     id: string;
@@ -265,7 +277,6 @@ function buildAuth(license: LicenseManager) {
     stripeWebhookSecret,
     planCount: stripePlans.length,
     enabled: stripeEnabled,
-    seatPricesConfigured: stripePlans.filter((p) => p.seatPriceId).length,
   });
 
   const stripeClient = stripeEnabled
@@ -416,11 +427,7 @@ function buildAuth(license: LicenseManager) {
         membershipLimit: async (_user, org) => {
           if (!isCloudBilling) return 100;
           const plan = await getEffectiveOrgPlan(org.id);
-          if (plan.seats === null) return 100;
-          // Graduated seat prices bill extras; don't hard-cap at the include.
-          if (isSeatPriceConfigured(plan.planId)) {
-            return Math.max(plan.seats, 500);
-          }
+          if (plan.seats === null) return 500;
           return plan.seats;
         },
         schema: {

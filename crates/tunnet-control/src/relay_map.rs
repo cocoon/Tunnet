@@ -85,6 +85,7 @@ fn to_config(row: &RelayRow) -> ConnectivityRelayConfig {
         url: row.url.clone(),
         region: row.region.clone(),
         auth_token: row.auth_token.clone(),
+        metering: row.organization_id.is_none() && license_tier() == LicenseTier::Cloud,
     }
 }
 
@@ -149,6 +150,7 @@ mod tests {
                 url: "https://cloud.example".into(),
                 region: Some("us".into()),
                 auth_token: None,
+                metering: false,
             }]
         );
     }
@@ -200,6 +202,7 @@ mod tests {
             url: "https://r.example".into(),
             region: None,
             auth_token: None,
+            metering: false,
         };
         assert_eq!(
             connectivity_relay_fallback_for(LicenseTier::Cloud, DeploymentRelayMode::N0, &[]),
@@ -233,6 +236,7 @@ mod tests {
             url: "https://r.example".into(),
             region: None,
             auth_token: None,
+            metering: false,
         };
         assert_eq!(
             connectivity_relay_fallback_for(

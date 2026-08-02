@@ -356,9 +356,10 @@ pub struct ConnectivityRelayConfig {
     pub region: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_token: Option<String>,
+    #[serde(default)]
+    pub metering: bool,
 }
 
-/// What the agent should use when `connectivity_relays` is empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnectivityRelayFallback {

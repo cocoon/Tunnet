@@ -42,17 +42,23 @@ export function PricingTeaserSection(): ReactNode {
           </h2>
           <p className="l1-lead mt-5 mx-auto max-w-[56ch]">
             Direct mode is free forever - even for commercial use. Managed plans
-            bill by seats and managed traffic, never per device.
+            from $5/month; seats and managed traffic, never per device.
           </p>
         </div>
 
-        <div className="l1-reveal mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="l1-reveal mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           {PLANS.map((p) => (
             <TiltCard
               key={p.id}
               title={p.name}
               description={p.pitch}
-              price={p.price === null ? "Custom" : `$${p.price}`}
+              price={
+                p.pricing === "custom" || p.price === null
+                  ? "Custom"
+                  : p.pricing === "free"
+                    ? "$0"
+                    : `$${p.price}`
+              }
               badgeLabel={p.highlight ? "Popular" : p.cadence}
               badgeVariant={p.highlight ? "success" : "warning"}
               href="/pricing"
@@ -60,7 +66,9 @@ export function PricingTeaserSection(): ReactNode {
               tiltProps={{ isReverse: false }}
             >
               <span className="w-full inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-[var(--l1-copper-bright)]">
-                {p.price === null ? "Talk to sales" : "Choose plan"}
+                {p.pricing === "custom" || p.price === null
+                  ? "Talk to sales"
+                  : "Choose plan"}
                 <ArrowRightIcon className="size-3.5" />
               </span>
             </TiltCard>

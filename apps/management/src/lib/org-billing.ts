@@ -4,26 +4,51 @@ import {
   getPlan,
   isBillablePlanId,
   isCreatablePlanId,
+  isPerSeatPlanId,
   OWNERSHIP_CAP_UNVERIFIED,
   OWNERSHIP_CAP_VERIFIED,
   OWNERSHIP_TOMBSTONE_WINDOW_DAYS,
+  type PlanFeature,
+  type PlanFeatures,
   type PlanId,
+  type PlanLimits,
+  planHasFeature,
   planLimits,
-  seatPriceEnvKey,
+  priceEnvKey,
+  requiredPlanForFeature,
+  resourceLimit,
 } from "@tunnet/api/billing";
 import { getDb, schema } from "@tunnet/db";
-import { and, count, eq, inArray, isNull } from "drizzle-orm";
+import { and, count, eq, inArray, isNull, sql } from "drizzle-orm";
+import { PlanLimitError, PlanRequiredError } from "./plan-errors";
 
 const db = getDb();
 
 const ACTIVE_SUB_STATUSES = ["active", "trialing"] as const;
-/** Soft ceiling when extra seats are billed via Stripe seat prices. */
+/** Soft ceiling for per-seat plans so runaway invites cannot explode Stripe quantity. */
 const SEAT_BILLING_MEMBERSHIP_CAP = 500;
+
+/** Org subscription limits / metering only apply on cloud SaaS license. */
+let cloudBillingEnabled = false;
+
+export function setCloudBillingEnabled(enabled: boolean): void {
+  cloudBillingEnabled = enabled;
+}
+
+export function isCloudBillingEnabled(): boolean {
+  return cloudBillingEnabled;
+}
 
 export type EffectiveOrgPlan = {
   planId: PlanId;
   seats: number | null;
   resources: number | null;
+  networks: number | null;
+  publicTunnels: number | null;
+  trafficGB: number | null;
+  auditRetentionHours: number | null;
+  features: PlanFeatures;
+  limits: PlanLimits;
   subscriptionId: string | null;
   stripeSubscriptionId: string | null;
   status: string | null;
@@ -32,9 +57,27 @@ export type EffectiveOrgPlan = {
   cancelAtPeriodEnd: boolean | null;
 };
 
-export function isSeatPriceConfigured(planId: PlanId | string): boolean {
+export type OrgUsageSnapshot = {
+  plan: EffectiveOrgPlan;
+  members: number;
+  pendingInvitations: number;
+  seatsUsed: number;
+  resourcesUsed: number;
+  networksUsed: number;
+  publicTunnelsUsed: number;
+  trafficBytesUsed: number;
+  trafficBytesLimit: number | null;
+  trafficWarnLevel: "ok" | "warn" | "exceeded";
+};
+
+export function isPriceConfigured(planId: PlanId | string): boolean {
   if (!isBillablePlanId(planId)) return false;
-  return Boolean(process.env[seatPriceEnvKey(planId)]?.trim());
+  return Boolean(process.env[priceEnvKey(planId)]?.trim());
+}
+
+/** @deprecated Use isPriceConfigured */
+export function isSeatPriceConfigured(planId: PlanId | string): boolean {
+  return isPriceConfigured(planId);
 }
 
 export function isOwnerRole(role: string): boolean {
@@ -100,24 +143,57 @@ export async function getActiveSubscription(orgId: string) {
   return rows[0] ?? null;
 }
 
+function buildEffective(
+  planId: PlanId,
+  seatsQuantity: number | null,
+  sub: {
+    id: string;
+    stripeSubscriptionId: string | null;
+    status: string;
+    periodEnd: Date | null;
+    cancelAtPeriodEnd: boolean | null;
+  } | null,
+): EffectiveOrgPlan {
+  const plan = getPlan(planId) ?? getPlan("free")!;
+  const seats = effectiveSeatLimit(planId, seatsQuantity);
+  return {
+    planId,
+    seats,
+    resources: resourceLimit(planId, seats),
+    networks: plan.limits.networks,
+    publicTunnels: plan.limits.publicTunnels,
+    trafficGB: plan.limits.trafficGB,
+    auditRetentionHours: plan.limits.auditRetentionHours,
+    features: plan.features,
+    limits: plan.limits,
+    subscriptionId: sub?.id ?? null,
+    stripeSubscriptionId: sub?.stripeSubscriptionId ?? null,
+    status: sub?.status ?? null,
+    seatsQuantity,
+    periodEnd: sub?.periodEnd ?? null,
+    cancelAtPeriodEnd: sub?.cancelAtPeriodEnd ?? null,
+  };
+}
+
+function unlimitedOrgPlan(): EffectiveOrgPlan {
+  return buildEffective("enterprise", null, null);
+}
+
 export async function getEffectiveOrgPlan(
   orgId: string,
 ): Promise<EffectiveOrgPlan> {
+  if (!isCloudBillingEnabled()) return unlimitedOrgPlan();
+
   const sub = await getActiveSubscription(orgId);
   if (sub) {
     const planId = (getPlan(sub.plan)?.id ?? "free") as PlanId;
-    const included = planLimits(planId);
-    return {
-      planId,
-      seats: effectiveSeatLimit(planId, sub.seats),
-      resources: included.resources,
-      subscriptionId: sub.id,
+    return buildEffective(planId, sub.seats, {
+      id: sub.id,
       stripeSubscriptionId: sub.stripeSubscriptionId,
       status: sub.status,
-      seatsQuantity: sub.seats,
       periodEnd: sub.periodEnd,
       cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
-    };
+    });
   }
 
   const org = await db.query.organization.findFirst({
@@ -130,20 +206,8 @@ export async function getEffectiveOrgPlan(
       ? (metaPlan as PlanId)
       : "free";
   // Paid metadata without an active subscription still runs as free limits.
-  const effectiveId: PlanId =
-    planId === "team" || planId === "business" ? "free" : planId;
-  const limits = planLimits(effectiveId);
-  return {
-    planId: effectiveId,
-    seats: limits.seats,
-    resources: limits.resources,
-    subscriptionId: null,
-    stripeSubscriptionId: null,
-    status: null,
-    seatsQuantity: null,
-    periodEnd: null,
-    cancelAtPeriodEnd: null,
-  };
+  const effectiveId: PlanId = isBillablePlanId(planId) ? "free" : planId;
+  return buildEffective(effectiveId, null, null);
 }
 
 export async function countOrgMembers(orgId: string): Promise<number> {
@@ -175,21 +239,193 @@ export async function countOrgDevices(orgId: string): Promise<number> {
   return row?.value ?? 0;
 }
 
+export async function countOrgNetworks(orgId: string): Promise<number> {
+  const [row] = await db
+    .select({ value: count() })
+    .from(schema.networks)
+    .where(eq(schema.networks.organizationId, orgId));
+  return row?.value ?? 0;
+}
+
+const ACTIVE_TUNNEL_STATUSES = ["connecting", "active"] as const;
+
+export async function countOrgPublicTunnels(orgId: string): Promise<number> {
+  const [row] = await db
+    .select({ value: count() })
+    .from(schema.tunnels)
+    .where(
+      and(
+        eq(schema.tunnels.organizationId, orgId),
+        inArray(schema.tunnels.status, [...ACTIVE_TUNNEL_STATUSES]),
+      ),
+    );
+  return row?.value ?? 0;
+}
+
+export function currentUsageMonth(now = new Date()): number {
+  return now.getUTCFullYear() * 100 + (now.getUTCMonth() + 1);
+}
+
+export async function getOrgTrafficBytes(
+  orgId: string,
+  month = currentUsageMonth(),
+): Promise<number> {
+  const [row] = await db
+    .select()
+    .from(schema.orgUsageMonthly)
+    .where(
+      and(
+        eq(schema.orgUsageMonthly.organizationId, orgId),
+        eq(schema.orgUsageMonthly.month, month),
+      ),
+    )
+    .limit(1);
+  if (!row) return 0;
+  return row.relayBytes + row.publicTunnelBytes;
+}
+
+export async function incrementOrgTraffic(
+  orgId: string,
+  kind: "relay" | "public_tunnel",
+  bytes: number,
+  month = currentUsageMonth(),
+): Promise<void> {
+  if (!isCloudBillingEnabled()) return;
+  if (bytes <= 0) return;
+  const relayInc = kind === "relay" ? bytes : 0;
+  const tunnelInc = kind === "public_tunnel" ? bytes : 0;
+
+  await db
+    .insert(schema.orgUsageMonthly)
+    .values({
+      organizationId: orgId,
+      month,
+      relayBytes: relayInc,
+      publicTunnelBytes: tunnelInc,
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: [
+        schema.orgUsageMonthly.organizationId,
+        schema.orgUsageMonthly.month,
+      ],
+      set: {
+        relayBytes: sql`${schema.orgUsageMonthly.relayBytes} + ${relayInc}`,
+        publicTunnelBytes: sql`${schema.orgUsageMonthly.publicTunnelBytes} + ${tunnelInc}`,
+        updatedAt: new Date(),
+      },
+    });
+}
+
+function trafficWarnLevel(
+  used: number,
+  limitBytes: number | null,
+): "ok" | "warn" | "exceeded" {
+  if (limitBytes == null || limitBytes <= 0) return "ok";
+  if (used >= limitBytes) return "exceeded";
+  if (used >= limitBytes * 0.8) return "warn";
+  return "ok";
+}
+
+export async function getOrgUsageSnapshot(
+  orgId: string,
+): Promise<OrgUsageSnapshot> {
+  const plan = await getEffectiveOrgPlan(orgId);
+  const [
+    members,
+    pendingInvitations,
+    resourcesUsed,
+    networksUsed,
+    publicTunnelsUsed,
+    trafficBytesUsed,
+  ] = await Promise.all([
+    countOrgMembers(orgId),
+    countPendingInvitations(orgId),
+    countOrgDevices(orgId),
+    countOrgNetworks(orgId),
+    countOrgPublicTunnels(orgId),
+    getOrgTrafficBytes(orgId),
+  ]);
+
+  const trafficBytesLimit =
+    plan.trafficGB == null ? null : plan.trafficGB * 1024 * 1024 * 1024;
+
+  return {
+    plan,
+    members,
+    pendingInvitations,
+    seatsUsed: members + pendingInvitations,
+    resourcesUsed,
+    networksUsed,
+    publicTunnelsUsed,
+    trafficBytesUsed,
+    trafficBytesLimit,
+    trafficWarnLevel: isCloudBillingEnabled()
+      ? trafficWarnLevel(trafficBytesUsed, trafficBytesLimit)
+      : "ok",
+  };
+}
+
+export async function requirePlanFeature(
+  orgId: string,
+  feature: PlanFeature,
+): Promise<EffectiveOrgPlan> {
+  if (!isCloudBillingEnabled()) return unlimitedOrgPlan();
+
+  const plan = await getEffectiveOrgPlan(orgId);
+  if (!planHasFeature(plan.planId, feature)) {
+    throw new PlanRequiredError(
+      feature,
+      requiredPlanForFeature(feature),
+      plan.planId,
+    );
+  }
+  return plan;
+}
+
 export async function assertSeatCapacity(
   orgId: string,
   additionalSeats = 1,
 ): Promise<void> {
+  if (!isCloudBillingEnabled()) return;
+
   const plan = await getEffectiveOrgPlan(orgId);
+
+  if (!plan.features.invites && additionalSeats > 0) {
+    const members = await countOrgMembers(orgId);
+    if (members + additionalSeats > 1) {
+      throw new PlanLimitError(
+        "seats",
+        1,
+        members,
+        "team",
+        "This plan allows only 1 user. Upgrade to Team to invite members.",
+      );
+    }
+  }
+
   if (plan.seats === null) return;
-  // With a graduated seat price, Stripe bills extras; allow growth up to soft cap.
-  const limit = isSeatPriceConfigured(plan.planId)
-    ? Math.max(plan.seats, SEAT_BILLING_MEMBERSHIP_CAP)
+
+  const limit = isPerSeatPlanId(plan.planId)
+    ? Math.min(
+        Math.max(plan.seats, plan.limits.minSeats ?? 1),
+        SEAT_BILLING_MEMBERSHIP_CAP,
+      )
     : plan.seats;
+
   const members = await countOrgMembers(orgId);
   const pending = await countPendingInvitations(orgId);
   if (members + pending + additionalSeats > limit) {
-    throw new Error(
-      `Organization seat limit reached (${limit}). Upgrade the plan or add seats.`,
+    throw new PlanLimitError(
+      "seats",
+      limit,
+      members + pending,
+      isPerSeatPlanId(plan.planId) ? undefined : "team",
+      `Organization seat limit reached (${limit}). ${
+        isPerSeatPlanId(plan.planId)
+          ? "Add seats in billing."
+          : "Upgrade the plan to invite members."
+      }`,
     );
   }
 }
@@ -198,6 +434,8 @@ export async function assertResourceCapacity(
   orgId: string,
   endpointId?: string,
 ): Promise<void> {
+  if (!isCloudBillingEnabled()) return;
+
   const plan = await getEffectiveOrgPlan(orgId);
   if (plan.resources === null) return;
 
@@ -213,8 +451,46 @@ export async function assertResourceCapacity(
 
   const devices = await countOrgDevices(orgId);
   if (devices >= plan.resources) {
-    throw new Error(
+    throw new PlanLimitError(
+      "resources",
+      plan.resources,
+      devices,
+      undefined,
       `Organization resource limit reached (${plan.resources}). Upgrade the plan to enroll more machines.`,
+    );
+  }
+}
+
+export async function assertNetworkCapacity(orgId: string): Promise<void> {
+  if (!isCloudBillingEnabled()) return;
+
+  const plan = await getEffectiveOrgPlan(orgId);
+  if (plan.networks === null) return;
+  const used = await countOrgNetworks(orgId);
+  if (used >= plan.networks) {
+    throw new PlanLimitError(
+      "networks",
+      plan.networks,
+      used,
+      undefined,
+      `Organization network limit reached (${plan.networks}). Upgrade the plan to create more networks.`,
+    );
+  }
+}
+
+export async function assertPublicTunnelCapacity(orgId: string): Promise<void> {
+  if (!isCloudBillingEnabled()) return;
+
+  const plan = await getEffectiveOrgPlan(orgId);
+  if (plan.publicTunnels === null) return;
+  const used = await countOrgPublicTunnels(orgId);
+  if (used >= plan.publicTunnels) {
+    throw new PlanLimitError(
+      "publicTunnels",
+      plan.publicTunnels,
+      used,
+      undefined,
+      `Organization public tunnel limit reached (${plan.publicTunnels}). Upgrade the plan to create more tunnels.`,
     );
   }
 }
@@ -284,3 +560,37 @@ export async function memberRoleInOrg(
   });
   return membership?.role ?? null;
 }
+
+export async function auditRetentionCutoff(
+  orgId: string,
+  now = new Date(),
+): Promise<Date | null> {
+  const plan = await getEffectiveOrgPlan(orgId);
+  if (plan.auditRetentionHours == null) return null;
+  return new Date(now.getTime() - plan.auditRetentionHours * 60 * 60 * 1000);
+}
+
+/** Delete audit events older than each org's plan retention (cloud SaaS TTL). */
+export async function pruneAuditEventsBeyondRetention(
+  now = new Date(),
+): Promise<number> {
+  if (!isCloudBillingEnabled()) return 0;
+
+  const orgs = await db
+    .select({ id: schema.organization.id })
+    .from(schema.organization)
+    .where(isNull(schema.organization.deletedAt));
+
+  let deleted = 0;
+  for (const org of orgs) {
+    const cutoff = await auditRetentionCutoff(org.id, now);
+    if (!cutoff) continue;
+    const result = await db.execute(
+      sql`DELETE FROM audit_events WHERE organization_id = ${org.id} AND time < ${cutoff}`,
+    );
+    deleted += Number(result.rowCount ?? 0);
+  }
+  return deleted;
+}
+
+export { PlanLimitError, PlanRequiredError };

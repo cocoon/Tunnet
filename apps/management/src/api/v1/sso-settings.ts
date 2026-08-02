@@ -6,6 +6,7 @@ import { Elysia } from "elysia";
 import { auth } from "../../auth";
 import { writeAudit } from "../../lib/audit";
 import { db } from "../../lib/db";
+import { requirePlanFeature } from "../../lib/org-billing";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
 import { notFound, sessionPlugin } from "./middleware/session";
@@ -85,6 +86,7 @@ export const ssoSettingsRoutes = new Elysia()
         "/organizations/:orgId/sso-settings",
         async ({ authContext, body, request }) => {
           const authCtx = getAuth({ authContext });
+          await requirePlanFeature(authCtx.organizationId, "oidcSso");
           const parsed = upsertOrganizationSsoProviderBody.parse(body);
 
           const org = await db.query.organization.findFirst({

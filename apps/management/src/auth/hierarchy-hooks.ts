@@ -7,6 +7,7 @@ import {
   createAuthMiddleware,
   getSessionFromCtx,
 } from "better-auth/api";
+import { requirePlanFeature } from "../lib/org-billing";
 import type { RolePositionRecord } from "./hierarchy";
 import {
   assertCanAssignRole,
@@ -197,6 +198,16 @@ async function enforceInviteMember(ctx: HookCtx) {
 
 async function enforceCreateRole(ctx: HookCtx) {
   const organizationId = requireOrgId(ctx);
+  try {
+    await requirePlanFeature(organizationId, "customRoles");
+  } catch (error) {
+    throw new APIError("BAD_REQUEST", {
+      message:
+        error instanceof Error
+          ? error.message
+          : "Custom roles require the Team plan",
+    });
+  }
   const session = ctx.context.session!;
   const adapter = ctx.context.adapter;
 

@@ -20,6 +20,7 @@ import { Elysia, t } from "elysia";
 import { z } from "zod";
 
 import { db } from "../../lib/db";
+import { requirePlanFeature } from "../../lib/org-billing";
 import {
   applyPolicyDocument,
   loadOrganizationPolicyDocument,
@@ -171,6 +172,7 @@ export const policyDocumentRoutes = new Elysia()
       .post(
         "/organizations/:orgId/policy/apply",
         async ({ params, body, authContext, apiKeyAuth, set }) => {
+          await requirePlanFeature(params.orgId, "policyAsCode");
           const parsed = policyApplyRequest.parse(body);
           const actor = getPolicyActor({ authContext, apiKeyAuth });
           const document = parsePolicyDocuments(parsed.documents);

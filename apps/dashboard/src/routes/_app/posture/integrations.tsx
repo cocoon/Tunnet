@@ -16,6 +16,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { EmptyState } from "@/components/app/empty-state";
+import { PlanGate } from "@/components/app/plan/plan-gate";
 import {
   defaultConfigFor,
   INTEGRATION_PROVIDERS,
@@ -25,6 +26,7 @@ import {
   validateIntegrationForm,
 } from "@/components/app/posture/integration-form";
 import { PosturePageShell } from "@/components/app/posture/posture-page-shell";
+import { usePlanFeature } from "@/hooks/use-org-plan";
 import { useCan } from "@/hooks/use-permission";
 import { useActiveOrganization } from "@/lib/auth-client";
 import type { PostureIntegration } from "@/lib/posture-types";
@@ -100,6 +102,7 @@ function PostureIntegrationsPage() {
   const { data: canCreate = false } = useCan(orgId, "posture", "create");
   const { data: canUpdate = false } = useCan(orgId, "posture", "update");
   const { data: canDelete = false } = useCan(orgId, "posture", "delete");
+  const hasAdvancedPosture = usePlanFeature("advancedPosture");
   const mutations = usePostureMutations(orgId);
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -113,103 +116,123 @@ function PostureIntegrationsPage() {
     );
   }
 
+  const manageLocked = !hasAdvancedPosture;
+
   return (
     <PosturePageShell
       actions={
         canCreate ? (
-          <Button size="sm" onClick={() => setCreateOpen(true)}>
+          <Button
+            size="sm"
+            disabled={manageLocked}
+            onClick={() => setCreateOpen(true)}
+          >
             <PlusIcon className="mr-1.5 size-3.5" />
             Add integration
           </Button>
         ) : undefined
       }
     >
-      {isPending ? (
-        <IntegrationsSkeleton />
-      ) : !integrations?.length ? (
-        <EmptyState
-          icon={<CableIcon className="size-8" />}
-          title="Connect a security platform"
-          description="Import posture signals from CrowdStrike, SentinelOne, Intune, or a custom webhook to enrich device compliance checks."
-          action={
-            canCreate ? (
-              <Button onClick={() => setCreateOpen(true)}>
-                Add integration
-              </Button>
-            ) : undefined
-          }
-        />
-      ) : (
-        <ul className="grid gap-3 sm:grid-cols-2" aria-label="Integrations">
-          {integrations.map((item) => {
-            const meta = PROVIDER_META[item.provider];
-            return (
-              <li
-                key={item.id}
-                className="flex flex-col gap-4 rounded-lg border border-border/70 p-4"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-start gap-3">
-                    <div className="bg-muted text-foreground flex size-10 shrink-0 items-center justify-center rounded-md">
-                      {meta.icon}
+      <PlanGate
+        locked={manageLocked}
+        title="Available on Business"
+        description="Upgrade to Business to connect and manage posture integrations."
+        requiredPlan="business"
+        upgradeLabel="Upgrade"
+      >
+        {isPending ? (
+          <IntegrationsSkeleton />
+        ) : !integrations?.length ? (
+          <EmptyState
+            icon={<CableIcon className="size-8" />}
+            title="Connect a security platform"
+            description="Import posture signals from CrowdStrike, SentinelOne, Intune, or a custom webhook to enrich device compliance checks."
+            action={
+              canCreate ? (
+                <Button
+                  disabled={manageLocked}
+                  onClick={() => setCreateOpen(true)}
+                >
+                  Add integration
+                </Button>
+              ) : undefined
+            }
+          />
+        ) : (
+          <ul className="grid gap-3 sm:grid-cols-2" aria-label="Integrations">
+            {integrations.map((item) => {
+              const meta = PROVIDER_META[item.provider];
+              return (
+                <li
+                  key={item.id}
+                  className="flex flex-col gap-4 rounded-lg border border-border/70 p-4"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      <div className="bg-muted text-foreground flex size-10 shrink-0 items-center justify-center rounded-md">
+                        {meta.icon}
+                      </div>
+                      <div className="min-w-0 space-y-1">
+                        <p className="text-sm font-medium">{meta.label}</p>
+                        <p className="text-muted-foreground text-xs">
+                          Polls every{" "}
+                          {formatPollInterval(item.pollingIntervalSecs)}
+                          {" · "}
+                          {item.lastSyncedAt
+                            ? `Synced ${formatDistanceToNow(new Date(item.lastSyncedAt), { addSuffix: true })}`
+                            : "Never synced"}
+                        </p>
+                      </div>
                     </div>
-                    <div className="min-w-0 space-y-1">
-                      <p className="text-sm font-medium">{meta.label}</p>
-                      <p className="text-muted-foreground text-xs">
-                        Polls every{" "}
-                        {formatPollInterval(item.pollingIntervalSecs)}
-                        {" · "}
-                        {item.lastSyncedAt
-                          ? `Synced ${formatDistanceToNow(new Date(item.lastSyncedAt), { addSuffix: true })}`
-                          : "Never synced"}
-                      </p>
-                    </div>
+                    <Badge variant={item.enabled ? "default" : "secondary"}>
+                      {item.enabled ? "Enabled" : "Disabled"}
+                    </Badge>
                   </div>
-                  <Badge variant={item.enabled ? "default" : "secondary"}>
-                    {item.enabled ? "Enabled" : "Disabled"}
-                  </Badge>
-                </div>
 
-                <div className="mt-auto flex justify-end gap-1">
-                  {canUpdate ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={mutations.syncIntegration.isPending}
-                      onClick={() => {
-                        setSyncingId(item.id);
-                        void mutations.syncIntegration
-                          .mutateAsync(item.id)
-                          .then(() => toast.success("Sync started"))
-                          .catch((err: Error) => toast.error(err.message))
-                          .finally(() => setSyncingId(null));
-                      }}
-                    >
-                      <RefreshCwIcon
-                        className={cn(
-                          "mr-1.5 size-3.5",
-                          syncingId === item.id && "animate-spin",
-                        )}
-                      />
-                      Sync now
-                    </Button>
-                  ) : null}
-                  {canDelete ? (
-                    <Button
-                      size="icon-sm"
-                      variant="ghost"
-                      aria-label={`Remove ${meta.label}`}
-                      onClick={() => setDeleteId(item.id)}
-                    >
-                      <TrashIcon className="size-3.5" />
-                    </Button>
-                  ) : null}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      )}
+                  <div className="mt-auto flex justify-end gap-1">
+                    {canUpdate ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={
+                          manageLocked || mutations.syncIntegration.isPending
+                        }
+                        onClick={() => {
+                          setSyncingId(item.id);
+                          void mutations.syncIntegration
+                            .mutateAsync(item.id)
+                            .then(() => toast.success("Sync started"))
+                            .catch((err: Error) => toast.error(err.message))
+                            .finally(() => setSyncingId(null));
+                        }}
+                      >
+                        <RefreshCwIcon
+                          className={cn(
+                            "mr-1.5 size-3.5",
+                            syncingId === item.id && "animate-spin",
+                          )}
+                        />
+                        Sync now
+                      </Button>
+                    ) : null}
+                    {canDelete ? (
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        disabled={manageLocked}
+                        aria-label={`Remove ${meta.label}`}
+                        onClick={() => setDeleteId(item.id)}
+                      >
+                        <TrashIcon className="size-3.5" />
+                      </Button>
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </PlanGate>
 
       <CreateIntegrationDialog
         open={createOpen}

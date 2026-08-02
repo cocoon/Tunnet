@@ -81,8 +81,10 @@ pub async fn run_ws(
     // Inbound reader with idle timeout (half-open TCP otherwise keeps presence "Online").
     let pool = state.pool.clone();
     let ep = endpoint_id.clone();
+    let organization_id_for_recv = organization_id.clone();
     let posture_state = state.clone();
     let recv_task = tokio::spawn(async move {
+        let organization_id = organization_id_for_recv;
         let mut last_heartbeat = Instant::now();
         let mut idle_tick = tokio::time::interval(Duration::from_secs(15));
         idle_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -104,6 +106,35 @@ pub async fn run_ws(
                                 if let Err(e) = crate::presence::record_heartbeat(&pool, &ep).await
                                 {
                                     tracing::warn!(?e, %ep, "heartbeat update failed");
+                                }
+                            }
+                            ClientMsg::CloudRelayUsage { bytes } => {
+                                if bytes > 0
+                                    && crate::relay_map::license_tier()
+                                        == tunnet_license::LicenseTier::Cloud
+                                {
+                                    let month = chrono::Utc::now().format("%Y%m").to_string();
+                                    let month_i: i32 = month.parse().unwrap_or(0);
+                                    if let Err(e) = sqlx::query(
+                                        "INSERT INTO org_usage_monthly \
+                                           (organization_id, month, relay_bytes, public_tunnel_bytes, updated_at) \
+                                         VALUES ($1, $2, $3, 0, now()) \
+                                         ON CONFLICT (organization_id, month) DO UPDATE SET \
+                                           relay_bytes = org_usage_monthly.relay_bytes + EXCLUDED.relay_bytes, \
+                                           updated_at = now()",
+                                    )
+                                    .bind(&organization_id)
+                                    .bind(month_i)
+                                    .bind(bytes as i64)
+                                    .execute(&pool)
+                                    .await
+                                    {
+                                        tracing::warn!(
+                                            ?e,
+                                            %organization_id,
+                                            "failed to record cloud relay usage"
+                                        );
+                                    }
                                 }
                             }
                             ClientMsg::ServeReady { serve_id } => {

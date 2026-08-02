@@ -98,8 +98,8 @@ pub async fn register_device(
     if existing_org.is_none()
         && crate::relay_map::license_tier() == tunnet_license::LicenseTier::Cloud
     {
-        let plan: Option<String> = sqlx::query_scalar(
-            "SELECT plan FROM subscription \
+        let plan_row: Option<(String, Option<i32>)> = sqlx::query_as(
+            "SELECT plan, seats FROM subscription \
              WHERE reference_id = $1 AND status IN ('active', 'trialing') \
              ORDER BY period_end DESC NULLS LAST \
              LIMIT 1",
@@ -114,11 +114,21 @@ pub async fn register_device(
             )
         })?;
 
-        let resource_limit: i64 = match plan.as_deref() {
-            Some("team") => 100,
-            Some("business") => 500,
-            Some("enterprise") => i64::MAX,
-            _ => 20, // free
+        let resource_limit: i64 = match plan_row.as_ref() {
+            Some((plan, seats)) => match plan.as_str() {
+                "personal" => 100,
+                "team" => {
+                    let seat_count = seats.unwrap_or(2).max(2) as i64;
+                    100 + 25 * (seat_count - 2).max(0)
+                }
+                "business" => {
+                    let seat_count = seats.unwrap_or(5).max(5) as i64;
+                    500 + 50 * (seat_count - 5).max(0)
+                }
+                "enterprise" => i64::MAX,
+                _ => 20, // free / unknown
+            },
+            None => 20,
         };
 
         if resource_limit < i64::MAX {

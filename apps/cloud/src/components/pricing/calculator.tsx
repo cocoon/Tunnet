@@ -7,10 +7,24 @@ import {
 } from "#/components/motion/landing-timeline";
 import { Lamp } from "#/components/shared/lamp";
 import { Panel } from "#/components/shared/panel";
-import { PLANS, planForResources, seatCost } from "#/lib/pricing";
+import {
+  minimumSeats,
+  PLANS,
+  type Plan,
+  planForResources,
+  resourceLimit,
+  seatCost,
+} from "#/lib/pricing";
 
-const TEAM = PLANS.find((p) => p.id === "team") ?? PLANS[1];
-const BUSINESS = PLANS.find((p) => p.id === "business") ?? PLANS[2];
+function requirePlan(id: "personal" | "team" | "business"): Plan {
+  const plan = PLANS.find((p) => p.id === id);
+  if (!plan) throw new Error(`Missing plan: ${id}`);
+  return plan;
+}
+
+const PERSONAL = requirePlan("personal");
+const TEAM = requirePlan("team");
+const BUSINESS = requirePlan("business");
 
 const MAX_RESOURCES = 1000;
 
@@ -52,9 +66,28 @@ function Stepper({
   );
 }
 
+function billedSeats(plan: Plan, seats: number): number {
+  return Math.max(seats, minimumSeats(plan.id));
+}
+
+function costDetail(plan: Plan, seats: number): string {
+  const resources = resourceLimit(plan.id, seats);
+  const resourcesLabel =
+    resources === null ? "custom resources" : `${resources} resources`;
+
+  if (plan.pricing === "flat") {
+    return `$${plan.price}/mo flat · 1 seat · ${resourcesLabel}`;
+  }
+
+  const n = billedSeats(plan, seats);
+  const min = minimumSeats(plan.id);
+  const minNote = seats < min ? ` (billed at ${min} min)` : "";
+  return `$${plan.price} × ${n} seats${minNote} · ${resourcesLabel}`;
+}
+
 export function Calculator(): ReactNode {
   const root = useRef<HTMLElement>(null);
-  const [seats, setSeats] = useState(8);
+  const [seats, setSeats] = useState(5);
   const [resources, setResources] = useState(80);
 
   useGSAP(
@@ -65,13 +98,15 @@ export function Calculator(): ReactNode {
     { scope: root },
   );
 
+  const personalCost = useMemo(() => seatCost(PERSONAL, 1) ?? 0, []);
   const teamCost = useMemo(() => seatCost(TEAM, seats) ?? 0, [seats]);
   const bizCost = useMemo(() => seatCost(BUSINESS, seats) ?? 0, [seats]);
   const fit = useMemo(() => planForResources(resources), [resources]);
+  const fitResources = useMemo(
+    () => resourceLimit(fit.id, fit.limits.minSeats),
+    [fit],
+  );
   const fill = (resources / MAX_RESOURCES) * 100;
-
-  const teamExtra = Math.max(0, seats - (TEAM.seats ?? 0));
-  const bizExtra = Math.max(0, seats - (BUSINESS.seats ?? 0));
 
   return (
     <section id="calculator" className="relative px-5 pt-20 sm:px-8 sm:pt-24">
@@ -87,7 +122,6 @@ export function Calculator(): ReactNode {
         <div className="l1-reveal mt-10">
           <Panel live screws raised className="p-brushed">
             <div className="grid gap-0 lg:grid-cols-[1fr_1fr]">
-              {/* Inputs */}
               <div className="border-b border-[var(--l1-steel)] p-6 sm:p-8 lg:border-b-0 lg:border-r">
                 <div>
                   <div className="flex items-center justify-between">
@@ -96,9 +130,10 @@ export function Calculator(): ReactNode {
                     </span>
                   </div>
                   <div className="mt-3 flex items-center justify-between gap-4">
-                    <Stepper value={seats} onChange={setSeats} />
+                    <Stepper value={seats} onChange={setSeats} min={1} />
                     <span className="l1-readout text-right text-[12px] text-[var(--l1-muted)]">
-                      Team includes {TEAM.seats} · Business {BUSINESS.seats}
+                      Team min {minimumSeats(TEAM.id)} · Business min{" "}
+                      {minimumSeats(BUSINESS.id)}
                     </span>
                   </div>
                 </div>
@@ -144,39 +179,33 @@ export function Calculator(): ReactNode {
                   <span className="l1-readout text-[11px] text-[var(--l1-muted-2)]">
                     {fit.id === "enterprise"
                       ? "- talk to sales"
-                      : `- ${fit.resources} resources`}
+                      : `- ${fitResources} resources at min seats`}
                   </span>
                 </div>
               </div>
 
-              {/* Output */}
               <div className="p-6 sm:p-8">
                 <div className="grid gap-4">
                   <CostRow
+                    plan="Personal"
+                    detail={costDetail(PERSONAL, 1)}
+                    cost={personalCost}
+                    highlighted={seats === 1}
+                  />
+                  <CostRow
                     plan="Team"
-                    included={TEAM.seats ?? 0}
-                    extraRate={TEAM.extraSeat ?? 0}
-                    extra={teamExtra}
+                    detail={costDetail(TEAM, seats)}
                     cost={teamCost}
-                    highlighted
+                    highlighted={
+                      seats >= 2 && seats < minimumSeats(BUSINESS.id)
+                    }
                   />
                   <CostRow
                     plan="Business"
-                    included={BUSINESS.seats ?? 0}
-                    extraRate={BUSINESS.extraSeat ?? 0}
-                    extra={bizExtra}
+                    detail={costDetail(BUSINESS, seats)}
                     cost={bizCost}
+                    highlighted={seats >= minimumSeats(BUSINESS.id)}
                   />
-                </div>
-                <div className="mt-6 rounded-xl border border-[var(--l1-steel)] bg-[var(--l1-bezel)]/70 p-4">
-                  <p className="l1-label !text-[9px] text-[var(--l1-muted-2)]">
-                    HOW IT'S CALCULATED
-                  </p>
-                  <p className="l1-readout mt-2 text-[12px] leading-relaxed text-[var(--l1-fg-dim)]">
-                    Team = $29 + (seats − 5) × $5
-                    <br />
-                    Business = $149 + (seats − 15) × $8
-                  </p>
                 </div>
               </div>
             </div>
@@ -189,16 +218,12 @@ export function Calculator(): ReactNode {
 
 function CostRow({
   plan,
-  included,
-  extraRate,
-  extra,
+  detail,
   cost,
   highlighted,
 }: {
   plan: string;
-  included: number;
-  extraRate: number;
-  extra: number;
+  detail: string;
   cost: number;
   highlighted?: boolean;
 }) {
@@ -227,10 +252,7 @@ function CostRow({
         </span>
       </div>
       <p className="l1-readout mt-1.5 text-[11.5px] text-[var(--l1-muted)]">
-        {included} seats included
-        {extra > 0
-          ? ` · ${extra} extra seat${extra === 1 ? "" : "s"} × $${extraRate}`
-          : " · no extra seats"}
+        {detail}
       </p>
     </div>
   );

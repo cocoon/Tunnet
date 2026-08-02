@@ -19,6 +19,8 @@ import { EmptyState } from "@/components/app/empty-state";
 import { EntityStatus } from "@/components/app/entity-status";
 import { PageHeader } from "@/components/app/page-header";
 import { PageToolbar } from "@/components/app/page-toolbar";
+import { PlanGate } from "@/components/app/plan/plan-gate";
+import { useOrgPlan } from "@/hooks/use-org-plan";
 import { useCan } from "@/hooks/use-permission";
 import { useActiveOrganization } from "@/lib/auth-client";
 import { useTunnels } from "@/lib/queries/management";
@@ -34,9 +36,14 @@ function TunnelsPage() {
   const orgId = activeOrg?.id;
   const { data: canCreate = false } = useCan(orgId, "tunnel", "create");
   const { data: tunnels, isPending } = useTunnels(orgId);
+  const { data: usage } = useOrgPlan();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [createOpen, setCreateOpen] = useState(false);
+
+  const atTunnelLimit =
+    usage?.publicTunnels != null &&
+    usage.publicTunnelsUsed >= usage.publicTunnels;
 
   const filtered = useMemo(() => {
     let list = tunnels ?? [];
@@ -172,13 +179,26 @@ function TunnelsPage() {
         description="Public URLs that forward to ports on your machines."
         actions={
           canCreate ? (
-            <Button onClick={() => setCreateOpen(true)}>
+            <Button
+              disabled={atTunnelLimit}
+              onClick={() => setCreateOpen(true)}
+            >
               <PlusIcon className="mr-2 size-4" />
               Create tunnel
             </Button>
           ) : null
         }
       />
+
+      {canCreate && atTunnelLimit ? (
+        <PlanGate
+          locked
+          title="Public tunnel limit reached"
+          description="Upgrade your plan to create more public tunnels."
+          upgradeLabel="Upgrade"
+          inert={false}
+        />
+      ) : null}
 
       <PageToolbar
         search={search}
@@ -219,7 +239,12 @@ function TunnelsPage() {
           ]}
           action={
             canCreate ? (
-              <Button onClick={() => setCreateOpen(true)}>Create tunnel</Button>
+              <Button
+                disabled={atTunnelLimit}
+                onClick={() => setCreateOpen(true)}
+              >
+                Create tunnel
+              </Button>
             ) : undefined
           }
         />

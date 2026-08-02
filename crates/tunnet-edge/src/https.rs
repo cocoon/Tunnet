@@ -108,18 +108,20 @@ async fn handle_https_client(
     let source_ip = peer.ip().to_string();
     let meta = splice_tls_to_agent(tls, stream, basic_user, basic_hash, &metrics).await?;
 
-    if let Some(client) = control
-        && let Some((method, path)) = meta.request
-    {
-        let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
-        client.spawn_traffic_log(
-            tunnel_id,
-            method,
-            path,
-            meta.status_code.unwrap_or(0),
-            latency_ms,
-            Some(source_ip),
-        );
+    if let Some(ref client) = control {
+        client.record_bytes(&tunnel_id, meta.bytes);
+        if let Some((method, path)) = meta.request {
+            let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
+            client.spawn_traffic_log(
+                tunnel_id,
+                method,
+                path,
+                meta.status_code.unwrap_or(0),
+                latency_ms,
+                Some(source_ip),
+                None, // billed bytes are flushed via /v1/edge/usage
+            );
+        }
     }
     Ok(())
 }
@@ -135,6 +137,7 @@ impl Drop for ConnectionGuard {
 struct SpliceMeta {
     request: Option<(String, String)>,
     status_code: Option<i32>,
+    bytes: u64,
 }
 
 fn extract_server_name(tls: &TlsStream<TcpStream>) -> Option<String> {
@@ -178,6 +181,7 @@ async fn splice_tls_to_agent(
         return Ok(SpliceMeta {
             request,
             status_code: Some(401),
+            bytes: 0,
         });
     }
 
@@ -218,6 +222,7 @@ async fn splice_tls_to_agent(
     Ok(SpliceMeta {
         request,
         status_code: None,
+        bytes: n as u64 + tx + rx,
     })
 }
 

@@ -57,6 +57,7 @@ pub async fn serve(state: SharedState) -> anyhow::Result<()> {
             "/v1/edge/traffic",
             post(crate::tunnels::edge_traffic_handler),
         )
+        .route("/v1/edge/usage", post(crate::tunnels::edge_usage_handler))
         .route(
             "/v1/connectivity-relay/register",
             post(crate::connectivity_relay::connectivity_relay_register_handler),
@@ -64,6 +65,10 @@ pub async fn serve(state: SharedState) -> anyhow::Result<()> {
         .route(
             "/v1/connectivity-relay/heartbeat",
             post(crate::connectivity_relay::connectivity_relay_heartbeat_handler),
+        )
+        .route(
+            "/v1/connectivity-relay/usage",
+            post(crate::connectivity_relay::connectivity_relay_usage_handler),
         )
         .route("/v1/tunnels", post(crate::tunnels::create_tunnel_handler))
         .route(

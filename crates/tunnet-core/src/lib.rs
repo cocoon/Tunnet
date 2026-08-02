@@ -1,6 +1,7 @@
 pub mod acl;
 pub mod acl_hook;
 pub mod agent_config;
+pub mod cloud_relay_meter;
 #[cfg(feature = "managed")]
 pub mod control;
 pub mod coordinator;
@@ -38,6 +39,7 @@ pub mod tunnel;
 pub mod ws_client;
 
 pub use agent_config::{TunnetConfig, load_dns, load_firewall};
+pub use cloud_relay_meter::CloudRelayMeter;
 pub use effective_config::{EffectiveAgentConfigState, EffectiveConfigStore};
 pub use secret_store::{
     AgentSecrets, NetworkSecrets, SealPolicy, SealTier, load_agent, persist_agent,

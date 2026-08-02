@@ -45,6 +45,8 @@ pub struct EdgeRegisterResponse {
     pub edge_id: String,
     pub name: String,
     pub domain: String,
+    /// True only for Tunnet Cloud hosted edges (not self-hosted customer edges).
+    pub metering_enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,22 +94,27 @@ pub async fn edge_register_handler(
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
     };
 
-    let row: Option<(Uuid, String, String, Option<chrono::DateTime<chrono::Utc>>)> =
-        match sqlx::query_as(
-            "SELECT t.edge_id, e.name, e.domain, t.used_at \
+    let row: Option<(
+        Uuid,
+        String,
+        String,
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+    )> = match sqlx::query_as(
+        "SELECT t.edge_id, e.name, e.domain, e.kind, t.used_at \
              FROM edge_registration_tokens t \
              JOIN edges e ON e.id = t.edge_id \
              WHERE t.token_hash = $1 AND t.expires_at > now()",
-        )
-        .bind(&token_hash)
-        .fetch_optional(&mut *tx)
-        .await
-        {
-            Ok(r) => r,
-            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
-        };
+    )
+    .bind(&token_hash)
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
+    };
 
-    let Some((edge_id, name, domain, used_at)) = row else {
+    let Some((edge_id, name, domain, kind, used_at)) = row else {
         return err(StatusCode::UNAUTHORIZED, "invalid or expired edge token");
     };
 
@@ -158,12 +165,15 @@ pub async fn edge_register_handler(
     }
 
     let _ = body.agent_version;
+    let metering_enabled =
+        crate::relay_map::license_tier() == tunnet_license::LicenseTier::Cloud && kind == "hosted";
     (
         StatusCode::OK,
         Json(EdgeRegisterResponse {
             edge_id: edge_id.to_string(),
             name,
             domain,
+            metering_enabled,
         }),
     )
         .into_response()
@@ -834,8 +844,6 @@ async fn tunnel_status_update_inner(
     }
 }
 
-// ---------- Edge traffic ingest ----------
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EdgeTrafficLogLine {
@@ -850,6 +858,8 @@ pub struct EdgeTrafficLogLine {
     #[serde(default)]
     pub response_headers: serde_json::Value,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub bytes: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -882,8 +892,8 @@ pub async fn edge_traffic_handler(
     }
 
     let token_hash = hash_token(&token);
-    let edge_row: Option<(Uuid, String)> = match sqlx::query_as(
-        "SELECT e.id, e.organization_id FROM edges e \
+    let edge_row: Option<(Uuid, String, String)> = match sqlx::query_as(
+        "SELECT e.id, e.organization_id, e.kind FROM edges e \
          JOIN edge_registration_tokens t ON t.edge_id = e.id \
          WHERE t.token_hash = $1 AND e.status <> 'disabled' \
          LIMIT 1",
@@ -895,9 +905,14 @@ pub async fn edge_traffic_handler(
         Ok(r) => r,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
     };
-    let Some((edge_id, organization_id)) = edge_row else {
+    let Some((edge_id, organization_id, kind)) = edge_row else {
         return err(StatusCode::UNAUTHORIZED, "unknown edge");
     };
+
+    // Only Tunnet Cloud hosted edges bill public-tunnel traffic.
+    // Self-hosted customer edges never increment org_usage_monthly.
+    let meter_usage =
+        crate::relay_map::license_tier() == tunnet_license::LicenseTier::Cloud && kind == "hosted";
 
     let mut inserted = 0u32;
     for line in &body.logs {
@@ -977,7 +992,32 @@ pub async fn edge_traffic_handler(
         };
 
         match res {
-            Ok(_) => inserted += 1,
+            Ok(_) => {
+                inserted += 1;
+                if meter_usage {
+                    let bytes = line.bytes.unwrap_or(0).max(0);
+                    if bytes > 0 {
+                        let month = chrono::Utc::now().format("%Y%m").to_string();
+                        let month_i: i32 = month.parse().unwrap_or(0);
+                        if let Err(e) = sqlx::query(
+                            "INSERT INTO org_usage_monthly \
+                               (organization_id, month, relay_bytes, public_tunnel_bytes, updated_at) \
+                             VALUES ($1, $2, 0, $3, now()) \
+                             ON CONFLICT (organization_id, month) DO UPDATE SET \
+                               public_tunnel_bytes = org_usage_monthly.public_tunnel_bytes + EXCLUDED.public_tunnel_bytes, \
+                               updated_at = now()",
+                        )
+                        .bind(&organization_id)
+                        .bind(month_i)
+                        .bind(bytes)
+                        .execute(&state.pool)
+                        .await
+                        {
+                            tracing::warn!(?e, %organization_id, "failed to increment tunnel usage");
+                        }
+                    }
+                }
+            }
             Err(e) => tracing::warn!(?e, %tunnel_id, "failed to insert traffic log"),
         }
     }
@@ -985,6 +1025,130 @@ pub async fn edge_traffic_handler(
     (
         StatusCode::OK,
         Json(json!({ "ok": true, "inserted": inserted })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EdgeUsageEntry {
+    pub tunnel_id: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EdgeUsageIngestBody {
+    pub entries: Vec<EdgeUsageEntry>,
+}
+
+pub async fn edge_usage_handler(State(state): State<SharedState>, req: Request<Body>) -> Response {
+    let token = match bearer_token(&req) {
+        Some(t) => t,
+        None => return err(StatusCode::UNAUTHORIZED, "missing Bearer token"),
+    };
+    let body_bytes = match axum::body::to_bytes(req.into_body(), 2 * 1024 * 1024).await {
+        Ok(b) => b,
+        Err(_) => return err(StatusCode::BAD_REQUEST, "invalid body"),
+    };
+    let body: EdgeUsageIngestBody = match serde_json::from_slice(&body_bytes) {
+        Ok(v) => v,
+        Err(_) => return err(StatusCode::BAD_REQUEST, "invalid json"),
+    };
+    if body.entries.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "entries must not be empty");
+    }
+    if body.entries.len() > 500 {
+        return err(StatusCode::BAD_REQUEST, "too many entries (max 500)");
+    }
+
+    if crate::relay_map::license_tier() != tunnet_license::LicenseTier::Cloud {
+        return (
+            StatusCode::OK,
+            Json(json!({ "ok": true, "accepted": 0, "metering": false })),
+        )
+            .into_response();
+    }
+
+    let token_hash = hash_token(&token);
+    let edge_row: Option<(Uuid, String, String)> = match sqlx::query_as(
+        "SELECT e.id, e.organization_id, e.kind FROM edges e \
+         JOIN edge_registration_tokens t ON t.edge_id = e.id \
+         WHERE t.token_hash = $1 AND e.status <> 'disabled' \
+         LIMIT 1",
+    )
+    .bind(&token_hash)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
+    };
+    let Some((edge_id, organization_id, kind)) = edge_row else {
+        return err(StatusCode::UNAUTHORIZED, "unknown edge");
+    };
+    if kind != "hosted" {
+        return (
+            StatusCode::OK,
+            Json(json!({ "ok": true, "accepted": 0, "metering": false })),
+        )
+            .into_response();
+    }
+
+    let month = chrono::Utc::now().format("%Y%m").to_string();
+    let month_i: i32 = month.parse().unwrap_or(0);
+    let mut accepted = 0u32;
+    for entry in &body.entries {
+        if entry.bytes == 0 {
+            continue;
+        }
+        let tunnel_id = match Uuid::parse_str(&entry.tunnel_id) {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+        let ok: Option<(bool,)> = match sqlx::query_as(
+            "SELECT true FROM tunnels \
+             WHERE id = $1 AND organization_id = $2 \
+               AND (edge_id = $3 OR edge_id IS NULL)",
+        )
+        .bind(tunnel_id)
+        .bind(&organization_id)
+        .bind(edge_id)
+        .fetch_optional(&state.pool)
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(?e, "usage ingest tunnel lookup failed");
+                continue;
+            }
+        };
+        if ok.is_none() {
+            continue;
+        }
+        if let Err(e) = sqlx::query(
+            "INSERT INTO org_usage_monthly \
+               (organization_id, month, relay_bytes, public_tunnel_bytes, updated_at) \
+             VALUES ($1, $2, 0, $3, now()) \
+             ON CONFLICT (organization_id, month) DO UPDATE SET \
+               public_tunnel_bytes = org_usage_monthly.public_tunnel_bytes + EXCLUDED.public_tunnel_bytes, \
+               updated_at = now()",
+        )
+        .bind(&organization_id)
+        .bind(month_i)
+        .bind(entry.bytes as i64)
+        .execute(&state.pool)
+        .await
+        {
+            tracing::warn!(?e, %organization_id, "failed to increment edge usage");
+            continue;
+        }
+        accepted += 1;
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({ "ok": true, "accepted": accepted, "metering": true })),
     )
         .into_response()
 }

@@ -24,6 +24,8 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { CopyField } from "@/components/app/copy-field";
 import { DataTable } from "@/components/app/data-table";
+import { PlanGate } from "@/components/app/plan/plan-gate";
+import { usePlanFeature } from "@/hooks/use-org-plan";
 import { useCan } from "@/hooks/use-permission";
 import { useActiveOrganization } from "@/lib/auth-client";
 import { createManagementClient } from "@/lib/management-client";
@@ -50,6 +52,7 @@ export function ApiKeysPanel() {
   const { data: activeOrg } = useActiveOrganization();
   const orgId = activeOrg?.id;
   const { data: canManage = false } = useCan(orgId, "apiKey", "create");
+  const hasApiAccess = usePlanFeature("apiAccess");
   const { data: apiKeys, isPending } = useApiKeys(orgId);
   const { data: networks } = useNetworks(orgId);
   const queryClient = useQueryClient();
@@ -123,6 +126,7 @@ export function ApiKeysPanel() {
                 <Button
                   variant="ghost"
                   size="icon"
+                  disabled={!hasApiAccess}
                   onClick={() => setRevokeId(row.original.id)}
                 >
                   <TrashIcon className="size-4" />
@@ -132,29 +136,41 @@ export function ApiKeysPanel() {
           ]
         : []),
     ],
-    [canManage, networkNames],
+    [canManage, hasApiAccess, networkNames],
   );
 
   return (
     <>
-      <div className="mb-4 flex justify-end">
-        {canManage ? (
-          <Button size="sm" onClick={() => setCreateOpen(true)}>
-            <PlusIcon className="mr-1.5 size-4" />
-            Create key
-          </Button>
-        ) : null}
-      </div>
+      <PlanGate
+        locked={!hasApiAccess}
+        title="Available on Personal"
+        description="Upgrade to Personal to create and manage API keys."
+        requiredPlan="personal"
+        upgradeLabel="Upgrade"
+      >
+        <div className="mb-4 flex justify-end">
+          {canManage ? (
+            <Button
+              size="sm"
+              disabled={!hasApiAccess}
+              onClick={() => setCreateOpen(true)}
+            >
+              <PlusIcon className="mr-1.5 size-4" />
+              Create key
+            </Button>
+          ) : null}
+        </div>
 
-      {isPending ? (
-        <Skeleton className="h-48 w-full" />
-      ) : (
-        <DataTable
-          columns={columns}
-          data={apiKeys ?? []}
-          getRowId={(row) => row.id}
-        />
-      )}
+        {isPending ? (
+          <Skeleton className="h-48 w-full" />
+        ) : (
+          <DataTable
+            columns={columns}
+            data={apiKeys ?? []}
+            getRowId={(row) => row.id}
+          />
+        )}
+      </PlanGate>
 
       <CreateApiKeyDialog
         orgId={orgId}

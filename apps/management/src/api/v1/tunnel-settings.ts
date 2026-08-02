@@ -5,6 +5,7 @@ import { Elysia } from "elysia";
 
 import { writeAudit } from "../../lib/audit";
 import { db } from "../../lib/db";
+import { requirePlanFeature } from "../../lib/org-billing";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
 import { notFound, sessionPlugin } from "./middleware/session";
@@ -59,6 +60,14 @@ export const tunnelSettingsRoutes = new Elysia()
         async ({ authContext, body }) => {
           const auth = getAuth({ authContext });
           const parsed = patchOrganizationTunnelSettingsBody.parse(body);
+
+          if (
+            parsed.customTunnelDomain !== undefined &&
+            parsed.customTunnelDomain !== null &&
+            parsed.customTunnelDomain.trim() !== ""
+          ) {
+            await requirePlanFeature(auth.organizationId, "customDomains");
+          }
 
           if (parsed.defaultEdgeId) {
             const edge = await db.query.edges.findFirst({

@@ -99,6 +99,13 @@
       "when": 1785680222048,
       "tag": "0013_quiet_toro",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1785703105887,
+      "tag": "0014_parallel_ares",
+      "breakpoints": true
     }
   ]
 }

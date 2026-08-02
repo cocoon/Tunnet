@@ -1845,6 +1845,29 @@ export const oauthAccessTokens = pgTable(
   ],
 );
 
+export const orgUsageMonthly = pgTable(
+  "org_usage_monthly",
+  {
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    month: integer("month").notNull(),
+    relayBytes: bigint("relay_bytes", { mode: "number" }).notNull().default(0),
+    publicTunnelBytes: bigint("public_tunnel_bytes", { mode: "number" })
+      .notNull()
+      .default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    primaryKey({
+      columns: [t.organizationId, t.month],
+      name: "org_usage_monthly_pkey",
+    }),
+  ],
+);
+
 export const networksRelations = relations(networks, ({ one, many }) => ({
   organization: one(organization, {
     fields: [networks.organizationId],

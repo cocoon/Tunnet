@@ -10,7 +10,6 @@ import { FaqSection } from "#/components/sections/faq";
 import { FinalCtaSection } from "#/components/sections/final-cta";
 import { HeroSection } from "#/components/sections/hero";
 import { OpenSourceSection } from "#/components/sections/open-source";
-import { PricingTeaserSection } from "#/components/sections/pricing-teaser";
 import { PrimitivesSection } from "#/components/sections/primitives";
 import { SecuritySection } from "#/components/sections/security";
 import { TrustMarquee } from "#/components/sections/trust-marquee";
@@ -35,7 +34,6 @@ export function HomePage(): ReactNode {
         <CommandsTimelineSection />
         <OpenSourceSection />
         <AudienceQuotesSection />
-        <PricingTeaserSection />
         <FaqSection />
         <FinalCtaSection />
       </main>

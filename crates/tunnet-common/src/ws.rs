@@ -143,6 +143,10 @@ pub enum ClientMsg {
         bytes_tx: u64,
         bytes_rx: u64,
     },
+    /// Bytes relayed via Tunnet Cloud deployment relays (not P2P, not self-hosted relays).
+    CloudRelayUsage {
+        bytes: u64,
+    },
     Pong {
         nonce: u64,
     },

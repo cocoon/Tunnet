@@ -424,6 +424,13 @@ impl CoreNode {
         let serves = ServeManager::new(membership.assigned_ipv4, routes.clone());
         let pool = ConnPool::new(endpoint.clone(), TUNNEL_STREAM_ALPN);
         let tunnel_pool = ConnPool::with_shared_policy(endpoint.clone(), TUNNEL_ALPN, &pool);
+        pool.set_cloud_relay_urls(
+            snapshot
+                .connectivity_relays
+                .iter()
+                .filter(|r| r.metering)
+                .map(|r| r.url.clone()),
+        );
         let effective_config = cfg.effective_config.clone().unwrap_or_default();
         #[cfg(feature = "tunnel")]
         let tunnels = TunnelManager::new(pool.clone());

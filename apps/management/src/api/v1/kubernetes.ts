@@ -10,6 +10,7 @@ import {
   deviceKind,
   deviceNodeKind,
 } from "../../lib/device-metadata";
+import { requirePlanFeature } from "../../lib/org-billing";
 import { isAgentOnline } from "../../lib/presence";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth } from "./middleware/authz";
@@ -36,6 +37,7 @@ export const kubernetesRoutes = new Elysia()
   .use(requireAuth)
   .get("/organizations/:orgId/kubernetes", async ({ authContext }) => {
     const auth = getAuth({ authContext });
+    await requirePlanFeature(auth.organizationId, "kubernetes");
 
     const rows = await db
       .select({

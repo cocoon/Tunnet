@@ -11,6 +11,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tunnet_common::PortMapping;
 
+use crate::control::ControlClient;
 use crate::metrics::EdgeMetrics;
 use crate::registry::TunnelRegistry;
 use crate::transport::AgentStream;
@@ -24,11 +25,16 @@ struct ActiveListener {
 #[derive(Clone, Default)]
 pub struct TcpMappingManager {
     inner: Arc<Mutex<HashMap<MappingKey, ActiveListener>>>,
+    control: Arc<Mutex<Option<ControlClient>>>,
 }
 
 impl TcpMappingManager {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn set_control(&self, client: Option<ControlClient>) {
+        *self.control.lock() = client;
     }
 
     /// Reconcile desired mappings from heartbeat against live listeners.
@@ -57,6 +63,8 @@ impl TcpMappingManager {
             }
         }
 
+        let control = self.control.lock().clone();
+
         for (subdomain, tunnel_id, mapping) in desired {
             let key = (subdomain.to_ascii_lowercase(), mapping.external_port);
             {
@@ -78,6 +86,7 @@ impl TcpMappingManager {
             let registry = registry.clone();
             let mgr = self.clone();
             let metrics = metrics.clone();
+            let control = control.clone();
             let subdomain = key.0.clone();
             let external_port = mapping.external_port;
             let target_port = mapping.target_port;
@@ -91,6 +100,7 @@ impl TcpMappingManager {
                     target_ip,
                     registry,
                     metrics,
+                    control,
                     stop_rx,
                 )
                 .await
@@ -111,12 +121,13 @@ impl TcpMappingManager {
 #[allow(clippy::too_many_arguments)]
 async fn run_tcp_listener(
     subdomain: String,
-    _tunnel_id: String,
+    tunnel_id: String,
     external_port: u16,
     target_port: u16,
     target_ip: Option<String>,
     registry: TunnelRegistry,
     metrics: EdgeMetrics,
+    control: Option<ControlClient>,
     mut stop: oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
     let bind = SocketAddr::from(([0, 0, 0, 0], external_port));
@@ -135,11 +146,23 @@ async fn run_tcp_listener(
                 let (tcp, peer) = accepted?;
                 let registry = registry.clone();
                 let subdomain = subdomain.clone();
+                let tunnel_id = tunnel_id.clone();
                 let target_ip = target_ip.clone();
                 let metrics = metrics.clone();
+                let control = control.clone();
                 tokio::spawn(async move {
                     if let Err(e) =
-                        handle_tcp_client(tcp, peer, &subdomain, target_port, target_ip, registry, metrics).await
+                        handle_tcp_client(
+                            tcp,
+                            peer,
+                            &subdomain,
+                            &tunnel_id,
+                            target_port,
+                            target_ip,
+                            registry,
+                            metrics,
+                            control,
+                        ).await
                     {
                         tracing::debug!(?e, %peer, %subdomain, "TCP mapping session ended");
                     }
@@ -150,14 +173,17 @@ async fn run_tcp_listener(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_tcp_client(
     tcp: TcpStream,
     peer: SocketAddr,
     subdomain: &str,
+    tunnel_id: &str,
     target_port: u16,
     target_ip: Option<String>,
     registry: TunnelRegistry,
     metrics: EdgeMetrics,
+    control: Option<ControlClient>,
 ) -> anyhow::Result<()> {
     metrics.tcp_accept();
     metrics.active_connections_inc();
@@ -227,5 +253,8 @@ async fn handle_tcp_client(
     let rx = b?;
     metrics.bytes_add("tx", tx);
     metrics.bytes_add("rx", rx);
+    if let Some(ref client) = control {
+        client.record_bytes(tunnel_id, tx + rx);
+    }
     Ok(())
 }

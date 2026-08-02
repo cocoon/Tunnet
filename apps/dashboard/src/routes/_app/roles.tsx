@@ -33,6 +33,8 @@ import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { DataTable } from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { PageHeader } from "@/components/app/page-header";
+import { PlanGate } from "@/components/app/plan/plan-gate";
+import { usePlanFeature } from "@/hooks/use-org-plan";
 import { useCan } from "@/hooks/use-permission";
 import { authClient, useActiveOrganization } from "@/lib/auth-client";
 import { queryKeys } from "@/lib/query-keys";
@@ -61,6 +63,7 @@ function RolesPage() {
   const { data: canManage = false } = useCan(orgId, "ac", "create");
   const { data: canUpdate = false } = useCan(orgId, "ac", "update");
   const { data: canDelete = false } = useCan(orgId, "ac", "delete");
+  const hasCustomRoles = usePlanFeature("customRoles");
   const queryClient = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
   const [editRole, setEditRole] = useState<RoleRow | null>(null);
@@ -223,13 +226,27 @@ function RolesPage() {
         description="Static system roles and custom organization roles with Discord-style hierarchy."
         actions={
           canManage ? (
-            <Button onClick={() => setCreateOpen(true)}>
+            <Button
+              disabled={!hasCustomRoles}
+              onClick={() => setCreateOpen(true)}
+            >
               <PlusIcon className="size-4" />
               Create role
             </Button>
           ) : undefined
         }
       />
+
+      {canManage && !hasCustomRoles ? (
+        <PlanGate
+          locked
+          title="Available on Team"
+          description="Upgrade to Team to create custom organization roles."
+          requiredPlan="team"
+          upgradeLabel="Upgrade"
+          inert={false}
+        />
+      ) : null}
 
       {isPending ? (
         <Skeleton className="h-64 w-full" />

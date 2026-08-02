@@ -38,8 +38,10 @@ import { CopyField } from "@/components/app/copy-field";
 import { EntityStatus } from "@/components/app/entity-status";
 import { OrganizationBillingPanel } from "@/components/app/organization-billing-panel";
 import { PageHeader } from "@/components/app/page-header";
+import { PlanGate } from "@/components/app/plan/plan-gate";
 import { SubscriptionSuccessDialog } from "@/components/app/subscription-success-dialog";
 import { useFeature } from "@/hooks/use-entitlements";
+import { usePlanFeature } from "@/hooks/use-org-plan";
 import { useCan } from "@/hooks/use-permission";
 import { authClient } from "@/lib/auth-client";
 import {
@@ -252,6 +254,8 @@ function OrganizationSettingsPage() {
   const { data: canUpdate = false } = useCan(orgId, "organization", "update");
   const { data: canDelete = false } = useCan(orgId, "organization", "delete");
   const { data: canManageSso = false } = useCan(orgId, "sso", "update");
+  const hasOidcSso = usePlanFeature("oidcSso");
+  const hasCustomDomains = usePlanFeature("customDomains");
   const [section, setSection] = useState<SettingsSection>("general");
   const [successOpen, setSuccessOpen] = useState(false);
   const [name, setName] = useState(activeOrg?.name ?? "");
@@ -1075,18 +1079,26 @@ function OrganizationSettingsPage() {
                     </FieldBlock>
                   </div>
 
-                  <FieldBlock
-                    label="Custom tunnel domain"
-                    htmlFor="custom-domain"
+                  <PlanGate
+                    locked={!hasCustomDomains}
+                    title="Available on Personal"
+                    description="Upgrade to Personal to use a custom tunnel domain."
+                    requiredPlan="personal"
+                    upgradeLabel="Upgrade"
                   >
-                    <Input
-                      id="custom-domain"
-                      value={customDomain}
-                      onChange={(e) => setCustomDomain(e.target.value)}
-                      placeholder="tunnels.example.com"
-                      disabled={!canUpdate}
-                    />
-                  </FieldBlock>
+                    <FieldBlock
+                      label="Custom tunnel domain"
+                      htmlFor="custom-domain"
+                    >
+                      <Input
+                        id="custom-domain"
+                        value={customDomain}
+                        onChange={(e) => setCustomDomain(e.target.value)}
+                        placeholder="tunnels.example.com"
+                        disabled={!canUpdate || !hasCustomDomains}
+                      />
+                    </FieldBlock>
+                  </PlanGate>
 
                   <FieldBlock
                     label="Peer DNS suffix"
@@ -1213,7 +1225,7 @@ function OrganizationSettingsPage() {
               title="Single sign-on"
               description="Register an external OIDC identity provider for this organization. Dashboard login and SSH check-mode re-auth use Better Auth SSO."
               footer={
-                canManageSso ? (
+                canManageSso && hasOidcSso ? (
                   <div className="flex flex-wrap gap-2">
                     <Button
                       type="submit"
@@ -1242,97 +1254,105 @@ function OrganizationSettingsPage() {
                 ) : null
               }
             >
-              {ssoPending ? (
-                <Skeleton className="h-40 w-full" />
-              ) : (
-                <form
-                  id="org-sso-form"
-                  className="space-y-5"
-                  onSubmit={(e) => void saveSsoSettings(e)}
-                >
-                  {ssoProvider ? (
-                    <p className="text-muted-foreground text-xs">
-                      Provider ID:{" "}
-                      <code className="text-foreground">
-                        {ssoProvider.providerId}
-                      </code>
-                    </p>
-                  ) : null}
+              <PlanGate
+                locked={!hasOidcSso}
+                title="Available on Team"
+                description="Upgrade to Team to configure OIDC single sign-on."
+                requiredPlan="team"
+                upgradeLabel="Upgrade"
+              >
+                {ssoPending ? (
+                  <Skeleton className="h-40 w-full" />
+                ) : (
+                  <form
+                    id="org-sso-form"
+                    className="space-y-5"
+                    onSubmit={(e) => void saveSsoSettings(e)}
+                  >
+                    {ssoProvider ? (
+                      <p className="text-muted-foreground text-xs">
+                        Provider ID:{" "}
+                        <code className="text-foreground">
+                          {ssoProvider.providerId}
+                        </code>
+                      </p>
+                    ) : null}
 
-                  <FieldBlock label="Email domain" htmlFor="sso-domain">
-                    <Input
-                      id="sso-domain"
-                      value={ssoDomain}
-                      onChange={(e) => setSsoDomain(e.target.value)}
-                      placeholder="company.com"
-                      disabled={!canManageSso}
-                      required
-                    />
-                  </FieldBlock>
-
-                  <FieldBlock label="Issuer URL" htmlFor="issuer-url">
-                    <Input
-                      id="issuer-url"
-                      value={issuerUrl}
-                      onChange={(e) => setIssuerUrl(e.target.value)}
-                      placeholder="https://accounts.example.com"
-                      disabled={!canManageSso}
-                      required
-                    />
-                  </FieldBlock>
-
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    <FieldBlock label="Client ID" htmlFor="client-id">
+                    <FieldBlock label="Email domain" htmlFor="sso-domain">
                       <Input
-                        id="client-id"
-                        value={clientId}
-                        onChange={(e) => setClientId(e.target.value)}
-                        disabled={!canManageSso}
+                        id="sso-domain"
+                        value={ssoDomain}
+                        onChange={(e) => setSsoDomain(e.target.value)}
+                        placeholder="company.com"
+                        disabled={!canManageSso || !hasOidcSso}
                         required
                       />
                     </FieldBlock>
-                    <FieldBlock label="Client secret" htmlFor="client-secret">
+
+                    <FieldBlock label="Issuer URL" htmlFor="issuer-url">
                       <Input
-                        id="client-secret"
-                        type="password"
-                        value={clientSecret}
-                        onChange={(e) => setClientSecret(e.target.value)}
-                        placeholder={
-                          ssoProvider?.clientSecretSet
-                            ? "Leave blank to keep current"
-                            : "Secret"
-                        }
-                        disabled={!canManageSso}
-                        autoComplete="new-password"
-                        required={!ssoProvider?.clientSecretSet}
+                        id="issuer-url"
+                        value={issuerUrl}
+                        onChange={(e) => setIssuerUrl(e.target.value)}
+                        placeholder="https://accounts.example.com"
+                        disabled={!canManageSso || !hasOidcSso}
+                        required
                       />
                     </FieldBlock>
-                  </div>
 
-                  <FieldBlock
-                    label="Discovery URL (optional)"
-                    htmlFor="discovery-url"
-                    hint="Defaults to /.well-known/openid-configuration on the issuer."
-                  >
-                    <Input
-                      id="discovery-url"
-                      value={discoveryUrl}
-                      onChange={(e) => setDiscoveryUrl(e.target.value)}
-                      placeholder="Defaults to /.well-known/openid-configuration"
-                      disabled={!canManageSso}
-                    />
-                  </FieldBlock>
+                    <div className="grid gap-5 sm:grid-cols-2">
+                      <FieldBlock label="Client ID" htmlFor="client-id">
+                        <Input
+                          id="client-id"
+                          value={clientId}
+                          onChange={(e) => setClientId(e.target.value)}
+                          disabled={!canManageSso || !hasOidcSso}
+                          required
+                        />
+                      </FieldBlock>
+                      <FieldBlock label="Client secret" htmlFor="client-secret">
+                        <Input
+                          id="client-secret"
+                          type="password"
+                          value={clientSecret}
+                          onChange={(e) => setClientSecret(e.target.value)}
+                          placeholder={
+                            ssoProvider?.clientSecretSet
+                              ? "Leave blank to keep current"
+                              : "Secret"
+                          }
+                          disabled={!canManageSso || !hasOidcSso}
+                          autoComplete="new-password"
+                          required={!ssoProvider?.clientSecretSet}
+                        />
+                      </FieldBlock>
+                    </div>
 
-                  <FieldBlock label="Scopes" htmlFor="sso-scopes">
-                    <Input
-                      id="sso-scopes"
-                      value={scopes}
-                      onChange={(e) => setScopes(e.target.value)}
-                      disabled={!canManageSso}
-                    />
-                  </FieldBlock>
-                </form>
-              )}
+                    <FieldBlock
+                      label="Discovery URL (optional)"
+                      htmlFor="discovery-url"
+                      hint="Defaults to /.well-known/openid-configuration on the issuer."
+                    >
+                      <Input
+                        id="discovery-url"
+                        value={discoveryUrl}
+                        onChange={(e) => setDiscoveryUrl(e.target.value)}
+                        placeholder="Defaults to /.well-known/openid-configuration"
+                        disabled={!canManageSso || !hasOidcSso}
+                      />
+                    </FieldBlock>
+
+                    <FieldBlock label="Scopes" htmlFor="sso-scopes">
+                      <Input
+                        id="sso-scopes"
+                        value={scopes}
+                        onChange={(e) => setScopes(e.target.value)}
+                        disabled={!canManageSso || !hasOidcSso}
+                      />
+                    </FieldBlock>
+                  </form>
+                )}
+              </PlanGate>
             </SettingsPanel>
           ) : null}
 

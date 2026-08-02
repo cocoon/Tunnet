@@ -1,5 +1,8 @@
-//! Optional registration + heartbeat against the Tunnet control plane.
+//! Optional registration + heartbeat + cloud metering against the Tunnet control plane.
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -10,6 +13,9 @@ pub struct ControlClient {
     base: String,
     http: reqwest::Client,
     token: String,
+    metering_enabled: Arc<AtomicBool>,
+    /// Per-organization bytes awaiting flush (cloud deployment relays only).
+    pending: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -29,6 +35,8 @@ pub struct RegisterResponse {
     pub relay_id: String,
     pub name: String,
     pub url: String,
+    #[serde(default)]
+    pub metering_enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -40,6 +48,19 @@ struct HeartbeatBody {
     metrics: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageEntry {
+    organization_id: String,
+    bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageBody {
+    entries: Vec<UsageEntry>,
+}
+
 impl ControlClient {
     pub fn new(base: String, token: String) -> anyhow::Result<Self> {
         let http = reqwest::Client::builder()
@@ -49,7 +70,26 @@ impl ControlClient {
             base: base.trim_end_matches('/').to_string(),
             http,
             token,
+            metering_enabled: Arc::new(AtomicBool::new(false)),
+            pending: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    pub fn metering_enabled(&self) -> bool {
+        self.metering_enabled.load(Ordering::Relaxed)
+    }
+
+    /// Record bytes for an organization (no-op unless cloud deployment metering is on).
+    ///
+    /// Not used by the iroh-relay data plane today (encrypted frames have no org id).
+    /// Agents report `CloudRelayUsage` instead; this remains for optional ops hooks.
+    #[allow(dead_code)]
+    pub fn record_org_bytes(&self, organization_id: &str, bytes: u64) {
+        if !self.metering_enabled() || bytes == 0 || organization_id.is_empty() {
+            return;
+        }
+        let mut guard = self.pending.lock().expect("usage meter poisoned");
+        *guard.entry(organization_id.to_string()).or_insert(0) += bytes;
     }
 
     pub async fn register(
@@ -80,7 +120,15 @@ impl ControlClient {
         if !status.is_success() {
             anyhow::bail!("connectivity-relay register failed: {status}: {text}");
         }
-        Ok(serde_json::from_str(&text)?)
+        let parsed: RegisterResponse = serde_json::from_str(&text)?;
+        self.metering_enabled
+            .store(parsed.metering_enabled, Ordering::Relaxed);
+        if parsed.metering_enabled {
+            tracing::info!("cloud deployment relay metering enabled");
+        } else {
+            tracing::info!("relay metering disabled (org self-hosted relay or non-cloud control)");
+        }
+        Ok(parsed)
     }
 
     pub async fn heartbeat(
@@ -108,19 +156,54 @@ impl ControlClient {
         Ok(())
     }
 
-    /// Spawn a 30s heartbeat loop. Cancelled when the returned JoinHandle is aborted
-    /// or the process exits.
+    async fn flush_usage(&self) -> anyhow::Result<()> {
+        if !self.metering_enabled() {
+            return Ok(());
+        }
+        let drained: Vec<(String, u64)> = {
+            let mut guard = self.pending.lock().expect("usage meter poisoned");
+            guard.drain().filter(|(_, n)| *n > 0).collect()
+        };
+        if drained.is_empty() {
+            return Ok(());
+        }
+        let entries: Vec<UsageEntry> = drained
+            .into_iter()
+            .map(|(organization_id, bytes)| UsageEntry {
+                organization_id,
+                bytes,
+            })
+            .collect();
+        let endpoint = format!("{}/v1/connectivity-relay/usage", self.base);
+        let resp = self
+            .http
+            .post(&endpoint)
+            .header("authorization", format!("Bearer {}", self.token))
+            .json(&UsageBody { entries })
+            .send()
+            .await
+            .with_context(|| format!("POST {endpoint}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("connectivity-relay usage failed: {status}: {text}");
+        }
+        Ok(())
+    }
+
     pub fn spawn_heartbeat_loop(self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(30));
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 ticker.tick().await;
+                if let Err(e) = self.flush_usage().await {
+                    tracing::debug!(?e, "relay usage flush failed");
+                }
                 if let Err(e) = self
                     .heartbeat(Some("healthy"), Some(serde_json::json!({ "ok": true })))
                     .await
                 {
-                    tracing::warn!(?e, "connectivity-relay heartbeat failed");
+                    tracing::warn!(?e, "relay heartbeat failed");
                 }
             }
         })

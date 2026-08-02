@@ -144,7 +144,7 @@ export function SubscriptionSuccessDialog({
           </div>
 
           <ul className="grid gap-2.5">
-            {plan.features.map((feature) => (
+            {plan.featureBullets.map((feature) => (
               <li key={feature} className="flex items-start gap-2.5 text-sm">
                 <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
                   <CheckIcon className="size-3" strokeWidth={3} />

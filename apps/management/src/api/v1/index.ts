@@ -4,6 +4,7 @@ import { apiKeysRoutes } from "./api-keys";
 import { auditRoutes } from "./audit";
 import { authOauthRoutes } from "./auth-oauth";
 import { authOidcRoutes } from "./auth-oidc";
+import { billingUsageRoutes } from "./billing-usage";
 import { cloudRelaysRoutes } from "./cloud-relays";
 import { deviceProfilesRoutes } from "./device-profiles";
 import { devicesRoutes } from "./devices";
@@ -12,6 +13,7 @@ import { enrollmentTokensRoutes } from "./enrollment-tokens";
 import { entitlementsRoutes } from "./entitlements";
 import { hostnameRoutesRoutes } from "./hostname-routes";
 import { internalCaRoutes } from "./internal-ca";
+import { internalUsageRoutes } from "./internal-usage";
 import { kubernetesRoutes } from "./kubernetes";
 import { networksRoutes } from "./networks";
 import { nodeGroupsRoutes } from "./node-groups";
@@ -40,6 +42,8 @@ export const apiV1 = new Elysia({ prefix: "/api/v1" })
   .use(policyDocumentRoutes)
   .use(policyEntitiesRoutes)
   .use(entitlementsRoutes)
+  .use(billingUsageRoutes)
+  .use(internalUsageRoutes)
   .use(networksRoutes)
   .use(devicesRoutes)
   .use(presenceRoutes)

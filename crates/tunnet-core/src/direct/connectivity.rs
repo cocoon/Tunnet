@@ -210,6 +210,7 @@ mod tests {
                 url: "https://relay.example.com".into(),
                 region: Some("us".into()),
                 auth_token: Some("tok".into()),
+                metering: false,
             }],
             ConnectivityRelayFallback::None,
         );
@@ -229,6 +230,7 @@ mod tests {
             url: "https://relay.example.com./".into(),
             region: None,
             auth_token: Some("shared-secret".into()),
+            metering: false,
         }];
         let map = relay_map_from_configs(&relays).expect("parse");
         assert_eq!(map.len(), 1);

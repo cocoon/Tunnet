@@ -14,19 +14,23 @@ import {
 const FAQ = [
   {
     q: "What counts as a seat?",
-    a: "One person on the plan. Team includes 5, Business includes 15; extra seats are billed at the per-seat rate.",
+    a: "One person in the organization. Personal is a single-seat flat plan. Team bills per seat with a 2-user minimum; Business with a 5-user minimum.",
+  },
+  {
+    q: "Can I invite people on Personal?",
+    a: "No. Personal is solo (1 seat). When you invite someone, you'll move to Team so seats and collaboration features match.",
   },
   {
     q: "What is a resource?",
-    a: "A machine enrolled in your mesh - a laptop, server, CI runner or edge. Direct mode has no cap.",
+    a: "A machine enrolled in your mesh - a laptop, server, CI runner, or edge node. Resource caps scale with seats on Team and Business.",
   },
   {
     q: "What is managed traffic?",
-    a: "Data that flows through the public edge. Direct peer-to-peer paths are always free.",
+    a: "Only traffic that goes through Tunnet relays or public tunnels counts toward your allowance. Peer-to-peer (direct) paths are free and never metered.",
   },
   {
     q: "What happens if I exceed my plan?",
-    a: "Add seats anytime. Hit a resource or traffic cap and you'll be asked to upgrade - nothing gets cut off.",
+    a: "You'll get soft warnings first. Upgrade seats or plan when you need more capacity - we don't hard-cut traffic mid-session without notice.",
   },
   {
     q: "Can I upgrade or downgrade anytime?",

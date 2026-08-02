@@ -15,6 +15,8 @@ import { EmptyState } from "@/components/app/empty-state";
 import { KubernetesNodeSheet } from "@/components/app/kubernetes-node-sheet";
 import { PageHeader } from "@/components/app/page-header";
 import { PageToolbar } from "@/components/app/page-toolbar";
+import { PlanGate } from "@/components/app/plan/plan-gate";
+import { usePlanFeature } from "@/hooks/use-org-plan";
 import { useActiveOrganization } from "@/lib/auth-client";
 import { deviceKindLabel } from "@/lib/device-type";
 import { useKubernetes } from "@/lib/queries/management";
@@ -27,6 +29,7 @@ function KubernetesHubPage() {
   const { data: activeOrg } = useActiveOrganization();
   const orgId = activeOrg?.id;
   const { data, isPending, isError, error } = useKubernetes(orgId);
+  const hasKubernetes = usePlanFeature("kubernetes");
   const [search, setSearch] = useState("");
   const [kindFilter, setKindFilter] = useState<string>("all");
   const [networkFilter, setNetworkFilter] = useState<string>("all");
@@ -153,95 +156,107 @@ function KubernetesHubPage() {
         description="Operator-managed connectors and proxies on your mesh."
       />
 
-      {data && data.byNetwork.length > 0 ? (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {data.byNetwork.map((net) => (
-            <Link
-              key={net.networkId}
-              to="/kubernetes/networks/$networkId"
-              params={{ networkId: net.networkId }}
-              className="panel hover:border-border block space-y-1 p-4 transition-colors"
-            >
-              <div className="text-[13px] font-medium">{net.networkName}</div>
-              <p className="text-muted-foreground text-[12px]">
-                {net.onlineCount} online · {net.nodeCount} nodes
-              </p>
-            </Link>
-          ))}
+      <PlanGate
+        locked={!hasKubernetes}
+        title="Available on Personal"
+        description="Upgrade to Personal to manage Kubernetes nodes on your mesh."
+        requiredPlan="personal"
+        upgradeLabel="Upgrade"
+      >
+        <div className="space-y-6">
+          {data && data.byNetwork.length > 0 ? (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {data.byNetwork.map((net) => (
+                <Link
+                  key={net.networkId}
+                  to="/kubernetes/networks/$networkId"
+                  params={{ networkId: net.networkId }}
+                  className="panel hover:border-border block space-y-1 p-4 transition-colors"
+                >
+                  <div className="text-[13px] font-medium">
+                    {net.networkName}
+                  </div>
+                  <p className="text-muted-foreground text-[12px]">
+                    {net.onlineCount} online · {net.nodeCount} nodes
+                  </p>
+                </Link>
+              ))}
+            </div>
+          ) : null}
+
+          <PageToolbar
+            search={search}
+            onSearchChange={setSearch}
+            searchPlaceholder="Search node, kind, network, IP…"
+            count={filtered.length}
+            countLabel={filtered.length === 1 ? "node" : "nodes"}
+            filters={
+              <>
+                <Select
+                  value={kindFilter}
+                  onValueChange={(v) => v && setKindFilter(v)}
+                >
+                  <SelectTrigger className="w-[160px]">
+                    <SelectValue placeholder="Kind" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All kinds</SelectItem>
+                    {kindOptions.map((k) => (
+                      <SelectItem key={k} value={k}>
+                        {deviceKindLabel(k) ?? k}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={networkFilter}
+                  onValueChange={(v) => v && setNetworkFilter(v)}
+                >
+                  <SelectTrigger className="w-[160px]">
+                    <SelectValue placeholder="Network" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All networks</SelectItem>
+                    {(data?.byNetwork ?? []).map((n) => (
+                      <SelectItem key={n.networkId} value={n.networkId}>
+                        {n.networkName}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </>
+            }
+          />
+
+          {isPending ? (
+            <Skeleton className="h-64 w-full" />
+          ) : isError ? (
+            <EmptyState
+              title="Couldn’t load Kubernetes nodes"
+              description={
+                error instanceof Error
+                  ? error.message
+                  : "The Kubernetes hub request failed. Try again."
+              }
+            />
+          ) : filtered.length === 0 ? (
+            <EmptyState
+              title="No Kubernetes nodes"
+              description="Deploy the Tunnet operator and create a TunnetConnector (or other CRD) to enroll k8s nodes into a network."
+            />
+          ) : (
+            <DataTable columns={columns} data={filtered} />
+          )}
+
+          <KubernetesNodeSheet
+            node={selected}
+            open={Boolean(selected)}
+            onOpenChange={(open) => {
+              if (!open) setSelected(null);
+            }}
+          />
         </div>
-      ) : null}
-
-      <PageToolbar
-        search={search}
-        onSearchChange={setSearch}
-        searchPlaceholder="Search node, kind, network, IP…"
-        count={filtered.length}
-        countLabel={filtered.length === 1 ? "node" : "nodes"}
-        filters={
-          <>
-            <Select
-              value={kindFilter}
-              onValueChange={(v) => v && setKindFilter(v)}
-            >
-              <SelectTrigger className="w-[160px]">
-                <SelectValue placeholder="Kind" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All kinds</SelectItem>
-                {kindOptions.map((k) => (
-                  <SelectItem key={k} value={k}>
-                    {deviceKindLabel(k) ?? k}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select
-              value={networkFilter}
-              onValueChange={(v) => v && setNetworkFilter(v)}
-            >
-              <SelectTrigger className="w-[160px]">
-                <SelectValue placeholder="Network" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All networks</SelectItem>
-                {(data?.byNetwork ?? []).map((n) => (
-                  <SelectItem key={n.networkId} value={n.networkId}>
-                    {n.networkName}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </>
-        }
-      />
-
-      {isPending ? (
-        <Skeleton className="h-64 w-full" />
-      ) : isError ? (
-        <EmptyState
-          title="Couldn’t load Kubernetes nodes"
-          description={
-            error instanceof Error
-              ? error.message
-              : "The Kubernetes hub request failed. Try again."
-          }
-        />
-      ) : filtered.length === 0 ? (
-        <EmptyState
-          title="No Kubernetes nodes"
-          description="Deploy the Tunnet operator and create a TunnetConnector (or other CRD) to enroll k8s nodes into a network."
-        />
-      ) : (
-        <DataTable columns={columns} data={filtered} />
-      )}
-
-      <KubernetesNodeSheet
-        node={selected}
-        open={Boolean(selected)}
-        onOpenChange={(open) => {
-          if (!open) setSelected(null);
-        }}
-      />
+      </PlanGate>
     </div>
   );
 }

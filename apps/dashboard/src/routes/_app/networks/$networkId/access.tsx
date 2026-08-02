@@ -48,11 +48,13 @@ import { formatPortsInput } from "@/components/app/acl/ports-input";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { DataTable } from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
+import { PlanGate } from "@/components/app/plan/plan-gate";
 import {
   buildPolicySelector,
   formatPolicySelector,
   PolicySelectorFields,
 } from "@/components/app/policy-selector-fields";
+import { usePlanFeature } from "@/hooks/use-org-plan";
 import { useCan } from "@/hooks/use-permission";
 import { useActiveOrganization } from "@/lib/auth-client";
 import { createManagementClient } from "@/lib/management-client";
@@ -671,6 +673,7 @@ function CreateSshRuleDialog({
   const [record, setRecord] = useState(false);
   const [enforceRecorder, setEnforceRecorder] = useState(false);
   const [priority, setPriority] = useState("0");
+  const hasSshRecording = usePlanFeature("sshRecording");
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -683,8 +686,8 @@ function CreateSshRuleDialog({
       users: userList,
       srcSelector: buildPolicySelector(srcKind, srcValue),
       dstSelector: buildPolicySelector(dstKind, dstValue),
-      record,
-      enforceRecorder,
+      record: hasSshRecording ? record : false,
+      enforceRecorder: hasSshRecording ? enforceRecorder : false,
       checkPeriodSecs: action === "check" ? Number(checkPeriod) || 28800 : null,
       priority: Number(priority) || 0,
     });
@@ -757,22 +760,37 @@ function CreateSshRuleDialog({
                 />
               </div>
             ) : null}
-            <div className="flex items-center justify-between gap-4">
-              <Label htmlFor="ssh-record">Session recording</Label>
-              <Switch
-                id="ssh-record"
-                checked={record}
-                onCheckedChange={setRecord}
-              />
-            </div>
-            <div className="flex items-center justify-between gap-4">
-              <Label htmlFor="ssh-enforce">Enforce remote recorder</Label>
-              <Switch
-                id="ssh-enforce"
-                checked={enforceRecorder}
-                onCheckedChange={setEnforceRecorder}
-              />
-            </div>
+            <PlanGate
+              locked={!hasSshRecording}
+              title="Available on Business"
+              description="Upgrade to Business to enable SSH session recording."
+              requiredPlan="business"
+              upgradeLabel="Upgrade"
+            >
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-4">
+                  <Label htmlFor="ssh-record">Session recording</Label>
+                  <Switch
+                    id="ssh-record"
+                    checked={record}
+                    disabled={!hasSshRecording}
+                    onCheckedChange={(checked) => {
+                      setRecord(checked);
+                      if (!checked) setEnforceRecorder(false);
+                    }}
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <Label htmlFor="ssh-enforce">Enforce remote recorder</Label>
+                  <Switch
+                    id="ssh-enforce"
+                    checked={enforceRecorder}
+                    disabled={!hasSshRecording || !record}
+                    onCheckedChange={setEnforceRecorder}
+                  />
+                </div>
+              </div>
+            </PlanGate>
             <div className="space-y-2">
               <Label htmlFor="ssh-priority">Priority</Label>
               <Input

@@ -176,6 +176,14 @@ pub fn spawn_ws_processor(
                 Some(msg) = ws.rx.recv() => {
                     match msg {
                         ServerMsg::Snapshot(snap) => {
+                            if let Some(pool) = tunnel_pool.as_ref() {
+                                pool.set_cloud_relay_urls(
+                                    snap.connectivity_relays
+                                        .iter()
+                                        .filter(|r| r.metering)
+                                        .map(|r| r.url.clone()),
+                                );
+                            }
                             if let Ok(m) = membership_for_network(&snap, network_id) {
                                 apply_membership(
                                     m,
@@ -637,6 +645,12 @@ pub fn spawn_ws_processor(
                         bytes_tx,
                         bytes_rx,
                     }).await;
+                    if let Some(pool) = tunnel_pool.as_ref() {
+                        let bytes = pool.cloud_relay_meter().take();
+                        if bytes > 0 {
+                            let _ = ws.tx.send(ClientMsg::CloudRelayUsage { bytes }).await;
+                        }
+                    }
                 }
             }
         }

@@ -3,6 +3,7 @@ import { schema } from "@tunnet/db";
 import { and, desc, eq, gte, ilike, lt, lte } from "drizzle-orm";
 import { Elysia } from "elysia";
 import { db } from "../../lib/db";
+import { auditRetentionCutoff } from "../../lib/org-billing";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth } from "./middleware/authz";
 import { sessionPlugin } from "./middleware/session";
@@ -18,11 +19,19 @@ export const auditRoutes = new Elysia()
       eq(schema.auditEvents.organizationId, auth.organizationId),
     ];
 
+    const retentionCutoff = await auditRetentionCutoff(auth.organizationId);
+    if (retentionCutoff) {
+      conditions.push(gte(schema.auditEvents.time, retentionCutoff));
+    }
+
     if (parsed.cursor !== undefined) {
       conditions.push(lt(schema.auditEvents.sequenceNumber, parsed.cursor));
     }
     if (parsed.from) {
-      conditions.push(gte(schema.auditEvents.time, new Date(parsed.from)));
+      const from = new Date(parsed.from);
+      const effectiveFrom =
+        retentionCutoff && from < retentionCutoff ? retentionCutoff : from;
+      conditions.push(gte(schema.auditEvents.time, effectiveFrom));
     }
     if (parsed.to) {
       conditions.push(lte(schema.auditEvents.time, new Date(parsed.to)));

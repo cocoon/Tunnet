@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
+import type { PlanId } from "@tunnet/api/billing";
 import {
   Avatar,
   AvatarFallback,
@@ -45,7 +46,11 @@ import { DataTable } from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { PageHeader } from "@/components/app/page-header";
 import { PageToolbar } from "@/components/app/page-toolbar";
+import { PlanGate } from "@/components/app/plan/plan-gate";
+import { UpgradeCTA } from "@/components/app/plan/upgrade-cta";
+import { UpgradePlanDialog } from "@/components/app/upgrade-plan-dialog";
 import { useFeature } from "@/hooks/use-entitlements";
+import { inviteBlockedReason, useOrgPlan } from "@/hooks/use-org-plan";
 import { useCan } from "@/hooks/use-permission";
 import { authClient, useActiveOrganization } from "@/lib/auth-client";
 import {
@@ -72,8 +77,10 @@ function UsersPage() {
   const { data: canManage = false } = useCan(orgId, "member", "update");
   const cloudInvites = useFeature("openSignUp");
   const canCreateUsers = !cloudInvites;
+  const { data: orgPlan } = useOrgPlan();
   const queryClient = useQueryClient();
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [removeMemberId, setRemoveMemberId] = useState<string | null>(null);
   const [changeRoleMember, setChangeRoleMember] = useState<{
@@ -87,6 +94,19 @@ function UsersPage() {
   const [roleFilter, setRoleFilter] = useState<RoleFilter>("all");
 
   const showingInvitations = cloudInvites && view === "invitations";
+  const inviteBlock = cloudInvites ? inviteBlockedReason(orgPlan) : null;
+  const inviteLocked = inviteBlock != null;
+  const inviteLockTitle =
+    inviteBlock === "seat_limit"
+      ? "Seat limit reached"
+      : "Invites require Team";
+  const inviteLockDescription =
+    inviteBlock === "seat_limit"
+      ? "Add seats to your plan before inviting more members."
+      : "Upgrade to Team to invite members to this organization.";
+  const inviteRequiredPlan = inviteBlock === "seat_limit" ? undefined : "team";
+  const inviteCtaLabel =
+    inviteBlock === "seat_limit" ? "Add seats" : "Upgrade to Team";
 
   const { data: membersData, isPending: membersPending } = useQuery({
     queryKey: orgId ? queryKeys.members(orgId) : ["members"],
@@ -387,10 +407,26 @@ function UsersPage() {
           canManage ? (
             <div className="flex items-center gap-2">
               {cloudInvites ? (
-                <Button onClick={() => setInviteOpen(true)}>
-                  <MailIcon className="mr-2 size-4" />
-                  Invite
-                </Button>
+                inviteLocked ? (
+                  <div className="flex flex-col items-end gap-1.5 sm:flex-row sm:items-center sm:gap-2">
+                    <Button type="button" disabled>
+                      <MailIcon className="mr-2 size-4" />
+                      Invite
+                    </Button>
+                    <UpgradeCTA
+                      requiredPlan={inviteRequiredPlan}
+                      label={inviteCtaLabel}
+                      size="sm"
+                      variant="outline"
+                      onUpgrade={() => setUpgradeOpen(true)}
+                    />
+                  </div>
+                ) : (
+                  <Button onClick={() => setInviteOpen(true)}>
+                    <MailIcon className="mr-2 size-4" />
+                    Invite
+                  </Button>
+                )
               ) : null}
               {canCreateUsers ? (
                 <Button onClick={() => setCreateOpen(true)}>
@@ -455,41 +491,79 @@ function UsersPage() {
       {isPending ? (
         <Skeleton className="h-64 w-full" />
       ) : rowCount === 0 ? (
-        <EmptyState
-          title={
-            showingInvitations ? "No pending invitations" : "No users found"
-          }
-          description={
-            showingInvitations
-              ? "Invite someone to join your organization."
-              : search || roleFilter !== "all"
-                ? "Try adjusting your search or filters."
-                : canCreateUsers
-                  ? "Create a user account to get started."
-                  : "Invite your team to get started."
-          }
-          action={
-            canManage && !showingInvitations ? (
-              cloudInvites ? (
-                <Button onClick={() => setInviteOpen(true)}>Invite</Button>
-              ) : canCreateUsers ? (
-                <Button onClick={() => setCreateOpen(true)}>Create user</Button>
+        <PlanGate
+          locked={Boolean(cloudInvites && inviteLocked && canManage)}
+          title={inviteLockTitle}
+          description={inviteLockDescription}
+          requiredPlan={inviteRequiredPlan}
+          upgradeLabel={inviteCtaLabel}
+          onUpgrade={() => setUpgradeOpen(true)}
+        >
+          <EmptyState
+            title={
+              showingInvitations ? "No pending invitations" : "No users found"
+            }
+            description={
+              showingInvitations
+                ? "Invite someone to join your organization."
+                : search || roleFilter !== "all"
+                  ? "Try adjusting your search or filters."
+                  : canCreateUsers
+                    ? "Create a user account to get started."
+                    : "Invite your team to get started."
+            }
+            action={
+              canManage && !showingInvitations ? (
+                cloudInvites ? (
+                  <Button
+                    disabled={inviteLocked}
+                    onClick={() => setInviteOpen(true)}
+                  >
+                    Invite
+                  </Button>
+                ) : canCreateUsers ? (
+                  <Button onClick={() => setCreateOpen(true)}>
+                    Create user
+                  </Button>
+                ) : undefined
               ) : undefined
-            ) : undefined
-          }
-        />
+            }
+          />
+        </PlanGate>
       ) : showingInvitations ? (
-        <DataTable
-          columns={invitationColumns}
-          data={filteredInvitations}
-          getRowId={(row) => row.id}
-        />
+        <PlanGate
+          locked={Boolean(inviteLocked && canManage)}
+          title={inviteLockTitle}
+          description={inviteLockDescription}
+          requiredPlan={inviteRequiredPlan}
+          upgradeLabel={inviteCtaLabel}
+          onUpgrade={() => setUpgradeOpen(true)}
+        >
+          <DataTable
+            columns={invitationColumns}
+            data={filteredInvitations}
+            getRowId={(row) => row.id}
+          />
+        </PlanGate>
       ) : (
-        <DataTable
-          columns={memberColumns}
-          data={filteredMembers}
-          getRowId={(row) => row.id}
-        />
+        <div className="space-y-4">
+          {inviteLocked && canManage ? (
+            <PlanGate
+              locked
+              title={inviteLockTitle}
+              description={inviteLockDescription}
+              requiredPlan={inviteRequiredPlan}
+              upgradeLabel={inviteCtaLabel}
+              onUpgrade={() => setUpgradeOpen(true)}
+              inert={false}
+            />
+          ) : null}
+          <DataTable
+            columns={memberColumns}
+            data={filteredMembers}
+            getRowId={(row) => row.id}
+          />
+        </div>
       )}
 
       {cloudInvites ? (
@@ -498,6 +572,17 @@ function UsersPage() {
           open={inviteOpen}
           onOpenChange={setInviteOpen}
           onSuccess={invalidate}
+        />
+      ) : null}
+
+      {cloudInvites && orgId ? (
+        <UpgradePlanDialog
+          open={upgradeOpen}
+          onOpenChange={setUpgradeOpen}
+          organizationId={orgId}
+          currentPlanId={(orgPlan?.planId as PlanId) || "free"}
+          subscriptionId={orgPlan?.subscriptionId}
+          initialPlan="team"
         />
       ) : null}
 

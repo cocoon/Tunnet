@@ -1,6 +1,7 @@
 //! Heartbeat + registration against the Tunnet control / management plane.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -10,6 +11,7 @@ use tunnet_common::{PortMapping, RedirectRule};
 use crate::agent_accept::{AuthStore, TunnelAuth};
 use crate::metrics::EdgeMetrics;
 use crate::tcp::TcpMappingManager;
+use crate::usage::UsageMeter;
 
 #[derive(Clone)]
 pub struct ControlClient {
@@ -17,6 +19,9 @@ pub struct ControlClient {
     http: reqwest::Client,
     token: String,
     metrics: EdgeMetrics,
+    /// True only for Tunnet Cloud hosted edges (control tells us at register).
+    metering_enabled: Arc<AtomicBool>,
+    usage: UsageMeter,
 }
 
 #[derive(Debug, Serialize)]
@@ -33,6 +38,9 @@ pub struct RegisterResponse {
     pub edge_id: String,
     pub name: String,
     pub domain: String,
+    /// When true, this edge must batch-report splice bytes to the control plane.
+    #[serde(default)]
+    pub metering_enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,12 +98,27 @@ struct TrafficLogLine {
     source_ip: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bytes: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TrafficIngestBody {
     logs: Vec<TrafficLogLine>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageEntry {
+    tunnel_id: String,
+    bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageIngestBody {
+    entries: Vec<UsageEntry>,
 }
 
 impl ControlClient {
@@ -108,7 +131,20 @@ impl ControlClient {
             http,
             token,
             metrics,
+            metering_enabled: Arc::new(AtomicBool::new(false)),
+            usage: UsageMeter::new(),
         })
+    }
+
+    pub fn metering_enabled(&self) -> bool {
+        self.metering_enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn record_bytes(&self, tunnel_id: &str, bytes: u64) {
+        if !self.metering_enabled() || bytes == 0 {
+            return;
+        }
+        self.usage.record(tunnel_id, bytes);
     }
 
     pub async fn register(
@@ -135,7 +171,15 @@ impl ControlClient {
             self.metrics.control_failure("register");
             anyhow::bail!("edge register failed: {status}: {text}");
         }
-        Ok(serde_json::from_str(&text)?)
+        let parsed: RegisterResponse = serde_json::from_str(&text)?;
+        self.metering_enabled
+            .store(parsed.metering_enabled, Ordering::Relaxed);
+        if parsed.metering_enabled {
+            tracing::info!("cloud hosted edge metering enabled");
+        } else {
+            tracing::info!("edge metering disabled (self-hosted or non-cloud control)");
+        }
+        Ok(parsed)
     }
 
     pub async fn heartbeat(
@@ -172,6 +216,7 @@ impl ControlClient {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_traffic_log(
         &self,
         tunnel_id: String,
@@ -180,7 +225,9 @@ impl ControlClient {
         status_code: i32,
         latency_ms: i32,
         source_ip: Option<String>,
+        bytes: Option<u64>,
     ) {
+        // Request audit logs are fine for all edges; byte billing is separate.
         let client = self.clone();
         tokio::spawn(async move {
             if let Err(e) = client
@@ -192,6 +239,7 @@ impl ControlClient {
                     latency_ms,
                     source_ip,
                     created_at: Some(chrono::Utc::now().to_rfc3339()),
+                    bytes: bytes.map(|b| b as i64),
                 }])
                 .await
             {
@@ -221,6 +269,43 @@ impl ControlClient {
         }
         Ok(())
     }
+
+    async fn post_usage(&self, entries: Vec<UsageEntry>) -> anyhow::Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let url = format!("{}/v1/edge/usage", self.base);
+        let resp = self
+            .http
+            .post(&url)
+            .header("authorization", format!("Bearer {}", self.token))
+            .json(&UsageIngestBody { entries })
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("usage ingest failed: {status}: {text}");
+        }
+        Ok(())
+    }
+
+    /// Flush accumulated splice bytes (cloud hosted edges only).
+    pub async fn flush_usage(&self) -> anyhow::Result<()> {
+        if !self.metering_enabled() {
+            return Ok(());
+        }
+        let drained = self.usage.take_all();
+        if drained.is_empty() {
+            return Ok(());
+        }
+        let entries: Vec<UsageEntry> = drained
+            .into_iter()
+            .map(|(tunnel_id, bytes)| UsageEntry { tunnel_id, bytes })
+            .collect();
+        self.post_usage(entries).await
+    }
 }
 
 pub fn spawn_heartbeat_loop(
@@ -239,6 +324,13 @@ pub fn spawn_heartbeat_loop(
             ticker.tick().await;
             let n = registry.active_count() as u32;
             metrics.set_active_tunnels(registry.active_count());
+
+            // Batch cloud hosted traffic accounting with the heartbeat cadence.
+            if let Err(e) = client.flush_usage().await {
+                client.metrics.control_failure("usage");
+                tracing::debug!(?e, "edge usage flush failed");
+            }
+
             match client
                 .heartbeat(&endpoint_id, n, cert_valid_until.as_deref())
                 .await
@@ -250,7 +342,6 @@ pub fn spawn_heartbeat_loop(
                     for t in resp.tunnels {
                         keep.push(t.subdomain.clone());
                         let mut maps = t.port_mappings.clone();
-                        // Plain TCP tunnels without explicit mappings bind localPort.
                         if t.protocol == "tcp" && maps.is_empty() && t.local_port > 0 {
                             maps.push(PortMapping {
                                 external_port: t.local_port,

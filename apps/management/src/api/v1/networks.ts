@@ -10,6 +10,7 @@ import {
 import { writeAudit } from "../../lib/audit";
 import { db } from "../../lib/db";
 import { bumpNetworkAndNotify } from "../../lib/notify";
+import { assertNetworkCapacity } from "../../lib/org-billing";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
 import { notFound, sessionPlugin } from "./middleware/session";
@@ -59,6 +60,7 @@ export const networksRoutes = new Elysia()
       .post("/organizations/:orgId/networks", async ({ authContext, body }) => {
         const auth = getAuth({ authContext });
         const parsed = createNetworkBody.parse(body);
+        await assertNetworkCapacity(auth.organizationId);
 
         const row = await db.transaction(async (tx) => {
           const [created] = await tx

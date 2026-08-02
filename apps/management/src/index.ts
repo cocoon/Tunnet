@@ -15,6 +15,8 @@ import { sshAuthBrowserRoutes } from "./api/ssh-auth-browser";
 import { apiV1 } from "./api/v1";
 import { auth, ensureTrustedOAuthClients, initAuth, license } from "./auth";
 import { ensureBootstrapUser } from "./lib/bootstrap-user";
+import { pruneAuditEventsBeyondRetention } from "./lib/org-billing";
+import { PlanLimitError, PlanRequiredError } from "./lib/plan-errors";
 import { repairStrippedMeshCidrs } from "./lib/repair-mesh-cidrs";
 
 const port = getManagementPort();
@@ -35,6 +37,22 @@ await ensureBootstrapUser().catch((err) => {
   console.error("bootstrap user failed:", err);
 });
 
+const AUDIT_PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+async function runAuditPrune() {
+  try {
+    const deleted = await pruneAuditEventsBeyondRetention();
+    if (deleted > 0) {
+      console.info(`[audit] pruned ${deleted} event(s) beyond plan retention`);
+    }
+  } catch (err) {
+    console.error("[audit] prune failed:", err);
+  }
+}
+void runAuditPrune();
+setInterval(() => {
+  void runAuditPrune();
+}, AUDIT_PRUNE_INTERVAL_MS);
+
 const oauthAuthServerMetadata = oauthProviderAuthServerMetadata(auth);
 const openIdConfigMetadata = oauthProviderOpenIdConfigMetadata(auth);
 
@@ -47,6 +65,27 @@ const app = new Elysia()
     ) {
       set.status = 402;
       return { error: error.message, code: error.code };
+    }
+    if (error instanceof PlanRequiredError) {
+      set.status = 402;
+      return {
+        error: error.message,
+        code: error.code,
+        feature: error.feature,
+        requiredPlan: error.requiredPlan,
+        currentPlan: error.currentPlan,
+      };
+    }
+    if (error instanceof PlanLimitError) {
+      set.status = 402;
+      return {
+        error: error.message,
+        code: error.code,
+        limit: error.limit,
+        allowed: error.allowed,
+        current: error.current,
+        requiredPlan: error.requiredPlan,
+      };
     }
   })
   .use(

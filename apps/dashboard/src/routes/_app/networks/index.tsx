@@ -20,6 +20,8 @@ import { DataTable } from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { PageHeader } from "@/components/app/page-header";
 import { PageToolbar } from "@/components/app/page-toolbar";
+import { PlanGate } from "@/components/app/plan/plan-gate";
+import { useOrgPlan } from "@/hooks/use-org-plan";
 import { useCan } from "@/hooks/use-permission";
 import { useActiveOrganization } from "@/lib/auth-client";
 import { formatNetworkName } from "@/lib/network-utils";
@@ -42,10 +44,14 @@ function NetworksPage() {
   const { data: canCreate = false } = useCan(orgId, "network", "create");
   const { data: networks, isPending } = useNetworks(orgId);
   const { data: machines } = useMachines(orgId);
+  const { data: usage } = useOrgPlan();
   const { remove } = useNetworkMutations(orgId);
   const [search, setSearch] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  const atNetworkLimit =
+    usage?.networks != null && usage.networksUsed >= usage.networks;
 
   const rows = useMemo<NetworkRow[]>(() => {
     const counts = new Map<string, number>();
@@ -159,13 +165,26 @@ function NetworksPage() {
         description="Virtual networks that connect your machines."
         actions={
           canCreate ? (
-            <Button onClick={() => setCreateOpen(true)}>
+            <Button
+              disabled={atNetworkLimit}
+              onClick={() => setCreateOpen(true)}
+            >
               <PlusIcon className="mr-2 size-4" />
               Create network
             </Button>
           ) : null
         }
       />
+
+      {canCreate && atNetworkLimit ? (
+        <PlanGate
+          locked
+          title="Network limit reached"
+          description="Upgrade your plan to create more networks."
+          upgradeLabel="Upgrade"
+          inert={false}
+        />
+      ) : null}
 
       <PageToolbar
         search={search}
@@ -183,7 +202,10 @@ function NetworksPage() {
           description="Create a network to start enrolling machines."
           action={
             canCreate ? (
-              <Button onClick={() => setCreateOpen(true)}>
+              <Button
+                disabled={atNetworkLimit}
+                onClick={() => setCreateOpen(true)}
+              >
                 Create network
               </Button>
             ) : undefined

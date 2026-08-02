@@ -18,6 +18,7 @@ import { writeAudit } from "../../lib/audit";
 import { pushPostureRecheck } from "../../lib/control-plane-client";
 import { db } from "../../lib/db";
 import { bumpNetworkAndNotify, bumpOrgAndNotify } from "../../lib/notify";
+import { requirePlanFeature } from "../../lib/org-billing";
 import {
   buildAttributeMap,
   computeOverallScore,
@@ -671,6 +672,7 @@ export const postureRoutes = new Elysia()
         "/organizations/:orgId/posture/integrations",
         async ({ authContext, body }) => {
           const auth = getAuth({ authContext });
+          await requirePlanFeature(auth.organizationId, "advancedPosture");
           const parsed = createPostureIntegrationBody.parse(body);
 
           const row = await db.transaction(async (tx) => {

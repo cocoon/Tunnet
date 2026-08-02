@@ -9,9 +9,20 @@ import { Elysia } from "elysia";
 import { writeAudit } from "../../lib/audit";
 import { db } from "../../lib/db";
 import { bumpNetworkAndNotify } from "../../lib/notify";
+import { requirePlanFeature } from "../../lib/org-billing";
 import { toIso } from "../../lib/serialize";
 import { getAuth, requireAuth, requirePermission } from "./middleware/authz";
 import { notFound, sessionPlugin } from "./middleware/session";
+
+async function assertSshRecordingAllowed(
+  organizationId: string,
+  record: boolean | undefined,
+  enforceRecorder: boolean | undefined,
+) {
+  if (record || enforceRecorder) {
+    await requirePlanFeature(organizationId, "sshRecording");
+  }
+}
 
 function serializeSshPolicy(row: typeof schema.sshPolicies.$inferSelect) {
   return {
@@ -66,6 +77,11 @@ export const sshPoliciesRoutes = new Elysia()
         async ({ authContext, params, body }) => {
           const auth = getAuth({ authContext });
           const parsed = createSshPolicyBody.parse(body);
+          await assertSshRecordingAllowed(
+            auth.organizationId,
+            parsed.record,
+            parsed.enforceRecorder,
+          );
           const network = await getNetworkInOrg(
             params.networkId,
             auth.organizationId,
@@ -120,6 +136,11 @@ export const sshPoliciesRoutes = new Elysia()
         async ({ authContext, params, body }) => {
           const auth = getAuth({ authContext });
           const parsed = patchSshPolicyBody.parse(body);
+          await assertSshRecordingAllowed(
+            auth.organizationId,
+            parsed.record,
+            parsed.enforceRecorder,
+          );
           const network = await getNetworkInOrg(
             params.networkId,
             auth.organizationId,

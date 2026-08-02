@@ -96,6 +96,8 @@ export const queryKeys = {
     [...queryKeys.org(orgId), "tunnel-settings"] as const,
   orgSettings: (orgId: string) =>
     [...queryKeys.org(orgId), "org-settings"] as const,
+  billingUsage: (orgId: string) =>
+    [...queryKeys.org(orgId), "billing-usage"] as const,
   deviceConfig: (orgId: string, endpointId: string) =>
     [...queryKeys.org(orgId), "device-config", endpointId] as const,
   devicePosture: (orgId: string, endpointId: string) =>

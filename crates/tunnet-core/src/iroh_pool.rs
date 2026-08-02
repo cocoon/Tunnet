@@ -4,7 +4,7 @@
 //! closed after [`DEFAULT_IDLE_SECS`] and reopened when traffic resumes.
 //! Managed mode defaults to keep-alive (connections stay open).
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -12,11 +12,15 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use bytes::Bytes;
 use dashmap::DashMap;
-use iroh::endpoint::Connection;
+use futures_util::StreamExt;
+use iroh::TransportAddr;
+use iroh::endpoint::{Connection, PathEvent};
 use iroh::{Endpoint, EndpointId};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use tokio::sync::Mutex as AsyncMutex;
+
+use crate::cloud_relay_meter::CloudRelayMeter;
 
 pub const DEFAULT_IDLE_SECS: u64 = 120;
 pub const RECONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -145,6 +149,24 @@ type ExtraConnMap = DashMap<(EndpointId, Vec<u8>), Arc<AsyncMutex<Option<Connect
 /// keep-alive/dialed connection is never delivered to the local TUN.
 pub type TunnelConnHook = Arc<dyn Fn(EndpointId, Connection) + Send + Sync>;
 
+fn normalize_relay_url(url: &str) -> String {
+    url.trim_end_matches('/').to_string()
+}
+
+fn selected_path_is_cloud_relay(conn: &Connection, urls: &HashSet<String>) -> bool {
+    let paths = conn.paths();
+    let Some(path) = paths.iter().find(|p| p.is_selected()) else {
+        return false;
+    };
+    if !path.is_relay() {
+        return false;
+    }
+    match path.remote_addr() {
+        TransportAddr::Relay(url) => urls.contains(&normalize_relay_url(url.as_str())),
+        _ => false,
+    }
+}
+
 #[derive(Clone)]
 pub struct ConnPool {
     endpoint: Endpoint,
@@ -158,6 +180,9 @@ pub struct ConnPool {
     bytes_in: Arc<DashMap<EndpointId, AtomicU64>>,
     bytes_out: Arc<DashMap<EndpointId, AtomicU64>>,
     tunnel_hook: Arc<Mutex<Option<TunnelConnHook>>>,
+    cloud_relay_meter: CloudRelayMeter,
+    cloud_relay_urls: Arc<RwLock<HashSet<String>>>,
+    peer_cloud_relay: Arc<DashMap<EndpointId, AtomicBool>>,
 }
 
 struct PoolPolicy {
@@ -184,6 +209,9 @@ impl ConnPool {
             bytes_in: Arc::new(DashMap::new()),
             bytes_out: Arc::new(DashMap::new()),
             tunnel_hook: Arc::new(Mutex::new(None)),
+            cloud_relay_meter: CloudRelayMeter::new(),
+            cloud_relay_urls: Arc::new(RwLock::new(HashSet::new())),
+            peer_cloud_relay: Arc::new(DashMap::new()),
         };
         pool.spawn_idle_sweeper();
         pool
@@ -204,6 +232,9 @@ impl ConnPool {
             bytes_in: other.bytes_in.clone(),
             bytes_out: other.bytes_out.clone(),
             tunnel_hook: Arc::new(Mutex::new(None)),
+            cloud_relay_meter: other.cloud_relay_meter.clone(),
+            cloud_relay_urls: other.cloud_relay_urls.clone(),
+            peer_cloud_relay: other.peer_cloud_relay.clone(),
         }
     }
 
@@ -212,11 +243,53 @@ impl ConnPool {
         *self.tunnel_hook.lock() = Some(hook);
     }
 
+    pub fn cloud_relay_meter(&self) -> CloudRelayMeter {
+        self.cloud_relay_meter.clone()
+    }
+
+    /// Replace the set of billable Tunnet Cloud deployment relay URLs.
+    pub fn set_cloud_relay_urls(&self, urls: impl IntoIterator<Item = String>) {
+        let normalized: HashSet<String> =
+            urls.into_iter().map(|u| normalize_relay_url(&u)).collect();
+        *self.cloud_relay_urls.write() = normalized;
+        // Clear stale peer flags; path watchers will recompute on next event.
+        self.peer_cloud_relay.clear();
+    }
+
+    fn spawn_cloud_relay_path_watch(&self, peer: EndpointId, conn: Connection) {
+        let urls = self.cloud_relay_urls.clone();
+        let flags = self.peer_cloud_relay.clone();
+        tokio::spawn(async move {
+            let refresh = |conn: &Connection| {
+                let metered = selected_path_is_cloud_relay(conn, &urls.read());
+                flags
+                    .entry(peer)
+                    .or_insert_with(|| AtomicBool::new(false))
+                    .store(metered, Ordering::Relaxed);
+            };
+            refresh(&conn);
+            let mut events = conn.path_events();
+            while let Some(ev) = events.next().await {
+                match ev {
+                    PathEvent::Selected { .. }
+                    | PathEvent::Lagged { .. }
+                    | PathEvent::Opened { .. }
+                    | PathEvent::Closed { .. } => {
+                        refresh(&conn);
+                    }
+                    _ => {}
+                }
+            }
+            flags.remove(&peer);
+        });
+    }
+
     fn fire_tunnel_hook(&self, peer: EndpointId, conn: Connection) {
         let hook = self.tunnel_hook.lock().clone();
         if let Some(hook) = hook {
-            hook(peer, conn);
+            hook(peer, conn.clone());
         }
+        self.spawn_cloud_relay_path_watch(peer, conn);
     }
 
     /// Local EndpointId is the canonical initiator when `local < peer`.
@@ -692,6 +765,13 @@ impl ConnPool {
             .entry(peer)
             .or_insert_with(|| AtomicU64::new(0))
             .fetch_add(n, Ordering::Relaxed);
+        if self
+            .peer_cloud_relay
+            .get(&peer)
+            .is_some_and(|f| f.load(Ordering::Relaxed))
+        {
+            self.cloud_relay_meter.record(n);
+        }
     }
 
     pub fn record_bytes_in(&self, peer: EndpointId, n: u64) {
