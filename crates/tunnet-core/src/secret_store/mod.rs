@@ -16,7 +16,7 @@ mod platform;
 
 pub use persist::{load_agent, persist_agent};
 
-use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
+use aes_gcm::aead::{Aead, Generate, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
@@ -163,9 +163,9 @@ pub fn save_secrets(
     };
     let plain = serde_json::to_vec(&payload).context("serialize sensitive payload")?;
 
-    let mut dek = Aes256Gcm::generate_key(OsRng);
+    let mut dek = Key::<Aes256Gcm>::generate();
     let cipher = Aes256Gcm::new(&dek);
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let nonce = Nonce::generate();
     let ciphertext = cipher
         .encrypt(&nonce, plain.as_ref())
         .map_err(|_| anyhow::anyhow!("AES-GCM encrypt failed"))?;
@@ -254,10 +254,10 @@ pub fn load_secrets(paths: &StatePaths) -> anyhow::Result<(AgentSecrets, SealTie
     }
 
     let mut dek = resolve_dek(&meta)?;
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&dek));
-    let nonce = Nonce::from_slice(&blob[..12]);
+    let cipher = Aes256Gcm::new_from_slice(&dek).map_err(|_| anyhow::anyhow!("invalid DEK"))?;
+    let nonce = nonce_from_bytes(&blob[..12])?;
     let plain = cipher
-        .decrypt(nonce, &blob[12..])
+        .decrypt(&nonce, &blob[12..])
         .map_err(|_| anyhow::anyhow!("failed to decrypt state.enc (wrong machine or corrupt?)"))?;
     dek.zeroize();
 
@@ -329,8 +329,9 @@ fn decode_dek32(hex_str: &str) -> anyhow::Result<[u8; 32]> {
 }
 
 fn wrap_dek(wrap_key: &[u8; 32], dek: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(wrap_key));
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let cipher =
+        Aes256Gcm::new_from_slice(wrap_key).map_err(|_| anyhow::anyhow!("invalid wrap key"))?;
+    let nonce = Nonce::generate();
     let ct = cipher
         .encrypt(&nonce, dek)
         .map_err(|_| anyhow::anyhow!("wrap DEK failed"))?;
@@ -344,10 +345,11 @@ fn unwrap_dek(wrap_key: &[u8; 32], wrapped: &[u8]) -> anyhow::Result<[u8; 32]> {
     if wrapped.len() < 12 + 16 {
         bail!("wrapped DEK too short");
     }
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(wrap_key));
-    let nonce = Nonce::from_slice(&wrapped[..12]);
+    let cipher =
+        Aes256Gcm::new_from_slice(wrap_key).map_err(|_| anyhow::anyhow!("invalid wrap key"))?;
+    let nonce = nonce_from_bytes(&wrapped[..12])?;
     let plain = cipher
-        .decrypt(nonce, &wrapped[12..])
+        .decrypt(&nonce, &wrapped[12..])
         .map_err(|_| anyhow::anyhow!("unwrap DEK failed"))?;
     if plain.len() != 32 {
         bail!("unwrapped DEK wrong length");
@@ -358,15 +360,14 @@ fn unwrap_dek(wrap_key: &[u8; 32], wrapped: &[u8]) -> anyhow::Result<[u8; 32]> {
 }
 
 fn random_salt() -> [u8; 16] {
-    use aes_gcm::aead::rand_core::RngCore;
-    use std::mem::MaybeUninit;
+    rand::random()
+}
 
-    let mut salt = MaybeUninit::<[u8; 16]>::uninit();
-    // SAFETY: OsRng fills all 16 bytes before assume_init.
-    unsafe {
-        OsRng.fill_bytes(&mut *salt.as_mut_ptr());
-        salt.assume_init()
-    }
+fn nonce_from_bytes(bytes: &[u8]) -> anyhow::Result<Nonce<aes_gcm::aead::consts::U12>> {
+    let arr: [u8; 12] = bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("nonce must be 12 bytes"))?;
+    Ok(Nonce::from(arr))
 }
 
 /// Delete sealed secret files.
@@ -483,7 +484,7 @@ mod tests {
     fn derived_wrap_roundtrip() {
         let salt = random_salt();
         let key = derived::derive_wrap_key(&salt).unwrap();
-        let dek = Aes256Gcm::generate_key(OsRng);
+        let dek = Key::<Aes256Gcm>::generate();
         let wrapped = wrap_dek(&key, dek.as_slice()).unwrap();
         let out = unwrap_dek(&key, &wrapped).unwrap();
         assert_eq!(out.as_slice(), dek.as_slice());

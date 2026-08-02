@@ -76,7 +76,7 @@ iroh-mainline-address-lookup = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
 rustls-pemfile = { workspace = true, optional = true }
-aes-gcm = "0.10"
+aes-gcm.workspace = true
 zeroize = { version = "1.9.0", features = ["std", "derive"] }
 mdns-sd = { version = "0.20.1", optional = true }
 async-trait = { workspace = true, optional = true }

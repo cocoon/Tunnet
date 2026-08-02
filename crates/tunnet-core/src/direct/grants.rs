@@ -2,7 +2,8 @@
 
 use std::net::Ipv4Addr;
 
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
+use aes_gcm::aead::{Aead, Generate};
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use anyhow::{Context, bail};
 use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
@@ -297,12 +298,11 @@ pub fn encrypt_content(content_key_hex: &str, plaintext: &[u8]) -> anyhow::Resul
         .map_err(|_| anyhow::anyhow!("content key must be 32 bytes"))?;
     let cipher =
         Aes256Gcm::new_from_slice(&key_arr).map_err(|_| anyhow::anyhow!("aes key init"))?;
-    let nonce_bytes: [u8; 12] = rand::random();
-    let nonce = Nonce::from(nonce_bytes);
+    let nonce = Nonce::generate();
     let ciphertext = cipher
         .encrypt(&nonce, plaintext)
         .map_err(|e| anyhow::anyhow!("encrypt failed: {e}"))?;
-    let mut out = nonce_bytes.to_vec();
+    let mut out = nonce.as_slice().to_vec();
     out.extend(ciphertext);
     Ok(out)
 }

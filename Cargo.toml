@@ -84,6 +84,7 @@ iroh-mdns-address-lookup = "0.4"
 iroh-mainline-address-lookup = "0.4"
 argon2 = "0.5"
 secrecy = { version = "0.10", features = ["serde"] }
+aes-gcm = "0.11"
 
 sqlx = { version = "0.9", features = [
   "runtime-tokio",

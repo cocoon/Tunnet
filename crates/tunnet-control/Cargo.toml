@@ -52,7 +52,7 @@ ipnetwork.workspace = true
 
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
-aes-gcm = "0.10"
+aes-gcm.workspace = true
 
 tracing-opentelemetry.workspace = true
 opentelemetry.workspace = true

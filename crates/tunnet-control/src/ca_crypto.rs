@@ -1,7 +1,7 @@
 //! Decrypt internal-CA leaf private keys (same format as management `internal-ca.ts`).
 
 use aes_gcm::aead::{Aead, KeyInit};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::{Aes256Gcm, Nonce};
 use anyhow::{Context, bail};
 use base64::Engine;
 use sha2::{Digest, Sha256};
@@ -49,10 +49,13 @@ pub fn decrypt_pem(key: &[u8; 32], blob: &str) -> anyhow::Result<String> {
     sealed.extend_from_slice(ciphertext);
     sealed.extend_from_slice(tag);
 
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let nonce = Nonce::from_slice(iv);
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| anyhow::anyhow!("invalid AES key"))?;
+    let nonce_arr: [u8; 12] = iv
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid nonce length"))?;
+    let nonce = Nonce::from(nonce_arr);
     let plain = cipher
-        .decrypt(nonce, sealed.as_ref())
+        .decrypt(&nonce, sealed.as_ref())
         .map_err(|_| anyhow::anyhow!("AES-GCM decrypt failed (wrong CA key?)"))?;
     String::from_utf8(plain).context("decrypted PEM is not utf8")
 }
