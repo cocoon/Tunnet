@@ -1,5 +1,6 @@
 import { oauthProvider } from "@better-auth/oauth-provider";
 import { sso } from "@better-auth/sso";
+import { stripe } from "@better-auth/stripe";
 import {
   ac,
   adminPluginAc,
@@ -9,13 +10,18 @@ import {
   admin as orgAdmin,
   owner,
 } from "@tunnet/api/auth";
+import { type BillablePlanId, getPlan } from "@tunnet/api/billing";
 import { getDb, schema } from "@tunnet/db";
 import { getDashboardUrl, getManagementUrl } from "@tunnet/env";
 import type { LicenseManager } from "@tunnet/license/server";
 import { createLicenseManager } from "@tunnet/license/server";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { APIError } from "better-auth/api";
+import {
+  APIError,
+  createAuthMiddleware,
+  getSessionFromCtx,
+} from "better-auth/api";
 import {
   admin,
   bearer,
@@ -24,8 +30,21 @@ import {
   organization,
 } from "better-auth/plugins";
 import { eq } from "drizzle-orm";
+import Stripe from "stripe";
 import { hierarchyBeforeHook } from "./auth/hierarchy-hooks";
 import { createDefaultNetwork } from "./lib/default-network";
+import {
+  assertSeatCapacity,
+  countOwnedOrganizationsTowardQuota,
+  getEffectiveOrgPlan,
+  isAdminOrOwnerRole,
+  isOwnerRole,
+  isSeatPriceConfigured,
+  memberRoleInOrg,
+  ownershipCapForUser,
+  parseCreatablePlan,
+  softDeleteOrganization,
+} from "./lib/org-billing";
 
 const db = getDb();
 
@@ -73,25 +92,118 @@ export const TRUSTED_OAUTH_CLIENT_IDS = new Set<string>([
 export let license!: LicenseManager;
 export let auth!: ReturnType<typeof buildAuth>;
 
+function buildStripePlans() {
+  const teamPrice = process.env.STRIPE_PRICE_TEAM?.trim();
+  const businessPrice = process.env.STRIPE_PRICE_BUSINESS?.trim();
+  const teamSeatPrice = process.env.STRIPE_SEAT_PRICE_TEAM?.trim();
+  const businessSeatPrice = process.env.STRIPE_SEAT_PRICE_BUSINESS?.trim();
+  const teamAnnual = process.env.STRIPE_PRICE_TEAM_ANNUAL?.trim();
+  const businessAnnual = process.env.STRIPE_PRICE_BUSINESS_ANNUAL?.trim();
+
+  const plans: Array<{
+    name: BillablePlanId;
+    priceId: string;
+    annualDiscountPriceId?: string;
+    seatPriceId?: string;
+    limits: { seats: number; resources: number };
+    freeTrial: { days: number };
+  }> = [];
+
+  const team = getPlan("team");
+  const business = getPlan("business");
+  if (teamPrice && team?.seats != null && team.resources != null) {
+    plans.push({
+      name: "team",
+      priceId: teamPrice,
+      ...(teamAnnual ? { annualDiscountPriceId: teamAnnual } : {}),
+      ...(teamSeatPrice ? { seatPriceId: teamSeatPrice } : {}),
+      limits: { seats: team.seats, resources: team.resources },
+      freeTrial: { days: team.trialDays ?? 14 },
+    });
+  }
+  if (businessPrice && business?.seats != null && business.resources != null) {
+    plans.push({
+      name: "business",
+      priceId: businessPrice,
+      ...(businessAnnual ? { annualDiscountPriceId: businessAnnual } : {}),
+      ...(businessSeatPrice ? { seatPriceId: businessSeatPrice } : {}),
+      limits: { seats: business.seats, resources: business.resources },
+      freeTrial: { days: business.trialDays ?? 14 },
+    });
+  }
+  return plans;
+}
+
+function logStripeConfig(opts: {
+  isCloudBilling: boolean;
+  stripeSecret: string | undefined;
+  stripeWebhookSecret: string | undefined;
+  planCount: number;
+  enabled: boolean;
+  seatPricesConfigured: number;
+}) {
+  if (!opts.isCloudBilling) {
+    console.info("[stripe] skipped (license tier is not cloud)");
+    return;
+  }
+  if (opts.enabled) {
+    console.info(`[stripe] enabled (${opts.planCount} plan(s))`);
+    if (opts.seatPricesConfigured < opts.planCount) {
+      console.warn(
+        "[stripe] STRIPE_SEAT_PRICE_TEAM / STRIPE_SEAT_PRICE_BUSINESS missing. " +
+          "Use graduated seat prices (first N units $0, then per-seat). " +
+          "Without them, included seats are not billed separately and extras cannot sync.",
+      );
+    }
+    return;
+  }
+  const missing: string[] = [];
+  if (!opts.stripeSecret) missing.push("STRIPE_SECRET_KEY");
+  if (!opts.stripeWebhookSecret) missing.push("STRIPE_WEBHOOK_SECRET");
+  if (opts.planCount === 0) {
+    missing.push("STRIPE_PRICE_TEAM and/or STRIPE_PRICE_BUSINESS");
+  }
+  console.warn(
+    `[stripe] disabled - /api/auth/subscription/* will 404. Missing: ${missing.join(", ")}`,
+  );
+}
+
 function buildAuth(license: LicenseManager) {
   const disablePublicSignUp = !license.has("openSignUp");
+  const isCloudBilling = license.snapshot().tier === "cloud";
 
   async function canUserCreateOrganization(user: {
     id: string;
+    emailVerified?: boolean | null;
   }): Promise<boolean> {
+    if (isCloudBilling) {
+      const owned = await countOwnedOrganizationsTowardQuota(user.id);
+      const cap = ownershipCapForUser(Boolean(user.emailVerified));
+      return owned < cap;
+    }
     const memberships = await db.query.member.findMany({
       where: eq(schema.member.userId, user.id),
+      with: { organization: true },
     });
-    return memberships.length + 1 <= license.limit("organizations");
+    const active = memberships.filter((m) => !m.organization?.deletedAt);
+    return active.length + 1 <= license.limit("organizations");
   }
 
   async function hasReachedOrganizationLimit(user: {
     id: string;
+    emailVerified?: boolean | null;
   }): Promise<boolean> {
+    if (isCloudBilling) {
+      const owned = await countOwnedOrganizationsTowardQuota(user.id);
+      const cap = ownershipCapForUser(Boolean(user.emailVerified));
+      return owned >= cap;
+    }
     const memberships = await db.query.member.findMany({
       where: eq(schema.member.userId, user.id),
+      with: { organization: true },
     });
-    return memberships.length >= license.limit("organizations");
+    const active = memberships.filter((m) => !m.organization?.deletedAt);
+    return active.length >= license.limit("organizations");
   }
 
   async function ssoTrustedOrigins(): Promise<string[]> {
@@ -138,6 +250,85 @@ function buildAuth(license: LicenseManager) {
     return [...origins];
   }
 
+  const stripeSecret = process.env.STRIPE_SECRET_KEY?.trim();
+  const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET?.trim();
+  const stripePlans = isCloudBilling ? buildStripePlans() : [];
+  const stripeEnabled =
+    isCloudBilling &&
+    Boolean(stripeSecret) &&
+    Boolean(stripeWebhookSecret) &&
+    stripePlans.length > 0;
+
+  logStripeConfig({
+    isCloudBilling,
+    stripeSecret,
+    stripeWebhookSecret,
+    planCount: stripePlans.length,
+    enabled: stripeEnabled,
+    seatPricesConfigured: stripePlans.filter((p) => p.seatPriceId).length,
+  });
+
+  const stripeClient = stripeEnabled
+    ? new Stripe(stripeSecret!, {
+        apiVersion: "2026-07-29.dahlia",
+      })
+    : null;
+
+  const authBeforeHook = createAuthMiddleware(async (ctx) => {
+    if (ctx.path === "/organization/delete") {
+      const organizationId =
+        typeof ctx.body?.organizationId === "string"
+          ? ctx.body.organizationId
+          : null;
+      if (!organizationId) {
+        throw new APIError("BAD_REQUEST", {
+          message: "organizationId is required",
+        });
+      }
+      const session = await getSessionFromCtx(ctx);
+      const userId = session?.user?.id;
+      if (!userId) {
+        throw new APIError("UNAUTHORIZED", { message: "Not authenticated" });
+      }
+      const role = await memberRoleInOrg(userId, organizationId);
+      if (!role || !isOwnerRole(role)) {
+        throw new APIError("FORBIDDEN", {
+          message: "Only owners can delete an organization",
+        });
+      }
+      try {
+        await softDeleteOrganization(organizationId);
+      } catch (error) {
+        throw new APIError("BAD_REQUEST", {
+          message:
+            error instanceof Error
+              ? error.message
+              : "Failed to delete organization",
+        });
+      }
+      return ctx.json({ success: true, organizationId });
+    }
+
+    if (ctx.path === "/organization/set-active") {
+      const organizationId =
+        typeof ctx.body?.organizationId === "string"
+          ? ctx.body.organizationId
+          : null;
+      if (organizationId) {
+        const org = await db.query.organization.findFirst({
+          where: eq(schema.organization.id, organizationId),
+        });
+        if (!org || org.deletedAt) {
+          throw new APIError("BAD_REQUEST", {
+            message: "Organization not found",
+          });
+        }
+      }
+    }
+
+    await hierarchyBeforeHook(ctx);
+  });
+
   return betterAuth({
     appName: "Tunnet Management",
     baseURL: getManagementUrl(),
@@ -169,6 +360,7 @@ function buildAuth(license: LicenseManager) {
         oauthAccessToken: schema.oauthAccessToken,
         oauthConsent: schema.oauthConsent,
         deviceCode: schema.deviceCode,
+        ...(stripeEnabled ? { subscription: schema.subscription } : {}),
       },
     }),
     experimental: {
@@ -195,7 +387,7 @@ function buildAuth(license: LicenseManager) {
       return base;
     },
     hooks: {
-      before: hierarchyBeforeHook,
+      before: authBeforeHook,
     },
     plugins: [
       admin({
@@ -221,6 +413,16 @@ function buildAuth(license: LicenseManager) {
         allowUserToCreateOrganization: async (user) =>
           canUserCreateOrganization(user),
         organizationLimit: async (user) => hasReachedOrganizationLimit(user),
+        membershipLimit: async (_user, org) => {
+          if (!isCloudBilling) return 100;
+          const plan = await getEffectiveOrgPlan(org.id);
+          if (plan.seats === null) return 100;
+          // Graduated seat prices bill extras; don't hard-cap at the include.
+          if (isSeatPriceConfigured(plan.planId)) {
+            return Math.max(plan.seats, 500);
+          }
+          return plan.seats;
+        },
         schema: {
           organization: {
             additionalFields: {
@@ -229,6 +431,11 @@ function buildAuth(license: LicenseManager) {
                 required: false,
                 defaultValue: true,
                 input: true,
+              },
+              deletedAt: {
+                type: "date",
+                required: false,
+                input: false,
               },
             },
           },
@@ -249,19 +456,113 @@ function buildAuth(license: LicenseManager) {
           },
         },
         organizationHooks: {
-          beforeCreateInvitation: async () => {
+          beforeCreateOrganization: async ({ organization: orgData, user }) => {
+            if (isCloudBilling) {
+              const plan = parseCreatablePlan(orgData.metadata);
+              if (!plan) {
+                throw new APIError("BAD_REQUEST", {
+                  message:
+                    'Organization plan is required. Choose "free", "team", or "business".',
+                });
+              }
+              const allowed = await canUserCreateOrganization(user);
+              if (!allowed) {
+                const cap = ownershipCapForUser(Boolean(user.emailVerified));
+                throw new APIError("BAD_REQUEST", {
+                  message: user.emailVerified
+                    ? `You can own at most ${cap} organizations.`
+                    : "Verify your email to own more than one organization.",
+                });
+              }
+              return {
+                data: {
+                  ...orgData,
+                  metadata: {
+                    ...(typeof orgData.metadata === "object" && orgData.metadata
+                      ? orgData.metadata
+                      : {}),
+                    plan,
+                  },
+                },
+              };
+            }
+            return { data: orgData };
+          },
+          beforeCreateInvitation: async ({ organization: org }) => {
             if (!license.has("openSignUp")) {
               throw new APIError("BAD_REQUEST", {
                 message:
                   "Invitations require cloud signup. Create users from the admin panel instead.",
               });
             }
+            if (isCloudBilling) {
+              try {
+                await assertSeatCapacity(org.id, 1);
+              } catch (error) {
+                throw new APIError("BAD_REQUEST", {
+                  message:
+                    error instanceof Error
+                      ? error.message
+                      : "Seat limit reached",
+                });
+              }
+            }
           },
-          afterCreateOrganization: async ({ organization, user }) => {
-            await createDefaultNetwork(organization.id, user.id);
+          beforeAddMember: async ({ organization: org }) => {
+            if (isCloudBilling) {
+              try {
+                await assertSeatCapacity(org.id, 1);
+              } catch (error) {
+                throw new APIError("BAD_REQUEST", {
+                  message:
+                    error instanceof Error
+                      ? error.message
+                      : "Seat limit reached",
+                });
+              }
+            }
+          },
+          beforeAcceptInvitation: async ({ organization: org }) => {
+            if (isCloudBilling) {
+              try {
+                await assertSeatCapacity(org.id, 1);
+              } catch (error) {
+                throw new APIError("BAD_REQUEST", {
+                  message:
+                    error instanceof Error
+                      ? error.message
+                      : "Seat limit reached",
+                });
+              }
+            }
+          },
+          afterCreateOrganization: async ({ organization: org, user }) => {
+            await createDefaultNetwork(org.id, user.id);
           },
         },
       }),
+      ...(stripeEnabled && stripeClient
+        ? [
+            stripe({
+              stripeClient,
+              stripeWebhookSecret: stripeWebhookSecret!,
+              createCustomerOnSignUp: false,
+              organization: { enabled: true },
+              subscription: {
+                enabled: true,
+                plans: stripePlans,
+                authorizeReference: async ({ user, referenceId, action }) => {
+                  const role = await memberRoleInOrg(user.id, referenceId);
+                  if (!role) return false;
+                  if (action === "list-subscription") {
+                    return true;
+                  }
+                  return isAdminOrOwnerRole(role);
+                },
+              },
+            }),
+          ]
+        : []),
       sso({
         organizationProvisioning: {
           disabled: false,

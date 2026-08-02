@@ -31,7 +31,10 @@ export function OrgSwitcher() {
   const [open, setOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const queryClient = useQueryClient();
-  const { data: organizations, isPending } = useListOrganizations();
+  const { data: organizationsRaw, isPending } = useListOrganizations();
+  const organizations = (
+    Array.isArray(organizationsRaw) ? organizationsRaw : []
+  ).filter((org) => !(org as { deletedAt?: string | Date | null }).deletedAt);
   const { data: activeOrganization, isPending: activeOrganizationPending } =
     useActiveOrganization();
   const multiOrg = useFeature("multiOrganization");

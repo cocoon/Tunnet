@@ -1,5 +1,6 @@
 import { oauthProviderClient } from "@better-auth/oauth-provider/client";
 import { ssoClient } from "@better-auth/sso/client";
+import { stripeClient } from "@better-auth/stripe/client";
 import {
   ac,
   admin,
@@ -50,6 +51,10 @@ export const authClient = createAuthClient({
               required: false,
               defaultValue: true,
             },
+            deletedAt: {
+              type: "date",
+              required: false,
+            },
           },
         },
         organizationRole: {
@@ -66,6 +71,9 @@ export const authClient = createAuthClient({
           },
         },
       }),
+    }),
+    stripeClient({
+      subscription: true,
     }),
     ssoClient(),
     oauthProviderClient(),

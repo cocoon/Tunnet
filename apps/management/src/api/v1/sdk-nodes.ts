@@ -8,10 +8,12 @@ import { schema } from "@tunnet/db";
 import { formatIpv4Cidr } from "@tunnet/ip";
 import { and, eq } from "drizzle-orm";
 import { Elysia } from "elysia";
+import { license } from "../../auth";
 import { canAccessNetwork, hasScope } from "../../lib/api-key-auth";
 import { writeAudit } from "../../lib/audit";
 import { registerDevice } from "../../lib/control-plane-client";
 import { db } from "../../lib/db";
+import { assertResourceCapacity } from "../../lib/org-billing";
 import { removeDeviceMembership } from "../../lib/remove-device-membership";
 import {
   ensureTagDefinitionsExist,
@@ -74,6 +76,16 @@ export const sdkNodesRoutes = new Elysia()
 
       const parsed = registerSdkNodeBody.parse(body);
       const kind = parsed.kind ?? "sdk";
+
+      if (license.snapshot().tier === "cloud") {
+        try {
+          await assertResourceCapacity(params.orgId, parsed.endpointId);
+        } catch (error) {
+          return badRequest(
+            error instanceof Error ? error.message : "Resource limit reached",
+          );
+        }
+      }
 
       const network = await db.query.networks.findFirst({
         where: and(

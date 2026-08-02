@@ -95,6 +95,57 @@ pub async fn register_device(
         ));
     }
 
+    if existing_org.is_none()
+        && crate::relay_map::license_tier() == tunnet_license::LicenseTier::Cloud
+    {
+        let plan: Option<String> = sqlx::query_scalar(
+            "SELECT plan FROM subscription \
+             WHERE reference_id = $1 AND status IN ('active', 'trialing') \
+             ORDER BY period_end DESC NULLS LAST \
+             LIMIT 1",
+        )
+        .bind(&params.organization_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db: {e}"),
+            )
+        })?;
+
+        let resource_limit: i64 = match plan.as_deref() {
+            Some("team") => 100,
+            Some("business") => 500,
+            Some("enterprise") => i64::MAX,
+            _ => 20, // free
+        };
+
+        if resource_limit < i64::MAX {
+            let device_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*)::bigint FROM devices WHERE organization_id = $1",
+            )
+            .bind(&params.organization_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("db: {e}"),
+                )
+            })?;
+
+            if device_count >= resource_limit {
+                return Err((
+                    axum::http::StatusCode::PAYMENT_REQUIRED,
+                    format!(
+                        "Organization resource limit reached ({resource_limit}). Upgrade the plan to enroll more machines."
+                    ),
+                ));
+            }
+        }
+    }
+
     let tenant_ipv6 =
         tunnet_common::ipv6::derive_tenant_ipv6(&params.endpoint_id).map_err(|_| {
             (

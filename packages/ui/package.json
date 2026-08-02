@@ -10,11 +10,15 @@
   "exports": {
     "./globals.css": "./src/styles/globals.css",
     "./components/*": "./src/components/*.tsx",
+    "./components/unlumen-ui/*": "./src/components/unlumen-ui/*.tsx",
+    "./components/unlumen-ui/primitives/effects/*": "./src/components/unlumen-ui/primitives/effects/*.tsx",
     "./hooks/*": "./src/hooks/*.ts",
     "./lib/*": "./src/lib/*.ts"
   },
   "imports": {
     "#components/*": "./src/components/*.tsx",
+    "#components/unlumen-ui/*": "./src/components/unlumen-ui/*.tsx",
+    "#components/unlumen-ui/primitives/effects/*": "./src/components/unlumen-ui/primitives/effects/*.tsx",
     "#hooks/*": "./src/hooks/*.ts",
     "#lib/*": "./src/lib/*.ts"
   },

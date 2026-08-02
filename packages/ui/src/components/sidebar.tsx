@@ -3,7 +3,6 @@
 import { mergeProps } from "@base-ui/react/merge-props";
 import { useRender } from "@base-ui/react/use-render";
 import { cva, type VariantProps } from "class-variance-authority";
-import { PanelLeftIcon } from "lucide-react";
 import * as React from "react";
 import { Button } from "#components/button";
 import { Input } from "#components/input";
@@ -17,6 +16,7 @@ import {
 } from "#components/sheet";
 import { Skeleton } from "#components/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#components/tooltip";
+import { SidebarToggleIcon } from "#components/unlumen-ui/sidebar-toggle-icon";
 import { useIsMobile } from "#hooks/use-mobile";
 import { cn } from "#lib/utils";
 
@@ -251,7 +251,8 @@ function SidebarTrigger({
   onClick,
   ...props
 }: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar } = useSidebar();
+  const { toggleSidebar, open, openMobile, isMobile } = useSidebar();
+  const isOpen = isMobile ? openMobile : open;
 
   return (
     <Button
@@ -266,7 +267,7 @@ function SidebarTrigger({
       }}
       {...props}
     >
-      <PanelLeftIcon />
+      <SidebarToggleIcon isOpen={isOpen} className="size-5" />
       <span className="sr-only">Toggle Sidebar</span>
     </Button>
   );

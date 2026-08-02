@@ -1,13 +1,12 @@
 import { useGSAP } from "@gsap/react";
 import { Link } from "@tanstack/react-router";
+import { TiltCard } from "@tunnet/ui/components/unlumen-ui/tilt-card";
 import { ArrowRightIcon } from "lucide-react";
 import { type ReactNode, useRef } from "react";
 import {
   registerMarketingMotion,
   setupReveals,
 } from "#/components/motion/landing-timeline";
-import { Lamp } from "#/components/shared/lamp";
-import { Panel } from "#/components/shared/panel";
 import { PLANS } from "#/lib/pricing";
 
 export function PricingTeaserSection(): ReactNode {
@@ -24,7 +23,7 @@ export function PricingTeaserSection(): ReactNode {
     <section
       ref={root}
       id="pricing"
-      className="relative isolate overflow-hidden px-5 py-24 sm:px-8 sm:py-32"
+      className="relative isolate overflow-hidden px-5 py-20 sm:px-8"
     >
       <div aria-hidden className="pointer-events-none absolute inset-0 -z-10">
         <div
@@ -41,58 +40,41 @@ export function PricingTeaserSection(): ReactNode {
           <h2 className="l1-h-section l1-engraved mt-5 text-[var(--l1-fg)]">
             Start free. <span className="l1-copper-text">Scale the mesh.</span>
           </h2>
-          <p className="l1-lead mt-5 max-w-[56ch] mx-auto">
+          <p className="l1-lead mt-5 mx-auto max-w-[56ch]">
             Direct mode is free forever - even for commercial use. Managed plans
             bill by seats and managed traffic, never per device.
           </p>
         </div>
 
-        <div className="l1-reveal mt-12">
-          <Panel screws>
-            <div className="grid divide-y divide-[var(--l1-steel)] sm:grid-cols-2 lg:grid-cols-4 lg:divide-x lg:divide-y-0">
-              {PLANS.map((p) => (
-                <Link
-                  key={p.id}
-                  to="/pricing"
-                  className="group relative flex flex-col p-6 transition-colors hover:bg-[var(--l1-copper-faint)]"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="l1-label text-[var(--l1-muted)]">
-                      {p.name}
-                    </span>
-                    <Lamp
-                      status={p.highlight ? "good" : "idle"}
-                      live={p.highlight}
-                      className="!size-1.5"
-                    />
-                  </div>
-                  <p className="l1-readout mt-4 text-[26px] font-semibold l1-engraved text-[var(--l1-fg)]">
-                    {p.price === null ? "Custom" : `$${p.price}`}
-                    <span className="ml-1 text-[12px] font-normal text-[var(--l1-muted-2)]">
-                      {p.price === null ? "" : p.cadence}
-                    </span>
-                  </p>
-                  <p className="mt-3 flex-1 text-[13px] leading-relaxed text-[var(--l1-muted)]">
-                    {p.pitch}
-                  </p>
-                  <span className="mt-5 inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-[var(--l1-copper)]">
-                    {p.price === null ? "Talk to sales" : "Choose plan"}
-                    <ArrowRightIcon className="size-3.5 transition-transform group-hover:translate-x-0.5" />
-                  </span>
-                </Link>
-              ))}
-            </div>
+        <div className="l1-reveal mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {PLANS.map((p) => (
+            <TiltCard
+              key={p.id}
+              title={p.name}
+              description={p.pitch}
+              price={p.price === null ? "Custom" : `$${p.price}`}
+              badgeLabel={p.highlight ? "Popular" : p.cadence}
+              badgeVariant={p.highlight ? "success" : "warning"}
+              href="/pricing"
+              className="!h-auto min-h-48 !rounded-[var(--l1-r-lg)] !border-[var(--l1-steel)] !bg-[var(--l1-panel)] text-[var(--l1-fg)] shadow-none hover:!shadow-[0_24px_50px_-30px_oklch(0.6_0.115_50/0.45)]"
+              tiltProps={{ isReverse: false }}
+            >
+              <span className="w-full inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-[var(--l1-copper-bright)]">
+                {p.price === null ? "Talk to sales" : "Choose plan"}
+                <ArrowRightIcon className="size-3.5" />
+              </span>
+            </TiltCard>
+          ))}
+        </div>
 
-            <div className="border-t border-[var(--l1-steel)] bg-[var(--l1-bezel)]/70 px-6 py-4">
-              <Link
-                to="/pricing"
-                className="group inline-flex items-center gap-2 text-[13.5px] font-semibold text-[var(--l1-fg-dim)] transition-colors hover:text-[var(--l1-copper)]"
-              >
-                Open full pricing with the live seat calculator
-                <ArrowRightIcon className="size-4 transition-transform group-hover:translate-x-0.5" />
-              </Link>
-            </div>
-          </Panel>
+        <div className="l1-reveal mt-10 flex justify-center">
+          <Link
+            to="/pricing"
+            className="l1-btn l1-btn--steel inline-flex items-center gap-2"
+          >
+            Compare plans
+            <ArrowRightIcon className="size-4" />
+          </Link>
         </div>
       </div>
     </section>

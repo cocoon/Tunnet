@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import type { AutoCleanupMode } from "@tunnet/api/management";
 import {
   formatDurationCompact,
@@ -22,6 +22,7 @@ import { formatDistanceToNow } from "date-fns";
 import { type ReactNode, useEffect, useState } from "react";
 import {
   HiOutlineCpuChip,
+  HiOutlineCreditCard,
   HiOutlineExclamationTriangle,
   HiOutlineFingerPrint,
   HiOutlineKey,
@@ -35,7 +36,10 @@ import { ApiKeysPanel } from "@/components/app/api-keys-panel";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { CopyField } from "@/components/app/copy-field";
 import { EntityStatus } from "@/components/app/entity-status";
+import { OrganizationBillingPanel } from "@/components/app/organization-billing-panel";
 import { PageHeader } from "@/components/app/page-header";
+import { SubscriptionSuccessDialog } from "@/components/app/subscription-success-dialog";
+import { useFeature } from "@/hooks/use-entitlements";
 import { useCan } from "@/hooks/use-permission";
 import { authClient } from "@/lib/auth-client";
 import {
@@ -56,6 +60,7 @@ export const Route = createFileRoute("/_app/organization")({
 
 type SettingsSection =
   | "general"
+  | "billing"
   | "machines"
   | "agent"
   | "tunnels"
@@ -72,6 +77,11 @@ const sectionMeta: Record<
     label: "General",
     description: "Name and enrollment",
     icon: HiOutlineSparkles,
+  },
+  billing: {
+    label: "Billing",
+    description: "Plan, seats, and invoices",
+    icon: HiOutlineCreditCard,
   },
   machines: {
     label: "Machines",
@@ -222,12 +232,28 @@ function ToggleRow({
 }
 
 function OrganizationSettingsPage() {
+  const navigate = Route.useNavigate();
+  const billingParam = useRouterState({
+    select: (s) => {
+      const raw = s.location.search;
+      if (typeof raw === "string") {
+        return new URLSearchParams(raw).get("billing");
+      }
+      if (raw && typeof raw === "object" && "billing" in raw) {
+        const value = (raw as { billing?: unknown }).billing;
+        return typeof value === "string" ? value : null;
+      }
+      return null;
+    },
+  });
   const { data: activeOrg } = authClient.useActiveOrganization();
   const orgId = activeOrg?.id;
+  const isCloudBilling = useFeature("openSignUp");
   const { data: canUpdate = false } = useCan(orgId, "organization", "update");
   const { data: canDelete = false } = useCan(orgId, "organization", "delete");
   const { data: canManageSso = false } = useCan(orgId, "sso", "update");
   const [section, setSection] = useState<SettingsSection>("general");
+  const [successOpen, setSuccessOpen] = useState(false);
   const [name, setName] = useState(activeOrg?.name ?? "");
   const [quickEnrollEnabled, setQuickEnrollEnabled] = useState(
     activeOrg?.quickEnrollEnabled ?? true,
@@ -285,6 +311,7 @@ function OrganizationSettingsPage() {
   const sections = (
     [
       "general",
+      ...(isCloudBilling && canDelete ? (["billing"] as const) : []),
       "machines",
       "agent",
       "tunnels",
@@ -379,7 +406,19 @@ function OrganizationSettingsPage() {
     if (section === "danger" && !canDelete) {
       setSection("general");
     }
-  }, [section, canDelete]);
+    if (section === "billing" && !(isCloudBilling && canDelete)) {
+      setSection("general");
+    }
+  }, [section, canDelete, isCloudBilling]);
+
+  useEffect(() => {
+    if (billingParam !== "success" && billingParam !== "cancel") return;
+    if (billingParam === "success") {
+      if (isCloudBilling && canDelete) setSection("billing");
+      setSuccessOpen(true);
+    }
+    void navigate({ to: "/organization", replace: true });
+  }, [billingParam, navigate, isCloudBilling, canDelete]);
 
   async function saveGeneral(e: React.FormEvent) {
     e.preventDefault();
@@ -630,6 +669,15 @@ function OrganizationSettingsPage() {
                   disabled={!canUpdate}
                 />
               </form>
+            </SettingsPanel>
+          ) : null}
+
+          {section === "billing" && isCloudBilling && canDelete ? (
+            <SettingsPanel
+              title="Billing"
+              description="Manage this organization's plan, seats, payment methods, and invoices via Stripe."
+            >
+              <OrganizationBillingPanel />
             </SettingsPanel>
           ) : null}
 
@@ -1371,6 +1419,11 @@ function OrganizationSettingsPage() {
         destructive
         loading={ssoMutations.remove.isPending}
         onConfirm={() => void removeSsoSettings()}
+      />
+
+      <SubscriptionSuccessDialog
+        open={successOpen}
+        onOpenChange={setSuccessOpen}
       />
     </>
   );

@@ -12,7 +12,8 @@
       "!**/*.svg",
       "!**/*.png",
       "!**/*.gen.ts",
-      "!**/components/ui"
+      "!**/components/ui",
+      "!**/packages/ui"
     ]
   },
   "formatter": {

@@ -1,6 +1,26 @@
 import { Link } from "@tanstack/react-router";
+import {
+  MotionNavigationMenu,
+  MotionNavigationMenuContent,
+  MotionNavigationMenuItem,
+  MotionNavigationMenuLink,
+  MotionNavigationMenuList,
+  MotionNavigationMenuTrigger,
+  motionNavigationMenuTriggerStyle,
+} from "@tunnet/ui/components/unlumen-ui/motion-navigation-menu";
 import { cn } from "@tunnet/ui/lib/utils";
-import { ArrowRightIcon, MenuIcon, XIcon } from "lucide-react";
+import {
+  ArrowRightIcon,
+  DownloadIcon,
+  GlobeIcon,
+  KeyRoundIcon,
+  MenuIcon,
+  NetworkIcon,
+  RadioTowerIcon,
+  ShareIcon,
+  TerminalSquareIcon,
+  XIcon,
+} from "lucide-react";
 import {
   AnimatePresence,
   motion,
@@ -11,12 +31,47 @@ import { type ReactNode, useRef, useState } from "react";
 
 const APP_URL = "https://app.tunnet.io";
 
+const PRODUCT_ITEMS = [
+  {
+    label: "Mesh",
+    href: "/#mesh",
+    description: "Private network for every machine.",
+    icon: NetworkIcon,
+  },
+  {
+    label: "Serve",
+    href: "/#mesh",
+    description: "Internal HTTPS in one command.",
+    icon: ShareIcon,
+  },
+  {
+    label: "Tunnel",
+    href: "/#edge",
+    description: "Public HTTPS. Zero firewall theatre.",
+    icon: GlobeIcon,
+  },
+  {
+    label: "SSH",
+    href: "/#cli",
+    description: "Keyless SSH by identity.",
+    icon: TerminalSquareIcon,
+  },
+  {
+    label: "Send",
+    href: "/#cli",
+    description: "P2P file transfer, verified.",
+    icon: RadioTowerIcon,
+  },
+  {
+    label: "Security",
+    href: "/#security",
+    description: "TLS, policy, and audit by default.",
+    icon: KeyRoundIcon,
+  },
+] as const;
+
 const HOME_LINKS = [
-  { label: "Mesh", href: "#mesh" },
-  { label: "Modes", href: "#modes" },
-  { label: "Edge", href: "#edge" },
-  { label: "Security", href: "#security" },
-  { label: "CLI", href: "#cli" },
+  { label: "Modes", href: "/#modes" },
   { label: "Pricing", href: "/pricing" },
   { label: "Download", href: "/download" },
   { label: "Docs", href: "https://docs.tunnet.io", external: true },
@@ -38,6 +93,9 @@ const DOWNLOAD_LINKS = [
   { label: "Pricing", href: "/pricing" },
   { label: "Docs", href: "https://docs.tunnet.io", external: true },
 ] as const;
+
+const triggerClass =
+  "rounded-full px-3.5 py-1.5 text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--l1-muted)] hover:text-[var(--l1-copper)] focus:text-[var(--l1-copper)] data-[state=open]:text-[var(--l1-copper)] h-auto bg-transparent";
 
 export function MarketingNav({
   variant = "home",
@@ -83,18 +141,84 @@ export function MarketingNav({
 
         <nav className="hidden justify-center lg:flex" aria-label="Primary">
           <div className="flex items-center gap-0.5 rounded-full border border-[var(--l1-steel)] bg-[var(--l1-panel)]/60 p-1 backdrop-blur">
-            {NAV_LINKS.map((item) => (
-              <a
-                key={item.href}
-                href={item.href}
-                {...("external" in item && item.external
-                  ? { target: "_blank", rel: "noreferrer" }
-                  : {})}
-                className="rounded-full px-3.5 py-1.5 text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--l1-muted)] transition-colors hover:text-[var(--l1-copper)]"
+            {variant === "home" ? (
+              <MotionNavigationMenu
+                className="relative max-w-max flex-1 justify-start"
+                viewportClassName="border-[var(--l1-steel)] bg-[var(--l1-panel)]/95 text-[var(--l1-fg)] shadow-[0_24px_60px_-28px_rgba(0,0,0,0.85)] backdrop-blur-xl"
               >
-                {item.label}
-              </a>
-            ))}
+                <MotionNavigationMenuList className="gap-0.5">
+                  <MotionNavigationMenuItem value="product">
+                    <MotionNavigationMenuTrigger className={triggerClass}>
+                      Product
+                    </MotionNavigationMenuTrigger>
+                    <MotionNavigationMenuContent
+                      className="w-[min(92vw,34rem)]"
+                      highlightClassName="bg-[var(--l1-copper-soft)]"
+                      innerClassName="p-3"
+                    >
+                      <ul className="grid gap-1 sm:grid-cols-2">
+                        {PRODUCT_ITEMS.map((item) => (
+                          <li key={item.label}>
+                            <MotionNavigationMenuLink
+                              href={item.href}
+                              className="hover:bg-[var(--l1-copper-faint)] focus:bg-[var(--l1-copper-faint)] gap-2 rounded-xl p-3 text-[var(--l1-fg-dim)] hover:text-[var(--l1-fg)]"
+                            >
+                              <div className="flex items-start gap-3">
+                                <span className="mt-0.5 grid size-8 place-items-center rounded-lg border border-[var(--l1-steel)] bg-[var(--l1-bg)] text-[var(--l1-copper)]">
+                                  <item.icon className="size-4" />
+                                </span>
+                                <span className="flex flex-col gap-0.5">
+                                  <span className="text-[13px] font-semibold text-[var(--l1-fg)]">
+                                    {item.label}
+                                  </span>
+                                  <span className="text-[12px] leading-snug text-[var(--l1-muted)]">
+                                    {item.description}
+                                  </span>
+                                </span>
+                              </div>
+                            </MotionNavigationMenuLink>
+                          </li>
+                        ))}
+                      </ul>
+                    </MotionNavigationMenuContent>
+                  </MotionNavigationMenuItem>
+
+                  {HOME_LINKS.map((item) => (
+                    <MotionNavigationMenuItem
+                      key={item.href}
+                      value={item.label.toLowerCase()}
+                    >
+                      <MotionNavigationMenuLink
+                        href={item.href}
+                        {...("external" in item && item.external
+                          ? { target: "_blank", rel: "noreferrer" }
+                          : {})}
+                        className={cn(
+                          motionNavigationMenuTriggerStyle(),
+                          triggerClass,
+                          "hover:bg-transparent focus:bg-transparent data-[active=true]:bg-transparent",
+                        )}
+                      >
+                        {item.label}
+                      </MotionNavigationMenuLink>
+                    </MotionNavigationMenuItem>
+                  ))}
+                </MotionNavigationMenuList>
+              </MotionNavigationMenu>
+            ) : (
+              NAV_LINKS.map((item) => (
+                <a
+                  key={item.href}
+                  href={item.href}
+                  {...("external" in item && item.external
+                    ? { target: "_blank", rel: "noreferrer" }
+                    : {})}
+                  className={triggerClass}
+                >
+                  {item.label}
+                </a>
+              ))
+            )}
           </div>
         </nav>
 
@@ -125,7 +249,6 @@ export function MarketingNav({
         </div>
       </div>
 
-      {/* Mobile panel */}
       <AnimatePresence>
         {open ? (
           <motion.div
@@ -136,24 +259,45 @@ export function MarketingNav({
             className="overflow-hidden border-t border-[var(--l1-steel)] bg-[var(--l1-bg)] lg:hidden"
           >
             <div className="flex flex-col gap-1 px-5 py-4">
-              {NAV_LINKS.map((item) => (
-                <a
-                  key={item.href}
-                  href={item.href}
-                  {...("external" in item && item.external
-                    ? { target: "_blank", rel: "noreferrer" }
-                    : {})}
-                  className="rounded-xl px-3 py-2.5 text-[13px] font-medium text-[var(--l1-fg-dim)]"
-                  onClick={() => setOpen(false)}
-                >
-                  {item.label}
-                </a>
-              ))}
+              {variant === "home"
+                ? [
+                    ...PRODUCT_ITEMS.map((item) => ({
+                      label: item.label,
+                      href: item.href,
+                    })),
+                    ...HOME_LINKS,
+                  ].map((item) => (
+                    <a
+                      key={`${item.label}-${item.href}`}
+                      href={item.href}
+                      {...("external" in item && item.external
+                        ? { target: "_blank", rel: "noreferrer" }
+                        : {})}
+                      className="rounded-xl px-3 py-2.5 text-[13px] font-medium text-[var(--l1-fg-dim)]"
+                      onClick={() => setOpen(false)}
+                    >
+                      {item.label}
+                    </a>
+                  ))
+                : NAV_LINKS.map((item) => (
+                    <a
+                      key={item.href}
+                      href={item.href}
+                      {...("external" in item && item.external
+                        ? { target: "_blank", rel: "noreferrer" }
+                        : {})}
+                      className="rounded-xl px-3 py-2.5 text-[13px] font-medium text-[var(--l1-fg-dim)]"
+                      onClick={() => setOpen(false)}
+                    >
+                      {item.label}
+                    </a>
+                  ))}
               <a
                 href={APP_URL}
-                className="rounded-xl px-3 py-2.5 text-[13px] font-medium text-[var(--l1-muted)]"
+                className="inline-flex items-center gap-2 rounded-xl px-3 py-2.5 text-[13px] font-medium text-[var(--l1-muted)]"
                 onClick={() => setOpen(false)}
               >
+                <DownloadIcon className="size-3.5" />
                 Sign in
               </a>
             </div>

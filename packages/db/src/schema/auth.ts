@@ -29,6 +29,7 @@ export const user = pgTable("user", {
   banned: boolean("banned").default(false),
   banReason: text("ban_reason"),
   banExpires: timestamp("ban_expires", { withTimezone: true }),
+  stripeCustomerId: text("stripe_customer_id"),
 });
 
 export const organization = pgTable(
@@ -47,8 +48,42 @@ export const organization = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    stripeCustomerId: text("stripe_customer_id"),
+    /** Soft-delete; ownership quota still counts recent creations via createdAt. */
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
-  (table) => [index("organization_slug_idx").on(table.slug)],
+  (table) => [
+    index("organization_slug_idx").on(table.slug),
+    index("organization_deleted_at_idx").on(table.deletedAt),
+  ],
+);
+
+/** Better Auth Stripe plugin subscription rows (referenceId = org id for cloud billing). */
+export const subscription = pgTable(
+  "subscription",
+  {
+    id: text("id").primaryKey(),
+    plan: text("plan").notNull(),
+    referenceId: text("reference_id").notNull(),
+    stripeCustomerId: text("stripe_customer_id"),
+    stripeSubscriptionId: text("stripe_subscription_id"),
+    status: text("status").notNull(),
+    periodStart: timestamp("period_start", { withTimezone: true }),
+    periodEnd: timestamp("period_end", { withTimezone: true }),
+    cancelAtPeriodEnd: boolean("cancel_at_period_end"),
+    cancelAt: timestamp("cancel_at", { withTimezone: true }),
+    canceledAt: timestamp("canceled_at", { withTimezone: true }),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+    seats: integer("seats"),
+    trialStart: timestamp("trial_start", { withTimezone: true }),
+    trialEnd: timestamp("trial_end", { withTimezone: true }),
+    billingInterval: text("billing_interval"),
+    stripeScheduleId: text("stripe_schedule_id"),
+  },
+  (table) => [
+    index("subscription_reference_id_idx").on(table.referenceId),
+    index("subscription_stripe_customer_id_idx").on(table.stripeCustomerId),
+  ],
 );
 
 export const session = pgTable(

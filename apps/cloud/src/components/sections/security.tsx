@@ -1,12 +1,5 @@
 import { useGSAP } from "@gsap/react";
-import {
-  EyeIcon,
-  FileTextIcon,
-  KeyRoundIcon,
-  LockKeyholeIcon,
-  RadioIcon,
-  ShieldCheckIcon,
-} from "lucide-react";
+import { HoverFeatureCards } from "@tunnet/ui/components/unlumen-ui/hover-feature-cards";
 import { type ReactNode, useRef } from "react";
 import {
   registerMarketingMotion,
@@ -17,36 +10,42 @@ import { ArchitectureDiagram } from "#/components/visuals/architecture";
 
 const PILLARS = [
   {
-    icon: LockKeyholeIcon,
-    title: "TLS 1.3 over QUIC",
-    body: "Every link is encrypted end to end. No unencrypted paths, no shared secrets on the wire.",
+    name: "TLS 1.3 over QUIC",
+    description:
+      "Every link is encrypted end to end. No unencrypted paths, no shared secrets on the wire.",
+    img: "/security/tls.png",
   },
   {
-    icon: KeyRoundIcon,
-    title: "Device identity, not keys",
-    body: "Machines enroll with verifiable identity. No SSH keys to distribute, rotate, or leak.",
+    name: "Device identity, not keys",
+    description:
+      "Machines enroll with verifiable identity. No SSH keys to distribute, rotate, or leak.",
+    img: "/security/identity.png",
   },
   {
-    icon: ShieldCheckIcon,
-    title: "Policy engine by default",
-    body: "ACLs, roles, and tags decide reachability. Zero trust isn't a mode - it's the default.",
+    name: "Policy engine by default",
+    description:
+      "ACLs, roles, and tags decide reachability. Zero trust isn't a mode - it's the default.",
+    img: "/security/policy.png",
   },
   {
-    icon: FileTextIcon,
-    title: "Full audit trail",
-    body: "Every session, tunnel, and file transfer is logged. SSH sessions can be replayed on demand.",
+    name: "Full audit trail",
+    description:
+      "Every session, tunnel, and file transfer is logged. SSH sessions can be replayed on demand.",
+    img: "/security/audit.png",
   },
   {
-    icon: EyeIcon,
-    title: "You can read every line",
-    body: "Agent, control plane, dashboard, edge - AGPL, MPL and Apache by component. Self-host the entire stack.",
+    name: "You can read every line",
+    description:
+      "Agent, control plane, dashboard, edge - AGPL, MPL and Apache by component. Self-host the entire stack.",
+    img: "/security/opensource.png",
   },
   {
-    icon: RadioIcon,
-    title: "Verified file transfers",
-    body: "Send verifies every transfer cryptographically. Consent-based receiving, per-rule.",
+    name: "Verified file transfers",
+    description:
+      "Send verifies every transfer cryptographically. Consent-based receiving, per-rule.",
+    img: "/security/send.png",
   },
-];
+] as const;
 
 export function SecuritySection(): ReactNode {
   const root = useRef<HTMLElement>(null);
@@ -89,7 +88,6 @@ export function SecuritySection(): ReactNode {
           </p>
         </div>
 
-        {/* Architecture diagram */}
         <div className="l1-reveal mt-12">
           <Panel live screws>
             <div className="relative p-4 sm:p-8">
@@ -102,31 +100,17 @@ export function SecuritySection(): ReactNode {
           </Panel>
         </div>
 
-        {/* Inspection sheet - not cards */}
         <div className="l1-reveal mt-10">
-          <div className="overflow-hidden rounded-[var(--l1-r-lg)] border border-[var(--l1-steel)] bg-[var(--l1-panel)]/40">
-            {PILLARS.map((p, i) => (
-              <div
-                key={p.title}
-                className="group grid grid-cols-[auto_auto_1fr] items-start gap-x-4 gap-y-1 border-b border-[var(--l1-steel)] px-5 py-5 transition-colors last:border-0 hover:bg-[var(--l1-copper-faint)] sm:px-8 sm:grid-cols-[52px_auto_1fr]"
-              >
-                <span className="l1-label mt-1 !text-[10px] text-[var(--l1-muted-2)]">
-                  {String(i + 1).padStart(2, "0")}
-                </span>
-                <span className="mt-0.5 grid size-10 place-items-center rounded-lg border border-[var(--l1-steel-strong)] bg-[var(--l1-panel)] text-[var(--l1-copper)] transition-colors group-hover:border-[oklch(0.75_0.115_58/0.5)]">
-                  <p.icon className="size-5" />
-                </span>
-                <div>
-                  <h3 className="font-display text-[17px] font-bold uppercase tracking-[0.04em] l1-engraved text-[var(--l1-fg)]">
-                    {p.title}
-                  </h3>
-                  <p className="mt-1 max-w-[62ch] text-[14px] leading-relaxed text-[var(--l1-muted)]">
-                    {p.body}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
+          <HoverFeatureCards
+            className="lg:grid-cols-3"
+            items={PILLARS.map((p) => ({
+              name: p.name,
+              description: p.description,
+              img: p.img,
+              fadeBottom: true,
+              href: "#security",
+            }))}
+          />
         </div>
       </div>
     </section>

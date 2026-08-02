@@ -115,7 +115,7 @@ async function promptLimits(): Promise<Partial<Record<Limit, number | null>>> {
 }
 
 async function runLicenseCreate(): Promise<void> {
-  p.intro("tunnet cli — issue a development license");
+  p.intro("tunnet internal cli - issue license");
 
   const preset = ensure(
     await p.select({
@@ -135,7 +135,7 @@ async function runLicenseCreate(): Promise<void> {
 
   if (preset === "community") {
     p.note(
-      "Community is the default when TUNNET_LICENSE is unset. No certificate is required — paid features stay locked.",
+      "Community is the default when TUNNET_LICENSE is unset. No certificate is required - paid features stay locked.",
       "No token issued",
     );
     p.outro("Nothing to do.");
