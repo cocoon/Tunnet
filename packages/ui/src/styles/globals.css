@@ -3,13 +3,18 @@
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/geist-mono";
+@import "@fontsource/barlow-condensed/600.css";
+@import "@fontsource/barlow-condensed/700.css";
+@import "@fontsource/barlow-condensed/800.css";
 
 @source "../components";
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-heading: var(--font-sans);
+  --font-heading: var(--font-display);
+  --font-display:
+    "Barlow Condensed", "Geist Variable", ui-sans-serif, system-ui, sans-serif;
   --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono Variable", ui-monospace, monospace;
   --color-sidebar-ring: var(--sidebar-ring);

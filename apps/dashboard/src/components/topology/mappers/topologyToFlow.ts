@@ -88,9 +88,9 @@ export function topologyToFlowNodes(
     filtered.filter((n) => n.kind === "machine").map((n) => n.id),
   );
   const endpointToNodeId = new Map(
-    filtered
-      .filter((n) => n.kind === "machine" && n.endpointId)
-      .map((n) => [n.endpointId!, n.id]),
+    filtered.flatMap((n) =>
+      n.kind === "machine" && n.endpointId ? [[n.endpointId, n.id]] : [],
+    ),
   );
 
   const showServes =
@@ -238,8 +238,9 @@ export function topologyToFlowEdges(
   );
   for (let i = 0; i < machines.length; i++) {
     for (let j = i + 1; j < machines.length; j++) {
-      const a = machines[i]!;
-      const b = machines[j]!;
+      const a = machines[i];
+      const b = machines[j];
+      if (!a || !b) continue;
       const pair = [a.id, b.id].sort().join("|");
       if (linked.has(pair)) continue;
       linked.add(pair);
@@ -316,8 +317,8 @@ export function buildEndpointToNodeId(
   nodes: TopologyNode[],
 ): Map<string, string> {
   return new Map(
-    nodes
-      .filter((n) => n.kind === "machine" && n.endpointId)
-      .map((n) => [n.endpointId!, n.id]),
+    nodes.flatMap((n) =>
+      n.kind === "machine" && n.endpointId ? [[n.endpointId, n.id]] : [],
+    ),
   );
 }

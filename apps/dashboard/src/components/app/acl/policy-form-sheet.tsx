@@ -698,7 +698,10 @@ export function PolicyFormSheet({
             type="button"
             variant="ghost"
             disabled={stepIndex === 0}
-            onClick={() => setStep(STEPS[stepIndex - 1]!)}
+            onClick={() => {
+              const previousStep = STEPS[stepIndex - 1];
+              if (previousStep) setStep(previousStep);
+            }}
           >
             Back
           </Button>
@@ -714,7 +717,10 @@ export function PolicyFormSheet({
               <Button
                 type="button"
                 disabled={!canAdvance}
-                onClick={() => setStep(STEPS[stepIndex + 1]!)}
+                onClick={() => {
+                  const nextStep = STEPS[stepIndex + 1];
+                  if (nextStep) setStep(nextStep);
+                }}
               >
                 Continue
               </Button>

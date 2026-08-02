@@ -84,7 +84,7 @@ export function CreateServeDialog({
     : (selectedMachine?.networkId ?? defaultNetworkId ?? "");
 
   const targetEndpointId = locked
-    ? defaultEndpointId!
+    ? (defaultEndpointId ?? "")
     : (selectedMachine?.endpointId ?? "");
 
   const machineLabel =

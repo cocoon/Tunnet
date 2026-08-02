@@ -128,11 +128,12 @@ function NetworkCanvasInner({ orgId, networkId }: NetworkCanvasInnerProps) {
 
   useEffect(() => {
     if (!topology) return;
+    const currentTopology = topology;
     if (fingerprint === lastFingerprint.current) return;
     let cancelled = false;
 
     async function run() {
-      const flowNodes = topologyToFlowNodes(topology!.nodes, {
+      const flowNodes = topologyToFlowNodes(currentTopology.nodes, {
         statusFilter,
         kindFilter,
         serves,
@@ -141,14 +142,14 @@ function NetworkCanvasInner({ orgId, networkId }: NetworkCanvasInnerProps) {
         includeEnrollZone: true,
       });
       const visibleIds = new Set(flowNodes.map((n) => n.id));
-      const endpointMap = buildEndpointToNodeId(topology!.nodes);
-      const flowEdges = topologyToFlowEdges(topology!.edges, visibleIds, {
+      const endpointMap = buildEndpointToNodeId(currentTopology.nodes);
+      const flowEdges = topologyToFlowEdges(currentTopology.edges, visibleIds, {
         heatmap,
         serves,
         tunnels,
         networkId,
         endpointToNodeId: endpointMap,
-        machines: topology!.nodes,
+        machines: currentTopology.nodes,
       });
 
       const prev = nodesRef.current;
@@ -298,7 +299,9 @@ function NetworkCanvasInner({ orgId, networkId }: NetworkCanvasInnerProps) {
         const next = [...pathEndpoints, node.id].slice(-2);
         setPathEndpoints(next);
         if (next.length === 2) {
-          const path = findNodePath(nodes, edges, next[0]!, next[1]!);
+          const [startId, endId] = next;
+          if (!startId || !endId) return;
+          const path = findNodePath(nodes, edges, startId, endId);
           if (!path) {
             toast.message("No path between selected nodes");
             setHighlightedPath(new Set());

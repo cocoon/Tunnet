@@ -61,7 +61,8 @@ function portsSlugToken(
 ): string | null {
   if (!ports || ports.length === 0) return null;
   if (ports.length === 1) {
-    const p = ports[0]!;
+    const p = ports[0];
+    if (!p) return null;
     return p.start === p.end ? String(p.start) : `${p.start}-${p.end}`;
   }
   if (ports.length <= 3) {

@@ -39,6 +39,8 @@ export function TopologyContextMenus({
   }, []);
 
   if (!menu) return null;
+  const endpointId = menu.endpointId;
+  const menuNetworkId = menu.networkId;
 
   return (
     <DropdownMenu
@@ -52,17 +54,17 @@ export function TopologyContextMenus({
         style={{ left: menu.x, top: menu.y }}
       />
       <DropdownMenuContent className="w-48" align="start">
-        {menu.kind === "peer" && menu.endpointId ? (
+        {menu.kind === "peer" && endpointId ? (
           <>
             <DropdownMenuItem
               onClick={() =>
                 setSelected({
                   kind: "topology",
                   node: {
-                    id: menu.endpointId!,
+                    id: endpointId,
                     kind: "machine",
                     label: menu.label,
-                    endpointId: menu.endpointId,
+                    endpointId,
                   },
                 })
               }
@@ -73,7 +75,7 @@ export function TopologyContextMenus({
               onClick={() => {
                 void navigate({
                   to: "/machines/$endpointId",
-                  params: { endpointId: menu.endpointId! },
+                  params: { endpointId },
                 });
               }}
             >
@@ -84,7 +86,7 @@ export function TopologyContextMenus({
               onClick={() =>
                 setConnectIntent({
                   type: "serve",
-                  endpointId: menu.endpointId!,
+                  endpointId,
                   networkId: networkId ?? menu.networkId ?? "",
                 })
               }
@@ -95,7 +97,7 @@ export function TopologyContextMenus({
               onClick={() =>
                 setConnectIntent({
                   type: "tunnel",
-                  endpointId: menu.endpointId!,
+                  endpointId,
                   networkId: networkId ?? menu.networkId ?? "",
                 })
               }
@@ -104,13 +106,13 @@ export function TopologyContextMenus({
             </DropdownMenuItem>
           </>
         ) : null}
-        {menu.kind === "network" && menu.networkId ? (
+        {menu.kind === "network" && menuNetworkId ? (
           <>
             <DropdownMenuItem
               onClick={() => {
                 void navigate({
                   to: "/networks/$networkId",
-                  params: { networkId: menu.networkId! },
+                  params: { networkId: menuNetworkId },
                 });
               }}
             >
@@ -120,7 +122,7 @@ export function TopologyContextMenus({
               onClick={() => {
                 void navigate({
                   to: "/networks/$networkId/access",
-                  params: { networkId: menu.networkId! },
+                  params: { networkId: menuNetworkId },
                 });
               }}
             >
@@ -130,7 +132,7 @@ export function TopologyContextMenus({
               onClick={() =>
                 setConnectIntent({
                   type: "enroll",
-                  networkId: menu.networkId!,
+                  networkId: menuNetworkId,
                 })
               }
             >

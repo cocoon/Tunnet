@@ -23,6 +23,7 @@
   },
   "registries": {
     "@coss": "https://coss.com/ui/r/{name}.json",
-    "@react-bits": "https://reactbits.dev/r/{name}.json"
+    "@react-bits": "https://reactbits.dev/r/{name}.json",
+    "@componentry": "https://componentry.fun/r/{name}.json"
   }
 }
