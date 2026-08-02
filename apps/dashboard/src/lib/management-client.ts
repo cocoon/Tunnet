@@ -5,6 +5,7 @@ import {
   type BulkAssignDeviceTagsBody,
   bulkAssignDeviceTagsBody,
   type CreateApiKeyBody,
+  type CreateEdgeBody,
   type CreateEnrollmentTokenBody,
   type CreateHostnameRouteBody,
   type CreateNetworkBody,
@@ -18,6 +19,8 @@ import {
   type CreateTunnelRoutingRuleBody,
   createApiKeyBody,
   createApiKeyResponse,
+  createEdgeBody,
+  createEdgeResponse,
   createEnrollmentTokenBody,
   createEnrollmentTokenResponse,
   createHostnameRouteBody,
@@ -42,6 +45,9 @@ import {
   deviceListResponse,
   deviceSshAuthSchema,
   deviceTagsSchema,
+  edgeHealthResponse,
+  edgeListResponse,
+  edgeSchema,
   endpointSendSettingsSchema,
   enrollmentTokenListResponse,
   fileTransferListResponse,
@@ -60,6 +66,7 @@ import {
   type PatchDeviceLabelsBody,
   type PatchDeviceMembershipBody,
   type PatchDeviceTagsBody,
+  type PatchEdgeBody,
   type PatchHostnameRouteBody,
   type PatchNetworkBody,
   type PatchOrganizationSettingsBody,
@@ -78,6 +85,7 @@ import {
   patchDeviceLabelsBody,
   patchDeviceMembershipBody,
   patchDeviceTagsBody,
+  patchEdgeBody,
   patchHostnameRouteBody,
   patchNetworkBody,
   patchOrganizationSettingsBody,
@@ -151,6 +159,7 @@ import {
   updatePostureIntegrationBody as updatePostureIntegrationBodySchema,
 } from "@/lib/posture-types";
 
+const edgeDetailResponse = zod.object({ edge: edgeSchema });
 const relayDetailResponse = zod.object({ relay: relaySchema });
 const tunnelDetailResponse = zod.object({ tunnel: tunnelSchema });
 const serveDetailResponse = zod.object({ serve: serveSchema });
@@ -175,24 +184,10 @@ export class ManagementApiError extends Error {
   }
 }
 
-async function request<T>(
-  orgId: string,
-  path: string,
-  init: RequestInit = {},
+async function parseApiResponse<T>(
+  response: Response,
   schema?: z.ZodType<T>,
 ): Promise<T> {
-  const headers = new Headers(init.headers);
-  if (init.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-  headers.set("X-Organization-Id", orgId);
-
-  const response = await fetch(`${getManagementApiUrl()}/api/v1${path}`, {
-    ...init,
-    credentials: "include",
-    headers,
-  });
-
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as {
       error?: string;
@@ -218,6 +213,47 @@ async function request<T>(
     );
   }
   return parsed.data;
+}
+
+async function request<T>(
+  orgId: string,
+  path: string,
+  init: RequestInit = {},
+  schema?: z.ZodType<T>,
+): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (init.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  headers.set("X-Organization-Id", orgId);
+
+  const response = await fetch(`${getManagementApiUrl()}/api/v1${path}`, {
+    ...init,
+    credentials: "include",
+    headers,
+  });
+
+  return parseApiResponse(response, schema);
+}
+
+/** Deployment-scoped Cloud admin API (no organization header). */
+async function cloudRequest<T>(
+  path: string,
+  init: RequestInit = {},
+  schema?: z.ZodType<T>,
+): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (init.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  const response = await fetch(`${getManagementApiUrl()}/api/v1${path}`, {
+    ...init,
+    credentials: "include",
+    headers,
+  });
+
+  return parseApiResponse(response, schema);
 }
 
 export function createManagementClient(orgId: string) {
@@ -739,12 +775,43 @@ export function createManagementClient(orgId: string) {
         networkMetricsResponse,
       ),
 
-    listRelays: () => request(orgId, org("/relays"), {}, relayListResponse),
+    listEdges: () => request(orgId, org("/edges"), {}, edgeListResponse),
 
-    getRelay: (relayId: string) =>
+    getEdge: (edgeId: string) =>
+      request(orgId, org(`/edges/${edgeId}`), {}, edgeDetailResponse),
+
+    createEdge: (body: CreateEdgeBody) =>
+      request(
+        orgId,
+        org("/edges"),
+        { method: "POST", body: JSON.stringify(createEdgeBody.parse(body)) },
+        createEdgeResponse,
+      ),
+
+    updateEdge: (edgeId: string, body: PatchEdgeBody) =>
+      request(
+        orgId,
+        org(`/edges/${edgeId}`),
+        {
+          method: "PATCH",
+          body: JSON.stringify(patchEdgeBody.parse(body)),
+        },
+        edgeDetailResponse,
+      ),
+
+    deleteEdge: (edgeId: string) =>
+      request<{ ok: boolean }>(orgId, org(`/edges/${edgeId}`), {
+        method: "DELETE",
+      }),
+
+    /** Org-scoped connectivity relays (mesh), distinct from Edges (public ingress). */
+    listConnectivityRelays: () =>
+      request(orgId, org("/relays"), {}, relayListResponse),
+
+    getConnectivityRelay: (relayId: string) =>
       request(orgId, org(`/relays/${relayId}`), {}, relayDetailResponse),
 
-    createRelay: (body: CreateRelayBody) =>
+    createOrgRelay: (body: CreateRelayBody) =>
       request(
         orgId,
         org("/relays"),
@@ -752,7 +819,7 @@ export function createManagementClient(orgId: string) {
         createRelayResponse,
       ),
 
-    updateRelay: (relayId: string, body: PatchRelayBody) =>
+    updateOrgRelay: (relayId: string, body: PatchRelayBody) =>
       request(
         orgId,
         org(`/relays/${relayId}`),
@@ -763,10 +830,18 @@ export function createManagementClient(orgId: string) {
         relayDetailResponse,
       ),
 
-    deleteRelay: (relayId: string) =>
+    deleteOrgRelay: (relayId: string) =>
       request<{ ok: boolean }>(orgId, org(`/relays/${relayId}`), {
         method: "DELETE",
       }),
+
+    getOrgRelayHealth: (relayId: string, limit = 100) =>
+      request(
+        orgId,
+        org(`/relays/${relayId}/health?limit=${limit}`),
+        {},
+        relayHealthResponse,
+      ),
 
     listTunnels: (networkId: string) =>
       request(
@@ -934,12 +1009,12 @@ export function createManagementClient(orgId: string) {
         { method: "DELETE" },
       ),
 
-    getRelayHealth: (relayId: string, limit = 100) =>
+    getEdgeHealth: (edgeId: string, limit = 100) =>
       request(
         orgId,
-        org(`/relays/${relayId}/health?limit=${limit}`),
+        org(`/edges/${edgeId}/health?limit=${limit}`),
         {},
-        relayHealthResponse,
+        edgeHealthResponse,
       ),
 
     getInternalCa: () =>
@@ -1266,3 +1341,44 @@ export function createManagementClient(orgId: string) {
 }
 
 export type ManagementClient = ReturnType<typeof createManagementClient>;
+
+/** Cloud administration client for deployment-wide infrastructure. */
+export function createCloudAdminClient() {
+  return {
+    cloudListRelays: () => cloudRequest("/cloud/relays", {}, relayListResponse),
+
+    cloudGetRelay: (relayId: string) =>
+      cloudRequest(`/cloud/relays/${relayId}`, {}, relayDetailResponse),
+
+    cloudCreateRelay: (body: CreateRelayBody) =>
+      cloudRequest(
+        "/cloud/relays",
+        { method: "POST", body: JSON.stringify(createRelayBody.parse(body)) },
+        createRelayResponse,
+      ),
+
+    cloudPatchRelay: (relayId: string, body: PatchRelayBody) =>
+      cloudRequest(
+        `/cloud/relays/${relayId}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(patchRelayBody.parse(body)),
+        },
+        relayDetailResponse,
+      ),
+
+    cloudDeleteRelay: (relayId: string) =>
+      cloudRequest<{ ok: boolean }>(`/cloud/relays/${relayId}`, {
+        method: "DELETE",
+      }),
+
+    cloudGetRelayHealth: (relayId: string, limit = 100) =>
+      cloudRequest(
+        `/cloud/relays/${relayId}/health?limit=${limit}`,
+        {},
+        relayHealthResponse,
+      ),
+  };
+}
+
+export type CloudAdminClient = ReturnType<typeof createCloudAdminClient>;

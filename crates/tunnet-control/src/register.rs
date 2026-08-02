@@ -354,6 +354,8 @@ fn empty_pending_snapshot() -> tunnet_common::EndpointSnapshot {
         org_policy: tunnet_common::policy::PolicyBundle::default(),
         policy_verifying_key: None,
         agent_policy: tunnet_common::RemoteAgentPolicy::default(),
+        connectivity_relays: vec![],
+        connectivity_relay_fallback: tunnet_common::ConnectivityRelayFallback::None,
         org_ca_pem: None,
         labels: Default::default(),
         expires_at: None,

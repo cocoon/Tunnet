@@ -14,7 +14,7 @@ import {
 const FAQ = [
   {
     q: "How is Tunnet different from Tailscale or NetBird?",
-    a: "Tunnet packages six primitives - mesh, serve, tunnel, send, SSH, relay - under one identity and one policy system, instead of stitching together a VPN, a tunnel tool, a file tool and a bastion. Everything is open source, and you can self-host the whole stack.",
+    a: "Tunnet packages six primitives - mesh, serve, tunnel, send, SSH, edge - under one identity and one policy system, instead of stitching together a VPN, a tunnel tool, a file tool and a bastion. Everything is open source, and you can self-host the whole stack.",
   },
   {
     q: "Do I need to open firewall ports?",
@@ -29,8 +29,8 @@ const FAQ = [
     a: "macOS, Linux, and Windows. Linux and macOS require root to create a TUN interface. Windows requires Administrator with the Wintun driver installed.",
   },
   {
-    q: "Can I bring my own relays and certificates?",
-    a: "Yes. Register a relay with `tunnet-relay register`, point DNS at it, and either use built-in ACME or bring your own certs.",
+    q: "Can I bring my own edges and certificates?",
+    a: "Yes. Register an edge with `tunnet-edge register`, point DNS at it, and either use built-in ACME or bring your own certs.",
   },
   {
     q: "Does SSH really work without keys?",

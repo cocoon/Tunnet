@@ -14,6 +14,7 @@ import type {
   AccessDestinationFlowNode,
   AccessPolicyFlowNode,
   AccessSourceFlowNode,
+  EdgeFlowNode,
   EnrollFlowNode,
   ExitFlowNode,
   GatewayFlowNode,
@@ -21,7 +22,6 @@ import type {
   K8sFlowNode,
   NetworkGroupFlowNode,
   PeerFlowNode,
-  RelayFlowNode,
   ServeFlowNode,
   SubnetFlowNode,
   TunnelFlowNode,
@@ -226,7 +226,7 @@ function ResourceNode({
   );
 }
 
-export function RelayNode({ data, selected }: NodeProps<RelayFlowNode>) {
+export function EdgeNode({ data, selected }: NodeProps<EdgeFlowNode>) {
   return (
     <ResourceNode
       data={data}

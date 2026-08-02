@@ -4,8 +4,10 @@ import { apiKeysRoutes } from "./api-keys";
 import { auditRoutes } from "./audit";
 import { authOauthRoutes } from "./auth-oauth";
 import { authOidcRoutes } from "./auth-oidc";
+import { cloudRelaysRoutes } from "./cloud-relays";
 import { deviceProfilesRoutes } from "./device-profiles";
 import { devicesRoutes } from "./devices";
+import { edgesRoutes } from "./edges";
 import { enrollmentTokensRoutes } from "./enrollment-tokens";
 import { entitlementsRoutes } from "./entitlements";
 import { hostnameRoutesRoutes } from "./hostname-routes";
@@ -55,7 +57,9 @@ export const apiV1 = new Elysia({ prefix: "/api/v1" })
   .use(sdkNodesRoutes)
   .use(apiKeysRoutes)
   .use(auditRoutes)
+  .use(edgesRoutes)
   .use(relaysRoutes)
+  .use(cloudRelaysRoutes)
   .use(tunnelsRoutes)
   .use(tunnelSettingsRoutes)
   .use(orgSettingsRoutes)

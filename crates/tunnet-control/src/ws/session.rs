@@ -60,7 +60,7 @@ pub async fn run_ws(
         }
     }
 
-    // Snapshot omits relay_auth_token; re-push OpenTunnel / StartServe so the
+    // Snapshot omits edge_auth_token; re-push OpenTunnel / StartServe so the
     // agent TunnelManager / ServeManager actually (re)start workloads.
     crate::reconnect::replay_endpoint_workloads(&state, &endpoint_id).await;
 

@@ -68,8 +68,10 @@ export const remoteDnsPolicySchema = z.object({
   upstream: z.array(z.string().trim().min(1).max(64)).max(8).default([]),
 });
 
+export const relayPolicySchema = z.enum(["inherit", "augment", "exclusive"]);
+
 export const remoteRelayPolicySchema = z.object({
-  preferOrgRelays: z.boolean().default(false),
+  policy: relayPolicySchema.default("inherit"),
 });
 
 export const remoteExitNodesPolicySchema = z.object({
@@ -196,7 +198,7 @@ export const effectiveAgentConfigSchema = z.object({
   autoUpdateCheckIntervalHours: resolvedSettingSchema(z.number().int()),
   postureIntervalSecs: resolvedSettingSchema(z.number().int()),
   postureEnabledCollectors: resolvedSettingSchema(z.array(z.string())),
-  preferOrgRelays: resolvedSettingSchema(z.boolean()),
+  relayPolicy: resolvedSettingSchema(relayPolicySchema),
   exitNodesAllowAdvertise: resolvedSettingSchema(z.boolean()),
   exitNodesAllowUse: resolvedSettingSchema(z.boolean()),
   dnsSuffix: resolvedSettingSchema(z.string()),
@@ -307,6 +309,7 @@ export type PatchOrganizationSettingsBody = z.infer<
 >;
 export type ConfigSource = z.infer<typeof configSourceSchema>;
 export type EffectiveAgentConfig = z.infer<typeof effectiveAgentConfigSchema>;
+export type RelayPolicy = z.infer<typeof relayPolicySchema>;
 export type DeviceEffectiveConfigResponse = z.infer<
   typeof deviceEffectiveConfigResponse
 >;

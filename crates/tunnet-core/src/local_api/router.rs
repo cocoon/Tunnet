@@ -697,7 +697,7 @@ async fn tunnels_start(
         &state,
         body.port,
         &body.protocol,
-        body.relay.as_deref(),
+        body.edge.as_deref(),
         body.subdomain.as_deref(),
         body.inspect,
         body.inspect_addr.as_deref(),

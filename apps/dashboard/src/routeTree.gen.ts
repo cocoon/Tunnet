@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteRouteImport } from './routes/_app/route'
+import { Route as CloudRouteRouteImport } from './routes/cloud/route'
 import { Route as ConsentRouteImport } from './routes/consent'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
@@ -23,8 +24,11 @@ import { Route as AppTagsRouteImport } from './routes/_app/tags'
 import { Route as AppUsersRouteImport } from './routes/_app/users'
 import { Route as AcceptInvitationInvitationIdRouteImport } from './routes/accept-invitation.$invitationId'
 import { Route as AuthSshRouteImport } from './routes/auth/ssh'
+import { Route as CloudIndexRouteImport } from './routes/cloud/index'
 import { Route as DeviceIndexRouteImport } from './routes/device/index'
 import { Route as DeviceApproveRouteImport } from './routes/device/approve'
+import { Route as AppEdgesIndexRouteImport } from './routes/_app/edges/index'
+import { Route as AppEdgesEdgeIdRouteImport } from './routes/_app/edges/$edgeId'
 import { Route as AppKubernetesIndexRouteImport } from './routes/_app/kubernetes/index'
 import { Route as AppMachinesIndexRouteImport } from './routes/_app/machines/index'
 import { Route as AppMachinesEndpointIdRouteImport } from './routes/_app/machines/$endpointId'
@@ -42,6 +46,8 @@ import { Route as AppSshSessionsIndexRouteImport } from './routes/_app/ssh-sessi
 import { Route as AppTransfersIndexRouteImport } from './routes/_app/transfers/index'
 import { Route as AppTunnelsIndexRouteImport } from './routes/_app/tunnels/index'
 import { Route as AppTunnelsTunnelIdRouteImport } from './routes/_app/tunnels/$tunnelId'
+import { Route as CloudRelaysIndexRouteImport } from './routes/cloud/relays/index'
+import { Route as CloudRelaysRelayIdRouteImport } from './routes/cloud/relays/$relayId'
 import { Route as AppKubernetesNetworksNetworkIdRouteImport } from './routes/_app/kubernetes/networks/$networkId'
 import { Route as AppNetworksNetworkIdIndexRouteImport } from './routes/_app/networks/$networkId/index'
 import { Route as AppNetworksNetworkIdAccessRouteImport } from './routes/_app/networks/$networkId/access'
@@ -53,6 +59,11 @@ import { Route as AppNetworksNetworkIdRoutesRouteImport } from './routes/_app/ne
 
 const AppRouteRoute = AppRouteRouteImport.update({
   id: '/_app',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CloudRouteRoute = CloudRouteRouteImport.update({
+  id: '/cloud',
+  path: '/cloud',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConsentRoute = ConsentRouteImport.update({
@@ -121,6 +132,11 @@ const AuthSshRoute = AuthSshRouteImport.update({
   path: '/auth/ssh',
   getParentRoute: () => rootRouteImport,
 } as any)
+const CloudIndexRoute = CloudIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => CloudRouteRoute,
+} as any)
 const DeviceIndexRoute = DeviceIndexRouteImport.update({
   id: '/device/',
   path: '/device/',
@@ -130,6 +146,16 @@ const DeviceApproveRoute = DeviceApproveRouteImport.update({
   id: '/device/approve',
   path: '/device/approve',
   getParentRoute: () => rootRouteImport,
+} as any)
+const AppEdgesIndexRoute = AppEdgesIndexRouteImport.update({
+  id: '/edges/',
+  path: '/edges/',
+  getParentRoute: () => AppRouteRoute,
+} as any)
+const AppEdgesEdgeIdRoute = AppEdgesEdgeIdRouteImport.update({
+  id: '/edges/$edgeId',
+  path: '/edges/$edgeId',
+  getParentRoute: () => AppRouteRoute,
 } as any)
 const AppKubernetesIndexRoute = AppKubernetesIndexRouteImport.update({
   id: '/kubernetes/',
@@ -217,6 +243,16 @@ const AppTunnelsTunnelIdRoute = AppTunnelsTunnelIdRouteImport.update({
   path: '/tunnels/$tunnelId',
   getParentRoute: () => AppRouteRoute,
 } as any)
+const CloudRelaysIndexRoute = CloudRelaysIndexRouteImport.update({
+  id: '/relays/',
+  path: '/relays/',
+  getParentRoute: () => CloudRouteRoute,
+} as any)
+const CloudRelaysRelayIdRoute = CloudRelaysRelayIdRouteImport.update({
+  id: '/relays/$relayId',
+  path: '/relays/$relayId',
+  getParentRoute: () => CloudRouteRoute,
+} as any)
 const AppKubernetesNetworksNetworkIdRoute =
   AppKubernetesNetworksNetworkIdRouteImport.update({
     id: '/kubernetes/networks/$networkId',
@@ -267,6 +303,7 @@ const AppNetworksNetworkIdRoutesRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
+  '/cloud': typeof CloudRouteRouteWithChildren
   '/consent': typeof ConsentRoute
   '/login': typeof LoginRoute
   '/settings': typeof AppSettingsRouteRouteWithChildren
@@ -280,14 +317,18 @@ export interface FileRoutesByFullPath {
   '/accept-invitation/$invitationId': typeof AcceptInvitationInvitationIdRoute
   '/auth/ssh': typeof AuthSshRoute
   '/device/approve': typeof DeviceApproveRoute
+  '/cloud/': typeof CloudIndexRoute
   '/device/': typeof DeviceIndexRoute
   '/networks/$networkId': typeof AppNetworksNetworkIdRouteRouteWithChildren
+  '/edges/$edgeId': typeof AppEdgesEdgeIdRoute
   '/machines/$endpointId': typeof AppMachinesEndpointIdRoute
   '/posture/compliance': typeof AppPostureComplianceRoute
   '/posture/integrations': typeof AppPostureIntegrationsRoute
   '/relays/$relayId': typeof AppRelaysRelayIdRoute
   '/serves/$serveId': typeof AppServesServeIdRoute
   '/tunnels/$tunnelId': typeof AppTunnelsTunnelIdRoute
+  '/cloud/relays/$relayId': typeof CloudRelaysRelayIdRoute
+  '/edges/': typeof AppEdgesIndexRoute
   '/kubernetes/': typeof AppKubernetesIndexRoute
   '/machines/': typeof AppMachinesIndexRoute
   '/networks/': typeof AppNetworksIndexRoute
@@ -298,6 +339,7 @@ export interface FileRoutesByFullPath {
   '/ssh-sessions/': typeof AppSshSessionsIndexRoute
   '/transfers/': typeof AppTransfersIndexRoute
   '/tunnels/': typeof AppTunnelsIndexRoute
+  '/cloud/relays/': typeof CloudRelaysIndexRoute
   '/kubernetes/networks/$networkId': typeof AppKubernetesNetworksNetworkIdRoute
   '/networks/$networkId/access': typeof AppNetworksNetworkIdAccessRoute
   '/networks/$networkId/enrollment': typeof AppNetworksNetworkIdEnrollmentRoute
@@ -321,13 +363,17 @@ export interface FileRoutesByTo {
   '/auth/ssh': typeof AuthSshRoute
   '/device/approve': typeof DeviceApproveRoute
   '/': typeof AppIndexRoute
+  '/cloud': typeof CloudIndexRoute
   '/device': typeof DeviceIndexRoute
+  '/edges/$edgeId': typeof AppEdgesEdgeIdRoute
   '/machines/$endpointId': typeof AppMachinesEndpointIdRoute
   '/posture/compliance': typeof AppPostureComplianceRoute
   '/posture/integrations': typeof AppPostureIntegrationsRoute
   '/relays/$relayId': typeof AppRelaysRelayIdRoute
   '/serves/$serveId': typeof AppServesServeIdRoute
   '/tunnels/$tunnelId': typeof AppTunnelsTunnelIdRoute
+  '/cloud/relays/$relayId': typeof CloudRelaysRelayIdRoute
+  '/edges': typeof AppEdgesIndexRoute
   '/kubernetes': typeof AppKubernetesIndexRoute
   '/machines': typeof AppMachinesIndexRoute
   '/networks': typeof AppNetworksIndexRoute
@@ -338,6 +384,7 @@ export interface FileRoutesByTo {
   '/ssh-sessions': typeof AppSshSessionsIndexRoute
   '/transfers': typeof AppTransfersIndexRoute
   '/tunnels': typeof AppTunnelsIndexRoute
+  '/cloud/relays': typeof CloudRelaysIndexRoute
   '/kubernetes/networks/$networkId': typeof AppKubernetesNetworksNetworkIdRoute
   '/networks/$networkId/access': typeof AppNetworksNetworkIdAccessRoute
   '/networks/$networkId/enrollment': typeof AppNetworksNetworkIdEnrollmentRoute
@@ -350,6 +397,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteRouteWithChildren
+  '/cloud': typeof CloudRouteRouteWithChildren
   '/consent': typeof ConsentRoute
   '/login': typeof LoginRoute
   '/_app/settings': typeof AppSettingsRouteRouteWithChildren
@@ -364,14 +412,18 @@ export interface FileRoutesById {
   '/auth/ssh': typeof AuthSshRoute
   '/device/approve': typeof DeviceApproveRoute
   '/_app/': typeof AppIndexRoute
+  '/cloud/': typeof CloudIndexRoute
   '/device/': typeof DeviceIndexRoute
   '/_app/networks/$networkId': typeof AppNetworksNetworkIdRouteRouteWithChildren
+  '/_app/edges/$edgeId': typeof AppEdgesEdgeIdRoute
   '/_app/machines/$endpointId': typeof AppMachinesEndpointIdRoute
   '/_app/posture/compliance': typeof AppPostureComplianceRoute
   '/_app/posture/integrations': typeof AppPostureIntegrationsRoute
   '/_app/relays/$relayId': typeof AppRelaysRelayIdRoute
   '/_app/serves/$serveId': typeof AppServesServeIdRoute
   '/_app/tunnels/$tunnelId': typeof AppTunnelsTunnelIdRoute
+  '/cloud/relays/$relayId': typeof CloudRelaysRelayIdRoute
+  '/_app/edges/': typeof AppEdgesIndexRoute
   '/_app/kubernetes/': typeof AppKubernetesIndexRoute
   '/_app/machines/': typeof AppMachinesIndexRoute
   '/_app/networks/': typeof AppNetworksIndexRoute
@@ -382,6 +434,7 @@ export interface FileRoutesById {
   '/_app/ssh-sessions/': typeof AppSshSessionsIndexRoute
   '/_app/transfers/': typeof AppTransfersIndexRoute
   '/_app/tunnels/': typeof AppTunnelsIndexRoute
+  '/cloud/relays/': typeof CloudRelaysIndexRoute
   '/_app/kubernetes/networks/$networkId': typeof AppKubernetesNetworksNetworkIdRoute
   '/_app/networks/$networkId/access': typeof AppNetworksNetworkIdAccessRoute
   '/_app/networks/$networkId/enrollment': typeof AppNetworksNetworkIdEnrollmentRoute
@@ -395,6 +448,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/cloud'
     | '/consent'
     | '/login'
     | '/settings'
@@ -408,14 +462,18 @@ export interface FileRouteTypes {
     | '/accept-invitation/$invitationId'
     | '/auth/ssh'
     | '/device/approve'
+    | '/cloud/'
     | '/device/'
     | '/networks/$networkId'
+    | '/edges/$edgeId'
     | '/machines/$endpointId'
     | '/posture/compliance'
     | '/posture/integrations'
     | '/relays/$relayId'
     | '/serves/$serveId'
     | '/tunnels/$tunnelId'
+    | '/cloud/relays/$relayId'
+    | '/edges/'
     | '/kubernetes/'
     | '/machines/'
     | '/networks/'
@@ -426,6 +484,7 @@ export interface FileRouteTypes {
     | '/ssh-sessions/'
     | '/transfers/'
     | '/tunnels/'
+    | '/cloud/relays/'
     | '/kubernetes/networks/$networkId'
     | '/networks/$networkId/access'
     | '/networks/$networkId/enrollment'
@@ -449,13 +508,17 @@ export interface FileRouteTypes {
     | '/auth/ssh'
     | '/device/approve'
     | '/'
+    | '/cloud'
     | '/device'
+    | '/edges/$edgeId'
     | '/machines/$endpointId'
     | '/posture/compliance'
     | '/posture/integrations'
     | '/relays/$relayId'
     | '/serves/$serveId'
     | '/tunnels/$tunnelId'
+    | '/cloud/relays/$relayId'
+    | '/edges'
     | '/kubernetes'
     | '/machines'
     | '/networks'
@@ -466,6 +529,7 @@ export interface FileRouteTypes {
     | '/ssh-sessions'
     | '/transfers'
     | '/tunnels'
+    | '/cloud/relays'
     | '/kubernetes/networks/$networkId'
     | '/networks/$networkId/access'
     | '/networks/$networkId/enrollment'
@@ -477,6 +541,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/_app'
+    | '/cloud'
     | '/consent'
     | '/login'
     | '/_app/settings'
@@ -491,14 +556,18 @@ export interface FileRouteTypes {
     | '/auth/ssh'
     | '/device/approve'
     | '/_app/'
+    | '/cloud/'
     | '/device/'
     | '/_app/networks/$networkId'
+    | '/_app/edges/$edgeId'
     | '/_app/machines/$endpointId'
     | '/_app/posture/compliance'
     | '/_app/posture/integrations'
     | '/_app/relays/$relayId'
     | '/_app/serves/$serveId'
     | '/_app/tunnels/$tunnelId'
+    | '/cloud/relays/$relayId'
+    | '/_app/edges/'
     | '/_app/kubernetes/'
     | '/_app/machines/'
     | '/_app/networks/'
@@ -509,6 +578,7 @@ export interface FileRouteTypes {
     | '/_app/ssh-sessions/'
     | '/_app/transfers/'
     | '/_app/tunnels/'
+    | '/cloud/relays/'
     | '/_app/kubernetes/networks/$networkId'
     | '/_app/networks/$networkId/access'
     | '/_app/networks/$networkId/enrollment'
@@ -521,6 +591,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   AppRouteRoute: typeof AppRouteRouteWithChildren
+  CloudRouteRoute: typeof CloudRouteRouteWithChildren
   ConsentRoute: typeof ConsentRoute
   LoginRoute: typeof LoginRoute
   AcceptInvitationInvitationIdRoute: typeof AcceptInvitationInvitationIdRoute
@@ -536,6 +607,13 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof AppRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/cloud': {
+      id: '/cloud'
+      path: '/cloud'
+      fullPath: '/cloud'
+      preLoaderRoute: typeof CloudRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/consent': {
@@ -629,6 +707,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthSshRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/cloud/': {
+      id: '/cloud/'
+      path: '/'
+      fullPath: '/cloud/'
+      preLoaderRoute: typeof CloudIndexRouteImport
+      parentRoute: typeof CloudRouteRoute
+    }
     '/device/': {
       id: '/device/'
       path: '/device'
@@ -642,6 +727,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/device/approve'
       preLoaderRoute: typeof DeviceApproveRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_app/edges/': {
+      id: '/_app/edges/'
+      path: '/edges'
+      fullPath: '/edges/'
+      preLoaderRoute: typeof AppEdgesIndexRouteImport
+      parentRoute: typeof AppRouteRoute
+    }
+    '/_app/edges/$edgeId': {
+      id: '/_app/edges/$edgeId'
+      path: '/edges/$edgeId'
+      fullPath: '/edges/$edgeId'
+      preLoaderRoute: typeof AppEdgesEdgeIdRouteImport
+      parentRoute: typeof AppRouteRoute
     }
     '/_app/kubernetes/': {
       id: '/_app/kubernetes/'
@@ -762,6 +861,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppTunnelsTunnelIdRouteImport
       parentRoute: typeof AppRouteRoute
     }
+    '/cloud/relays/': {
+      id: '/cloud/relays/'
+      path: '/relays'
+      fullPath: '/cloud/relays/'
+      preLoaderRoute: typeof CloudRelaysIndexRouteImport
+      parentRoute: typeof CloudRouteRoute
+    }
+    '/cloud/relays/$relayId': {
+      id: '/cloud/relays/$relayId'
+      path: '/relays/$relayId'
+      fullPath: '/cloud/relays/$relayId'
+      preLoaderRoute: typeof CloudRelaysRelayIdRouteImport
+      parentRoute: typeof CloudRouteRoute
+    }
     '/_app/kubernetes/networks/$networkId': {
       id: '/_app/kubernetes/networks/$networkId'
       path: '/kubernetes/networks/$networkId'
@@ -869,12 +982,14 @@ interface AppRouteRouteChildren {
   AppUsersRoute: typeof AppUsersRoute
   AppIndexRoute: typeof AppIndexRoute
   AppNetworksNetworkIdRouteRoute: typeof AppNetworksNetworkIdRouteRouteWithChildren
+  AppEdgesEdgeIdRoute: typeof AppEdgesEdgeIdRoute
   AppMachinesEndpointIdRoute: typeof AppMachinesEndpointIdRoute
   AppPostureComplianceRoute: typeof AppPostureComplianceRoute
   AppPostureIntegrationsRoute: typeof AppPostureIntegrationsRoute
   AppRelaysRelayIdRoute: typeof AppRelaysRelayIdRoute
   AppServesServeIdRoute: typeof AppServesServeIdRoute
   AppTunnelsTunnelIdRoute: typeof AppTunnelsTunnelIdRoute
+  AppEdgesIndexRoute: typeof AppEdgesIndexRoute
   AppKubernetesIndexRoute: typeof AppKubernetesIndexRoute
   AppMachinesIndexRoute: typeof AppMachinesIndexRoute
   AppNetworksIndexRoute: typeof AppNetworksIndexRoute
@@ -898,12 +1013,14 @@ const AppRouteRouteChildren: AppRouteRouteChildren = {
   AppUsersRoute: AppUsersRoute,
   AppIndexRoute: AppIndexRoute,
   AppNetworksNetworkIdRouteRoute: AppNetworksNetworkIdRouteRouteWithChildren,
+  AppEdgesEdgeIdRoute: AppEdgesEdgeIdRoute,
   AppMachinesEndpointIdRoute: AppMachinesEndpointIdRoute,
   AppPostureComplianceRoute: AppPostureComplianceRoute,
   AppPostureIntegrationsRoute: AppPostureIntegrationsRoute,
   AppRelaysRelayIdRoute: AppRelaysRelayIdRoute,
   AppServesServeIdRoute: AppServesServeIdRoute,
   AppTunnelsTunnelIdRoute: AppTunnelsTunnelIdRoute,
+  AppEdgesIndexRoute: AppEdgesIndexRoute,
   AppKubernetesIndexRoute: AppKubernetesIndexRoute,
   AppMachinesIndexRoute: AppMachinesIndexRoute,
   AppNetworksIndexRoute: AppNetworksIndexRoute,
@@ -920,8 +1037,25 @@ const AppRouteRouteWithChildren = AppRouteRoute._addFileChildren(
   AppRouteRouteChildren,
 )
 
+interface CloudRouteRouteChildren {
+  CloudIndexRoute: typeof CloudIndexRoute
+  CloudRelaysRelayIdRoute: typeof CloudRelaysRelayIdRoute
+  CloudRelaysIndexRoute: typeof CloudRelaysIndexRoute
+}
+
+const CloudRouteRouteChildren: CloudRouteRouteChildren = {
+  CloudIndexRoute: CloudIndexRoute,
+  CloudRelaysRelayIdRoute: CloudRelaysRelayIdRoute,
+  CloudRelaysIndexRoute: CloudRelaysIndexRoute,
+}
+
+const CloudRouteRouteWithChildren = CloudRouteRoute._addFileChildren(
+  CloudRouteRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   AppRouteRoute: AppRouteRouteWithChildren,
+  CloudRouteRoute: CloudRouteRouteWithChildren,
   ConsentRoute: ConsentRoute,
   LoginRoute: LoginRoute,
   AcceptInvitationInvitationIdRoute: AcceptInvitationInvitationIdRoute,

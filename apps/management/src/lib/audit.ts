@@ -12,7 +12,8 @@ const CLASS = {
   POLICY_ACTIVITY: 7103,
   TUNNEL_ACTIVITY: 7104,
   SSH_SESSION: 7105,
-  RELAY_ACTIVITY: 7106,
+  EDGE_ACTIVITY: 7106,
+  RELAY_ACTIVITY: 7112,
   POSTURE_ACTIVITY: 7107,
   CERTIFICATE_ACTIVITY: 7108,
   FILE_TRANSFER: 7109,
@@ -59,6 +60,10 @@ function mapAction(action: string): {
     case "ssh":
       classUid = CLASS.SSH_SESSION;
       targetType = "ssh";
+      break;
+    case "edge":
+      classUid = CLASS.EDGE_ACTIVITY;
+      targetType = "edge";
       break;
     case "relay":
       classUid = CLASS.RELAY_ACTIVITY;

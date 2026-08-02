@@ -23,14 +23,14 @@ import { conflict, notFound, sessionPlugin } from "./middleware/session";
 
 function serializeTunnel(
   row: typeof schema.tunnels.$inferSelect,
-  extras?: { hostname?: string; relayName?: string },
+  extras?: { hostname?: string; edgeName?: string },
 ) {
   return {
     id: row.id,
     organizationId: row.organizationId,
     networkId: row.networkId,
     endpointId: row.endpointId,
-    relayId: row.relayId,
+    edgeId: row.edgeId,
     localPort: row.localPort,
     protocol: row.protocol as "https" | "tcp",
     subdomain: row.subdomain,
@@ -50,7 +50,7 @@ function serializeTunnel(
         ? ({ username: row.basicAuthUser, enabled: true } as const)
         : null,
     hostname: extras?.hostname,
-    relayName: extras?.relayName,
+    edgeName: extras?.edgeName,
   };
 }
 
@@ -176,14 +176,14 @@ export const tunnelsRoutes = new Elysia()
           tunnel: schema.tunnels,
           name: schema.devices.name,
           metadata: schema.devices.metadata,
-          relayName: schema.relays.name,
+          edgeName: schema.edges.name,
         })
         .from(schema.tunnels)
         .innerJoin(
           schema.devices,
           eq(schema.tunnels.endpointId, schema.devices.endpointId),
         )
-        .leftJoin(schema.relays, eq(schema.tunnels.relayId, schema.relays.id))
+        .leftJoin(schema.edges, eq(schema.tunnels.edgeId, schema.edges.id))
         .where(eq(schema.tunnels.networkId, params.networkId))
         .orderBy(desc(schema.tunnels.createdAt));
 
@@ -191,7 +191,7 @@ export const tunnelsRoutes = new Elysia()
         tunnels: rows.map((r) =>
           serializeTunnel(r.tunnel, {
             hostname: deviceLabel(r.name, r.metadata, r.tunnel.endpointId),
-            relayName: r.relayName ?? undefined,
+            edgeName: r.edgeName ?? undefined,
           }),
         ),
       };
@@ -315,40 +315,40 @@ export const tunnelsRoutes = new Elysia()
             );
           }
 
-          let relay = parsed.relayId
-            ? await db.query.relays.findFirst({
+          let edge = parsed.edgeId
+            ? await db.query.edges.findFirst({
                 where: and(
-                  eq(schema.relays.id, parsed.relayId),
-                  eq(schema.relays.organizationId, auth.organizationId),
-                  inArray(schema.relays.status, ["healthy", "pending"]),
+                  eq(schema.edges.id, parsed.edgeId),
+                  eq(schema.edges.organizationId, auth.organizationId),
+                  inArray(schema.edges.status, ["healthy", "pending"]),
                 ),
               })
-            : await db.query.relays.findFirst({
+            : await db.query.edges.findFirst({
                 where: and(
-                  eq(schema.relays.organizationId, auth.organizationId),
-                  eq(schema.relays.status, "healthy"),
+                  eq(schema.edges.organizationId, auth.organizationId),
+                  eq(schema.edges.status, "healthy"),
                 ),
-                orderBy: [desc(schema.relays.lastHeartbeatAt)],
+                orderBy: [desc(schema.edges.lastHeartbeatAt)],
               });
 
-          if (!relay && settings?.defaultRelayId) {
-            relay = await db.query.relays.findFirst({
+          if (!edge && settings?.defaultEdgeId) {
+            edge = await db.query.edges.findFirst({
               where: and(
-                eq(schema.relays.id, settings.defaultRelayId),
-                eq(schema.relays.organizationId, auth.organizationId),
-                inArray(schema.relays.status, ["healthy", "pending"]),
+                eq(schema.edges.id, settings.defaultEdgeId),
+                eq(schema.edges.organizationId, auth.organizationId),
+                inArray(schema.edges.status, ["healthy", "pending"]),
               ),
             });
           }
 
-          if (!relay) {
+          if (!edge) {
             return conflict(
-              "No healthy relay available. Register a relay before opening tunnels.",
+              "No healthy edge available. Register an edge before opening tunnels.",
             );
           }
-          if (!relay.publicKey) {
+          if (!edge.publicKey) {
             return conflict(
-              "Relay has not registered yet (missing public key). Register the relay before opening tunnels.",
+              "Edge has not registered yet (missing public key). Register the edge before opening tunnels.",
             );
           }
 
@@ -365,12 +365,12 @@ export const tunnelsRoutes = new Elysia()
           const orgSlug = auth.organizationId.slice(0, 8);
           const baseDomain =
             settings?.customTunnelDomain?.trim() ||
-            relay.domain ||
+            edge.domain ||
             `${orgSlug}.tunnet.pub`;
           const publicHostname = `${subdomain}.${baseDomain}`;
 
           const authToken = randomBytes(32).toString("base64url");
-          const relayAuthHash = await blake3(Buffer.from(authToken));
+          const edgeAuthHash = await blake3(Buffer.from(authToken));
           const ttlSeconds =
             parsed.ttlSeconds ?? settings?.defaultTtlSeconds ?? undefined;
           const expiresAt = ttlSeconds
@@ -395,13 +395,13 @@ export const tunnelsRoutes = new Elysia()
                   organizationId: auth.organizationId,
                   networkId: params.networkId,
                   endpointId: parsed.endpointId,
-                  relayId: relay.id,
+                  edgeId: edge.id,
                   localPort: parsed.localPort,
                   protocol: parsed.protocol,
                   subdomain,
                   publicHostname,
                   status: "connecting",
-                  relayAuthHash,
+                  edgeAuthHash,
                   expiresAt,
                   basicAuthUser,
                   basicAuthPasswordHash,
@@ -410,7 +410,7 @@ export const tunnelsRoutes = new Elysia()
 
               await tx.insert(schema.tunnelSecrets).values({
                 tunnelId: created?.id,
-                relayAuthToken: authToken,
+                edgeAuthToken: authToken,
               });
 
               await bumpNetworkAndNotify(
@@ -481,7 +481,7 @@ export const tunnelsRoutes = new Elysia()
             await pushOpenTunnel({
               endpointId: parsed.endpointId,
               tunnelId: tunnel.id,
-              relayAddr: relay.publicKey,
+              edgeAddr: edge.publicKey,
               subdomain,
               publicHostname,
               localPort: parsed.localPort,
@@ -509,9 +509,9 @@ export const tunnelsRoutes = new Elysia()
                   device.metadata,
                   device.endpointId,
                 ),
-                relayName: relay.name,
+                edgeName: edge.name,
               }),
-              relayAuthToken: authToken,
+              edgeAuthToken: authToken,
             };
           }
 
@@ -522,9 +522,9 @@ export const tunnelsRoutes = new Elysia()
                 device.metadata,
                 device.endpointId,
               ),
-              relayName: relay.name,
+              edgeName: edge.name,
             }),
-            relayAuthToken: authToken,
+            edgeAuthToken: authToken,
           };
         },
       )
@@ -540,35 +540,35 @@ export const tunnelsRoutes = new Elysia()
           );
           if (!existing) return notFound("Tunnel not found");
 
-          let relayDomain: string | null = null;
-          if (parsed.relayId !== undefined && parsed.relayId !== null) {
-            const relay = await db.query.relays.findFirst({
+          let edgeDomain: string | null = null;
+          if (parsed.edgeId !== undefined && parsed.edgeId !== null) {
+            const edge = await db.query.edges.findFirst({
               where: and(
-                eq(schema.relays.id, parsed.relayId),
-                eq(schema.relays.organizationId, auth.organizationId),
+                eq(schema.edges.id, parsed.edgeId),
+                eq(schema.edges.organizationId, auth.organizationId),
               ),
             });
-            if (!relay) return notFound("Relay not found");
-            relayDomain = relay.domain;
+            if (!edge) return notFound("Edge not found");
+            edgeDomain = edge.domain;
           }
 
           const subdomain = parsed.subdomain ?? existing.subdomain;
           let publicHostname = existing.publicHostname;
-          if (parsed.subdomain || parsed.relayId !== undefined) {
-            const relayId =
-              parsed.relayId !== undefined ? parsed.relayId : existing.relayId;
-            if (relayId && !relayDomain) {
-              const relay = await db.query.relays.findFirst({
-                where: eq(schema.relays.id, relayId),
+          if (parsed.subdomain || parsed.edgeId !== undefined) {
+            const edgeId =
+              parsed.edgeId !== undefined ? parsed.edgeId : existing.edgeId;
+            if (edgeId && !edgeDomain) {
+              const edge = await db.query.edges.findFirst({
+                where: eq(schema.edges.id, edgeId),
               });
-              relayDomain = relay?.domain ?? null;
+              edgeDomain = edge?.domain ?? null;
             }
             const fromExisting = existing.publicHostname
               .split(".")
               .slice(1)
               .join(".");
             const base =
-              relayDomain ??
+              edgeDomain ??
               (fromExisting || `${auth.organizationId.slice(0, 8)}.tunnet.pub`);
             publicHostname = `${subdomain}.${base}`;
           }
@@ -601,11 +601,11 @@ export const tunnelsRoutes = new Elysia()
                   ? { localPort: parsed.localPort }
                   : {}),
                 ...(parsed.subdomain !== undefined ||
-                parsed.relayId !== undefined
+                parsed.edgeId !== undefined
                   ? { subdomain, publicHostname }
                   : {}),
-                ...(parsed.relayId !== undefined
-                  ? { relayId: parsed.relayId }
+                ...(parsed.edgeId !== undefined
+                  ? { edgeId: parsed.edgeId }
                   : {}),
                 ...(expiresAt !== undefined ? { expiresAt } : {}),
                 ...(parsed.status !== undefined

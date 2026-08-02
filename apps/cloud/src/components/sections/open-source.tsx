@@ -18,7 +18,7 @@ const STATS = [
 
 const LICENSES = [
   { name: "MPL-2.0", scope: "runtime · agent · SDKs" },
-  { name: "AGPL-3.0", scope: "control plane · dashboard · relay" },
+  { name: "AGPL-3.0", scope: "control plane · dashboard · edge" },
   { name: "Apache-2.0", scope: "protocol · tooling · scripts" },
 ];
 
@@ -48,7 +48,7 @@ export function OpenSourceSection(): ReactNode {
                   <span className="l1-copper-text">Every line.</span>
                 </h2>
                 <p className="l1-lead mt-5 max-w-[54ch]">
-                  Agent, control plane, management API, dashboard, relay - read
+                  Agent, control plane, management API, dashboard, edge - read
                   every line, audit every path, self-host the whole thing.
                   Commercial licenses exist for AGPL components when AGPL
                   doesn't fit; the freedom stays either way.

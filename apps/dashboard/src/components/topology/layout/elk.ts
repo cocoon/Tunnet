@@ -8,7 +8,7 @@ const NODE_SIZE: Record<string, { width: number; height: number }> = {
   peer: { width: 180, height: 72 },
   gateway: { width: 180, height: 72 },
   k8s: { width: 180, height: 72 },
-  relay: { width: 140, height: 56 },
+  edge: { width: 140, height: 56 },
   subnet: { width: 140, height: 56 },
   hostname: { width: 140, height: 56 },
   exit: { width: 140, height: 56 },

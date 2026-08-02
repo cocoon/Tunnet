@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const organizationTunnelSettingsSchema = z.object({
   organizationId: z.string(),
-  defaultRelayId: z.string().uuid().nullable(),
+  defaultEdgeId: z.string().uuid().nullable(),
   defaultTtlSeconds: z.number().int().positive().nullable(),
   maxTunnelsPerMachine: z.number().int().positive(),
   peerDnsSuffix: z.string().nullable(),
@@ -12,7 +12,7 @@ export const organizationTunnelSettingsSchema = z.object({
 
 export const patchOrganizationTunnelSettingsBody = z
   .object({
-    defaultRelayId: z.string().uuid().nullable().optional(),
+    defaultEdgeId: z.string().uuid().nullable().optional(),
     defaultTtlSeconds: z.number().int().positive().nullable().optional(),
     maxTunnelsPerMachine: z.number().int().min(1).max(1000).optional(),
     peerDnsSuffix: z.string().min(1).max(253).nullable().optional(),

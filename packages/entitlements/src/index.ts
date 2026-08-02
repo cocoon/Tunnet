@@ -5,6 +5,7 @@ export type PaidTier = Exclude<LicenseTier, "community">;
 export type Feature =
   | "multiOrganization"
   | "cloudLanding"
+  | "cloudInfrastructure"
   | "openSignUp"
   | "clickhouseAudit"
   | "auditEnterpriseStreams"
@@ -14,6 +15,7 @@ export type Entitlements = {
   tier: LicenseTier;
   multiOrganization: boolean;
   cloudLanding: boolean;
+  cloudInfrastructure: boolean;
   openSignUp: boolean;
   clickhouseAudit: boolean;
   auditEnterpriseStreams: boolean;
@@ -26,6 +28,7 @@ const FEATURES = {
     tier: "community",
     multiOrganization: false,
     cloudLanding: false,
+    cloudInfrastructure: false,
     openSignUp: false,
     clickhouseAudit: false,
     auditEnterpriseStreams: false,
@@ -35,6 +38,7 @@ const FEATURES = {
     tier: "cloud",
     multiOrganization: true,
     cloudLanding: true,
+    cloudInfrastructure: true,
     openSignUp: true,
     clickhouseAudit: true,
     auditEnterpriseStreams: true,
@@ -44,6 +48,7 @@ const FEATURES = {
     tier: "enterprise",
     multiOrganization: false,
     cloudLanding: false,
+    cloudInfrastructure: false,
     openSignUp: false,
     clickhouseAudit: true,
     auditEnterpriseStreams: true,

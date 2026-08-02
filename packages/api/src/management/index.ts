@@ -5,6 +5,8 @@ export * from "./common";
 export * from "./device-profiles";
 export * from "./devices";
 export * from "./duration";
+export * from "./edge-health";
+export * from "./edges";
 export * from "./enrollment-tokens";
 export * from "./entitlements";
 export * from "./hostname-routes";

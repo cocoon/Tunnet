@@ -16,7 +16,8 @@ RUN apt-get update \
 
 COPY --from=builder /src/target/release/tunnet-relay /usr/local/bin/tunnet-relay
 
-EXPOSE 443 80
+# 80/443 production HTTP(S), 3340 iroh-relay --dev, 9090 metrics, 7842 QAD QUIC
+EXPOSE 80 443 3340 9090 7842
 
 ENTRYPOINT ["tunnet-relay"]
 CMD ["run"]

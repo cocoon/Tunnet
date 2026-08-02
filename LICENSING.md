@@ -78,6 +78,7 @@ The following control-plane, hosted-management, managed-edge, persistence, and
 server-internal components are licensed under AGPL-3.0-only:
 
 - `crates/tunnet-control`
+- `crates/tunnet-edge`
 - `crates/tunnet-relay`
 - `crates/tunnet-audit`
 - `apps/management`

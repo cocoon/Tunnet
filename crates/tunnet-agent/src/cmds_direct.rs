@@ -354,6 +354,8 @@ pub async fn run_join(args: JoinArgs, state_dir: Option<&str>) -> anyhow::Result
     let connectivity = ConnectivityOptions {
         profile: ConnectivityProfile::ServerlessDht,
         enable_mdns: false,
+        custom_relays: Vec::new(),
+        relay_fallback: tunnet_common::ConnectivityRelayFallback::N0,
     };
     let endpoint = apply_connectivity(
         endpoint_builder(&connectivity)

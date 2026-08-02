@@ -9,7 +9,7 @@ const KIND_VALUES = [
   "subnet",
   "hostname",
   "exit",
-  "relay",
+  "edge",
 ] as const;
 
 export type MeshKindFilter = (typeof KIND_VALUES)[number];

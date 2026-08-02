@@ -18,11 +18,11 @@ const FAQ = [
   },
   {
     q: "What is a resource?",
-    a: "A machine enrolled in your mesh - a laptop, server, CI runner or relay. Direct mode has no cap.",
+    a: "A machine enrolled in your mesh - a laptop, server, CI runner or edge. Direct mode has no cap.",
   },
   {
     q: "What is managed traffic?",
-    a: "Data that flows through the relay edge. Direct peer-to-peer paths are always free.",
+    a: "Data that flows through the public edge. Direct peer-to-peer paths are always free.",
   },
   {
     q: "What happens if I exceed my plan?",

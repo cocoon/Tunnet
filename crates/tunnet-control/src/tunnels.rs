@@ -1,4 +1,4 @@
-//! Agent-facing tunnel create / lifecycle + relay register / heartbeat.
+//! Agent-facing tunnel create / lifecycle + edge register / heartbeat.
 
 use axum::Json;
 use axum::body::Body;
@@ -32,7 +32,7 @@ type ActiveTunnelRow = (
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RelayRegisterBody {
+pub struct EdgeRegisterBody {
     pub endpoint_id: String,
     pub public_ip: Option<String>,
     #[serde(default)]
@@ -41,19 +41,19 @@ pub struct RelayRegisterBody {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RelayRegisterResponse {
-    pub relay_id: String,
+pub struct EdgeRegisterResponse {
+    pub edge_id: String,
     pub name: String,
     pub domain: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RelayHeartbeatBody {
+pub struct EdgeHeartbeatBody {
     pub endpoint_id: String,
     #[serde(default)]
     pub active_tunnels: u32,
-    /// ISO-8601 cert notAfter from the relay TLS cert, when known.
+    /// ISO-8601 cert notAfter from the edge TLS cert, when known.
     #[serde(default)]
     pub cert_valid_until: Option<String>,
 }
@@ -66,7 +66,7 @@ fn bearer_token(req: &Request<Body>) -> Option<String> {
 }
 
 #[allow(clippy::type_complexity)]
-pub async fn relay_register_handler(
+pub async fn edge_register_handler(
     State(state): State<SharedState>,
     req: Request<Body>,
 ) -> Response {
@@ -78,7 +78,7 @@ pub async fn relay_register_handler(
         Ok(b) => b,
         Err(_) => return err(StatusCode::BAD_REQUEST, "invalid body"),
     };
-    let body: RelayRegisterBody = match serde_json::from_slice(&body_bytes) {
+    let body: EdgeRegisterBody = match serde_json::from_slice(&body_bytes) {
         Ok(v) => v,
         Err(_) => return err(StatusCode::BAD_REQUEST, "invalid json"),
     };
@@ -94,9 +94,9 @@ pub async fn relay_register_handler(
 
     let row: Option<(Uuid, String, String, Option<chrono::DateTime<chrono::Utc>>)> =
         match sqlx::query_as(
-            "SELECT t.relay_id, r.name, r.domain, t.used_at \
-             FROM relay_registration_tokens t \
-             JOIN relays r ON r.id = t.relay_id \
+            "SELECT t.edge_id, e.name, e.domain, t.used_at \
+             FROM edge_registration_tokens t \
+             JOIN edges e ON e.id = t.edge_id \
              WHERE t.token_hash = $1 AND t.expires_at > now()",
         )
         .bind(&token_hash)
@@ -107,16 +107,16 @@ pub async fn relay_register_handler(
             Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
         };
 
-    let Some((relay_id, name, domain, used_at)) = row else {
-        return err(StatusCode::UNAUTHORIZED, "invalid or expired relay token");
+    let Some((edge_id, name, domain, used_at)) = row else {
+        return err(StatusCode::UNAUTHORIZED, "invalid or expired edge token");
     };
 
     // First use claims the token; reconnects with the same token are allowed
     // when the endpoint id matches the stored public_key.
     if used_at.is_some() {
         let existing: Option<String> =
-            match sqlx::query_scalar("SELECT public_key FROM relays WHERE id = $1")
-                .bind(relay_id)
+            match sqlx::query_scalar("SELECT public_key FROM edges WHERE id = $1")
+                .bind(edge_id)
                 .fetch_optional(&mut *tx)
                 .await
             {
@@ -124,17 +124,17 @@ pub async fn relay_register_handler(
                 Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
             };
         if existing.as_deref() != Some(body.endpoint_id.as_str()) {
-            return err(StatusCode::UNAUTHORIZED, "relay token already used");
+            return err(StatusCode::UNAUTHORIZED, "edge token already used");
         }
     }
 
     if let Err(e) = sqlx::query(
-        "UPDATE relays SET public_key = $2, status = 'healthy', \
+        "UPDATE edges SET public_key = $2, status = 'healthy', \
          last_heartbeat_at = now(), updated_at = now(), \
          public_ip = COALESCE($3::inet, public_ip) \
          WHERE id = $1",
     )
-    .bind(relay_id)
+    .bind(edge_id)
     .bind(&body.endpoint_id)
     .bind(body.public_ip.as_deref())
     .execute(&mut *tx)
@@ -144,12 +144,11 @@ pub async fn relay_register_handler(
     }
 
     if used_at.is_none()
-        && let Err(e) = sqlx::query(
-            "UPDATE relay_registration_tokens SET used_at = now() WHERE token_hash = $1",
-        )
-        .bind(&token_hash)
-        .execute(&mut *tx)
-        .await
+        && let Err(e) =
+            sqlx::query("UPDATE edge_registration_tokens SET used_at = now() WHERE token_hash = $1")
+                .bind(&token_hash)
+                .execute(&mut *tx)
+                .await
     {
         return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}"));
     }
@@ -161,8 +160,8 @@ pub async fn relay_register_handler(
     let _ = body.agent_version;
     (
         StatusCode::OK,
-        Json(RelayRegisterResponse {
-            relay_id: relay_id.to_string(),
+        Json(EdgeRegisterResponse {
+            edge_id: edge_id.to_string(),
             name,
             domain,
         }),
@@ -170,7 +169,7 @@ pub async fn relay_register_handler(
         .into_response()
 }
 
-pub async fn relay_heartbeat_handler(
+pub async fn edge_heartbeat_handler(
     State(state): State<SharedState>,
     req: Request<Body>,
 ) -> Response {
@@ -182,17 +181,17 @@ pub async fn relay_heartbeat_handler(
         Ok(b) => b,
         Err(_) => return err(StatusCode::BAD_REQUEST, "invalid body"),
     };
-    let body: RelayHeartbeatBody = match serde_json::from_slice(&body_bytes) {
+    let body: EdgeHeartbeatBody = match serde_json::from_slice(&body_bytes) {
         Ok(v) => v,
         Err(_) => return err(StatusCode::BAD_REQUEST, "invalid json"),
     };
 
     let token_hash = hash_token(&token);
-    let relay_id: Option<Uuid> = match sqlx::query_scalar(
-        "SELECT r.id FROM relays r \
-         JOIN relay_registration_tokens t ON t.relay_id = r.id \
-         WHERE t.token_hash = $1 AND r.public_key = $2 \
-           AND r.status <> 'disabled'",
+    let edge_id: Option<Uuid> = match sqlx::query_scalar(
+        "SELECT e.id FROM edges e \
+         JOIN edge_registration_tokens t ON t.edge_id = e.id \
+         WHERE t.token_hash = $1 AND e.public_key = $2 \
+           AND e.status <> 'disabled'",
     )
     .bind(&token_hash)
     .bind(&body.endpoint_id)
@@ -203,12 +202,12 @@ pub async fn relay_heartbeat_handler(
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
     };
 
-    let Some(relay_id) = relay_id else {
-        return err(StatusCode::UNAUTHORIZED, "unknown relay");
+    let Some(edge_id) = edge_id else {
+        return err(StatusCode::UNAUTHORIZED, "unknown edge");
     };
 
     if let Err(e) = sqlx::query(
-        "UPDATE relays SET last_heartbeat_at = now(), active_tunnels = $2, \
+        "UPDATE edges SET last_heartbeat_at = now(), active_tunnels = $2, \
          status = 'healthy', updated_at = now(), \
          metadata = CASE \
            WHEN $3::text IS NOT NULL THEN \
@@ -217,7 +216,7 @@ pub async fn relay_heartbeat_handler(
          END \
          WHERE id = $1",
     )
-    .bind(relay_id)
+    .bind(edge_id)
     .bind(body.active_tunnels as i32)
     .bind(body.cert_valid_until.as_deref())
     .execute(&state.pool)
@@ -227,34 +226,33 @@ pub async fn relay_heartbeat_handler(
     }
 
     if let Err(e) =
-        sqlx::query("INSERT INTO relay_heartbeats (relay_id, active_tunnels) VALUES ($1, $2)")
-            .bind(relay_id)
+        sqlx::query("INSERT INTO edge_heartbeats (edge_id, active_tunnels) VALUES ($1, $2)")
+            .bind(edge_id)
             .bind(body.active_tunnels as i32)
             .execute(&state.pool)
             .await
     {
-        tracing::warn!(?e, %relay_id, "failed to record relay heartbeat history");
+        tracing::warn!(?e, %edge_id, "failed to record edge heartbeat history");
     }
 
     if let Ok(Some(org_id)) =
-        sqlx::query_scalar::<_, String>("SELECT organization_id FROM relays WHERE id = $1")
-            .bind(relay_id)
+        sqlx::query_scalar::<_, String>("SELECT organization_id FROM edges WHERE id = $1")
+            .bind(edge_id)
             .fetch_optional(&state.pool)
             .await
     {
-        let _ =
-            crate::entity_notify::emit_relay_changed(&state.pool, &org_id, &relay_id.to_string())
-                .await;
+        let _ = crate::entity_notify::emit_edge_changed(&state.pool, &org_id, &edge_id.to_string())
+            .await;
     }
 
     let tunnels: Vec<ActiveTunnelRow> = match sqlx::query_as(
-        "SELECT t.id, t.subdomain, s.relay_auth_token, t.local_port, t.protocol, \
+        "SELECT t.id, t.subdomain, s.edge_auth_token, t.local_port, t.protocol, \
                 t.basic_auth_user, t.basic_auth_password_hash, t.network_id \
          FROM tunnels t \
          JOIN tunnel_secrets s ON s.tunnel_id = t.id \
-         WHERE t.relay_id = $1 AND t.status IN ('connecting', 'active')",
+         WHERE t.edge_id = $1 AND t.status IN ('connecting', 'active')",
     )
-    .bind(relay_id)
+    .bind(edge_id)
     .fetch_all(&state.pool)
     .await
     {
@@ -367,8 +365,8 @@ pub struct CreateTunnelBody {
     #[serde(default = "default_https")]
     pub protocol: String,
     pub subdomain: Option<String>,
-    /// Relay UUID, name, or omit for auto.
-    pub relay: Option<String>,
+    /// Edge UUID, name, or omit for auto.
+    pub edge: Option<String>,
 }
 
 fn default_https() -> String {
@@ -383,8 +381,8 @@ pub struct CreateTunnelResponse {
     pub public_hostname: String,
     pub protocol: String,
     pub local_port: u16,
-    pub relay_endpoint_id: String,
-    pub relay_domain: String,
+    pub edge_endpoint_id: String,
+    pub edge_domain: String,
     pub auth_token: String,
     #[serde(default)]
     pub redirect_rules: Vec<tunnet_common::RedirectRule>,
@@ -445,11 +443,11 @@ pub async fn create_tunnel_handler(
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
     };
 
-    let relay_row: Option<(Uuid, String, Option<String>)> = match &body.relay {
+    let edge_row: Option<(Uuid, String, Option<String>)> = match &body.edge {
         Some(spec) if Uuid::parse_str(spec).is_ok() => {
             let id = Uuid::parse_str(spec).unwrap();
             match sqlx::query_as(
-                "SELECT id, domain, public_key FROM relays \
+                "SELECT id, domain, public_key FROM edges \
                  WHERE id = $1 AND organization_id = $2 \
                    AND status IN ('healthy', 'pending')",
             )
@@ -463,7 +461,7 @@ pub async fn create_tunnel_handler(
             }
         }
         Some(name) => match sqlx::query_as(
-            "SELECT id, domain, public_key FROM relays \
+            "SELECT id, domain, public_key FROM edges \
              WHERE organization_id = $1 AND name = $2 \
                AND status IN ('healthy', 'pending')",
         )
@@ -476,7 +474,7 @@ pub async fn create_tunnel_handler(
             Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
         },
         None => match sqlx::query_as(
-            "SELECT id, domain, public_key FROM relays \
+            "SELECT id, domain, public_key FROM edges \
              WHERE organization_id = $1 AND status = 'healthy' \
              ORDER BY last_heartbeat_at DESC NULLS LAST LIMIT 1",
         )
@@ -489,16 +487,16 @@ pub async fn create_tunnel_handler(
         },
     };
 
-    let Some((relay_id, relay_domain, relay_endpoint)) = relay_row else {
+    let Some((edge_id, edge_domain, edge_endpoint)) = edge_row else {
         return err(
             StatusCode::CONFLICT,
-            "no healthy relay - register one with tunnet-relay register",
+            "no healthy edge - register one with tunnet-edge register",
         );
     };
-    let Some(relay_endpoint_id) = relay_endpoint.filter(|s| !s.is_empty()) else {
+    let Some(edge_endpoint_id) = edge_endpoint.filter(|s| !s.is_empty()) else {
         return err(
             StatusCode::CONFLICT,
-            "relay has not registered yet (missing public key)",
+            "edge has not registered yet (missing public key)",
         );
     };
 
@@ -558,7 +556,7 @@ pub async fn create_tunnel_handler(
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
-        .unwrap_or(relay_domain);
+        .unwrap_or(edge_domain);
     let public_hostname = format!("{subdomain}.{base_domain}");
 
     let mut token_bytes = [0u8; 32];
@@ -568,15 +566,15 @@ pub async fn create_tunnel_handler(
 
     let tunnel_id: Uuid = match sqlx::query_scalar(
         "INSERT INTO tunnels \
-           (organization_id, network_id, endpoint_id, relay_id, local_port, protocol, \
-            subdomain, public_hostname, status, relay_auth_hash) \
+           (organization_id, network_id, endpoint_id, edge_id, local_port, protocol, \
+            subdomain, public_hostname, status, edge_auth_hash) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'connecting', $9) \
          RETURNING id",
     )
     .bind(&auth.organization_id)
     .bind(network_id)
     .bind(&auth.endpoint_id)
-    .bind(relay_id)
+    .bind(edge_id)
     .bind(body.local_port as i32)
     .bind(&body.protocol)
     .bind(&subdomain)
@@ -596,7 +594,7 @@ pub async fn create_tunnel_handler(
     };
 
     if let Err(e) =
-        sqlx::query("INSERT INTO tunnel_secrets (tunnel_id, relay_auth_token) VALUES ($1, $2)")
+        sqlx::query("INSERT INTO tunnel_secrets (tunnel_id, edge_auth_token) VALUES ($1, $2)")
             .bind(tunnel_id)
             .bind(&auth_token)
             .execute(&state.pool)
@@ -621,8 +619,8 @@ pub async fn create_tunnel_handler(
             public_hostname,
             protocol: body.protocol,
             local_port: body.local_port,
-            relay_endpoint_id,
-            relay_domain: base_domain,
+            edge_endpoint_id,
+            edge_domain: base_domain,
             auth_token,
             redirect_rules,
         }),
@@ -836,11 +834,11 @@ async fn tunnel_status_update_inner(
     }
 }
 
-// ---------- Relay traffic ingest ----------
+// ---------- Edge traffic ingest ----------
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RelayTrafficLogLine {
+pub struct EdgeTrafficLogLine {
     pub tunnel_id: String,
     pub method: String,
     pub path: String,
@@ -856,11 +854,11 @@ pub struct RelayTrafficLogLine {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RelayTrafficIngestBody {
-    pub logs: Vec<RelayTrafficLogLine>,
+pub struct EdgeTrafficIngestBody {
+    pub logs: Vec<EdgeTrafficLogLine>,
 }
 
-pub async fn relay_traffic_handler(
+pub async fn edge_traffic_handler(
     State(state): State<SharedState>,
     req: Request<Body>,
 ) -> Response {
@@ -872,7 +870,7 @@ pub async fn relay_traffic_handler(
         Ok(b) => b,
         Err(_) => return err(StatusCode::BAD_REQUEST, "invalid body"),
     };
-    let body: RelayTrafficIngestBody = match serde_json::from_slice(&body_bytes) {
+    let body: EdgeTrafficIngestBody = match serde_json::from_slice(&body_bytes) {
         Ok(v) => v,
         Err(_) => return err(StatusCode::BAD_REQUEST, "invalid json"),
     };
@@ -884,10 +882,10 @@ pub async fn relay_traffic_handler(
     }
 
     let token_hash = hash_token(&token);
-    let relay_row: Option<(Uuid, String)> = match sqlx::query_as(
-        "SELECT r.id, r.organization_id FROM relays r \
-         JOIN relay_registration_tokens t ON t.relay_id = r.id \
-         WHERE t.token_hash = $1 AND r.status <> 'disabled' \
+    let edge_row: Option<(Uuid, String)> = match sqlx::query_as(
+        "SELECT e.id, e.organization_id FROM edges e \
+         JOIN edge_registration_tokens t ON t.edge_id = e.id \
+         WHERE t.token_hash = $1 AND e.status <> 'disabled' \
          LIMIT 1",
     )
     .bind(&token_hash)
@@ -897,8 +895,8 @@ pub async fn relay_traffic_handler(
         Ok(r) => r,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
     };
-    let Some((relay_id, organization_id)) = relay_row else {
-        return err(StatusCode::UNAUTHORIZED, "unknown relay");
+    let Some((edge_id, organization_id)) = edge_row else {
+        return err(StatusCode::UNAUTHORIZED, "unknown edge");
     };
 
     let mut inserted = 0u32;
@@ -910,11 +908,11 @@ pub async fn relay_traffic_handler(
         let ok: Option<(bool,)> = match sqlx::query_as(
             "SELECT true FROM tunnels \
              WHERE id = $1 AND organization_id = $2 \
-               AND (relay_id = $3 OR relay_id IS NULL)",
+               AND (edge_id = $3 OR edge_id IS NULL)",
         )
         .bind(tunnel_id)
         .bind(&organization_id)
-        .bind(relay_id)
+        .bind(edge_id)
         .fetch_optional(&state.pool)
         .await
         {

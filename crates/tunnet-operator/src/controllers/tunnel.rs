@@ -90,8 +90,8 @@ async fn apply(
                     ..Default::default()
                 },
                 EnvVar {
-                    name: "TUNNET_TUNNEL_RELAY_URL".into(),
-                    value: obj.spec.tunnel.relay_url.clone(),
+                    name: "TUNNET_TUNNEL_EDGE_URL".into(),
+                    value: obj.spec.tunnel.edge_url.clone(),
                     ..Default::default()
                 },
                 EnvVar {
@@ -153,7 +153,7 @@ fn public_url_from_spec(obj: &TunnetTunnel) -> String {
         let relay = obj
             .spec
             .tunnel
-            .relay_url
+            .edge_url
             .as_deref()
             .unwrap_or("https://relay.tunnet.io");
         let host = relay

@@ -27,7 +27,7 @@ features:
     link: /products/serve/
   - icon: 🌐
     title: Tunnel
-    details: Give any local port a public HTTPS URL through a relay - webhooks, demos, or permanent endpoints without touching firewall rules.
+    details: Give any local port a public HTTPS URL through an edge - webhooks, demos, or permanent endpoints without touching firewall rules.
     link: /products/tunnel/
   - icon: 📁
     title: Send
@@ -42,9 +42,9 @@ features:
     details: HCL, JSON, or YAML in Git. Offline validate and simulate, semantic PR diffs, Terraform, drift detection, and one-click rollback - same policy the dashboard edits.
     link: /guide/policy-as-code
   - icon: 🏗️
-    title: Self-Hosted Relay
-    details: Run your own edge relay for public tunnels. ACME support, bring your own certs, full control over your tunnel infrastructure.
-    link: /products/relay/
+    title: Self-Hosted Edge
+    details: Run your own public tunnel edge. ACME support, bring your own certs, full control over your tunnel infrastructure.
+    link: /products/edge/
 ---
 
 <InstallPicker />

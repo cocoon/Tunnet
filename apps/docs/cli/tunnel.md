@@ -1,6 +1,6 @@
 # tunnet tunnel
 
-Expose a local port to the public internet via a relay.
+Expose a local port to the public internet via an edge.
 
 ## Usage
 
@@ -23,7 +23,7 @@ tunnet tunnel off <port>
 ```bash
 # Create a public tunnel
 $ tunnet tunnel 3000
-Tunnel active: https://abc123.relay.example.com → localhost:3000
+Tunnel active: https://abc123.edge.example.com → localhost:3000
 
 # Check status
 tunnet tunnel status

@@ -39,11 +39,11 @@ import { PageHeader } from "@/components/app/page-header";
 import { useCan } from "@/hooks/use-permission";
 import { authClient } from "@/lib/auth-client";
 import {
+  useEdges,
   useInternalCa,
   useInternalCaMutations,
   useOrgSettings,
   useOrgSettingsMutations,
-  useRelays,
   useSsoSettings,
   useSsoSettingsMutations,
   useTunnelSettings,
@@ -243,13 +243,13 @@ function OrganizationSettingsPage() {
   const { data: orgSettings, isPending: orgSettingsPending } =
     useOrgSettings(orgId);
   const { data: ssoProvider, isPending: ssoPending } = useSsoSettings(orgId);
-  const { data: relays } = useRelays(orgId);
+  const { data: edges } = useEdges(orgId);
   const caMutations = useInternalCaMutations(orgId);
   const settingsMutations = useTunnelSettingsMutations(orgId);
   const orgSettingsMutations = useOrgSettingsMutations(orgId);
   const ssoMutations = useSsoSettingsMutations(orgId);
 
-  const [defaultRelayId, setDefaultRelayId] = useState("auto");
+  const [defaultEdgeId, setDefaultEdgeId] = useState("auto");
   const [defaultTtl, setDefaultTtl] = useState("");
   const [maxTunnels, setMaxTunnels] = useState("10");
   const [customDomain, setCustomDomain] = useState("");
@@ -266,7 +266,9 @@ function OrganizationSettingsPage() {
   const [agentAutoUpdateEnabled, setAgentAutoUpdateEnabled] = useState(false);
   const [agentAutoUpdateIntervalHours, setAgentAutoUpdateIntervalHours] =
     useState("6");
-  const [agentPreferOrgRelays, setAgentPreferOrgRelays] = useState(false);
+  const [agentRelayPolicy, setAgentRelayPolicy] = useState<
+    "inherit" | "augment" | "exclusive"
+  >("inherit");
   const [agentExitAllowAdvertise, setAgentExitAllowAdvertise] = useState(false);
   const [agentExitAllowUse, setAgentExitAllowUse] = useState(true);
   const [agentPostureIntervalSecs, setAgentPostureIntervalSecs] =
@@ -295,7 +297,7 @@ function OrganizationSettingsPage() {
 
   useEffect(() => {
     if (!tunnelSettings) return;
-    setDefaultRelayId(tunnelSettings.defaultRelayId ?? "auto");
+    setDefaultEdgeId(tunnelSettings.defaultEdgeId ?? "auto");
     setDefaultTtl(
       tunnelSettings.defaultTtlSeconds
         ? String(tunnelSettings.defaultTtlSeconds)
@@ -343,7 +345,7 @@ function OrganizationSettingsPage() {
     setAgentAutoUpdateIntervalHours(
       String(policy.autoUpdate?.checkIntervalHours ?? 6),
     );
-    setAgentPreferOrgRelays(policy.relay?.preferOrgRelays ?? false);
+    setAgentRelayPolicy(policy.relay?.policy ?? "inherit");
     setAgentExitAllowAdvertise(policy.exitNodes?.allowAdvertise ?? false);
     setAgentExitAllowUse(policy.exitNodes?.allowUse ?? true);
     setAgentPostureIntervalSecs(String(policy.posture?.intervalSecs ?? 300));
@@ -415,7 +417,7 @@ function OrganizationSettingsPage() {
     e.preventDefault();
     try {
       await settingsMutations.update.mutateAsync({
-        defaultRelayId: defaultRelayId === "auto" ? null : defaultRelayId,
+        defaultEdgeId: defaultEdgeId === "auto" ? null : defaultEdgeId,
         defaultTtlSeconds: defaultTtl.trim() ? Number(defaultTtl) : null,
         maxTunnelsPerMachine: Number(maxTunnels) || 10,
         customTunnelDomain: customDomain.trim() || null,
@@ -486,7 +488,7 @@ function OrganizationSettingsPage() {
             enabled: agentAutoUpdateEnabled,
             checkIntervalHours: updateHours,
           },
-          relay: { preferOrgRelays: agentPreferOrgRelays },
+          relay: { policy: agentRelayPolicy },
           exitNodes: {
             allowAdvertise: agentExitAllowAdvertise,
             allowUse: agentExitAllowUse,
@@ -848,14 +850,40 @@ function OrganizationSettingsPage() {
                     />
                   </FieldBlock>
 
-                  <ToggleRow
-                    id="agent-prefer-org-relays"
-                    label="Prefer org relays"
-                    description="Route tunnel traffic through organization relays when available."
-                    checked={agentPreferOrgRelays}
-                    onCheckedChange={setAgentPreferOrgRelays}
-                    disabled={!canUpdate}
-                  />
+                  <FieldBlock
+                    label="Connectivity relay policy"
+                    htmlFor="agent-relay-policy"
+                    hint="How agents use deployment Cloud relays vs organization-owned connectivity relays."
+                  >
+                    <Select
+                      value={agentRelayPolicy}
+                      onValueChange={(v) =>
+                        setAgentRelayPolicy(
+                          (v as "inherit" | "augment" | "exclusive") ??
+                            "inherit",
+                        )
+                      }
+                      disabled={!canUpdate}
+                    >
+                      <SelectTrigger
+                        id="agent-relay-policy"
+                        className="max-w-xs"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="inherit">
+                          Inherit (Cloud relays only)
+                        </SelectItem>
+                        <SelectItem value="augment">
+                          Augment (org first, then Cloud)
+                        </SelectItem>
+                        <SelectItem value="exclusive">
+                          Exclusive (org relays only)
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </FieldBlock>
 
                   <div className="space-y-2.5">
                     <Label>Exit nodes</Label>
@@ -909,7 +937,7 @@ function OrganizationSettingsPage() {
                   <span className="font-mono text-foreground/80">
                     *.your-domain
                   </span>{" "}
-                  at the relay IP. Provide TLS via{" "}
+                  at the edge IP. Provide TLS via{" "}
                   <span className="font-mono text-foreground/80">
                     --cert/--key
                   </span>{" "}
@@ -943,11 +971,11 @@ function OrganizationSettingsPage() {
                   className="space-y-5"
                   onSubmit={(e) => void saveTunnelSettings(e)}
                 >
-                  <FieldBlock label="Default relay">
+                  <FieldBlock label="Default edge">
                     <Select
-                      value={defaultRelayId}
+                      value={defaultEdgeId}
                       onValueChange={(value) =>
-                        setDefaultRelayId(value ?? "auto")
+                        setDefaultEdgeId(value ?? "auto")
                       }
                       disabled={!canUpdate}
                     >
@@ -958,9 +986,9 @@ function OrganizationSettingsPage() {
                         <SelectItem value="auto">
                           Auto (closest healthy)
                         </SelectItem>
-                        {(relays ?? []).map((relay) => (
-                          <SelectItem key={relay.id} value={relay.id}>
-                            {relay.name}
+                        {(edges ?? []).map((edge) => (
+                          <SelectItem key={edge.id} value={edge.id}>
+                            {edge.name}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -1040,10 +1068,10 @@ function OrganizationSettingsPage() {
                       <span className="text-foreground font-mono">
                         *.
                         {customDomain.trim() ||
-                          relays?.[0]?.domain ||
-                          "relay.example.com"}
+                          edges?.[0]?.domain ||
+                          "edge.example.com"}
                       </span>{" "}
-                      at your relay.
+                      at your edge.
                     </p>
                   </div>
                 </form>

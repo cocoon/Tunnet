@@ -59,7 +59,7 @@ const NODES: {
     y: 51,
     w: 96,
     h: 30,
-    label: "EDGE RELAY",
+    label: "EDGE",
     status: "good",
     badge: true,
   },
@@ -117,7 +117,7 @@ const READOUTS = [
   { key: "P50", base: 12, delta: 2, unit: "ms" },
   { key: "P95", base: 38, delta: 4, unit: "ms" },
   { key: "TUNNELS", base: 3, delta: 1 },
-  { key: "RELAYS", base: 2, delta: 0 },
+  { key: "EDGES", base: 2, delta: 0 },
   { key: "UPLINK", base: 9.2, delta: 0.6, unit: "Gb/s", dec: 1 },
 ];
 
@@ -180,7 +180,7 @@ export function MeshConsole({ className }: { className?: string }): ReactNode {
           viewBox="0 0 1120 520"
           className="relative block w-full"
           role="img"
-          aria-label="Animated mesh topology: devices, services and relays connected by copper traces with flowing packets"
+          aria-label="Animated mesh topology: devices, services and edges connected by copper traces with flowing packets"
           style={{ minHeight: 280 }}
         >
           {/* Base traces */}

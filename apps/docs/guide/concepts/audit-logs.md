@@ -22,7 +22,7 @@ Typical events include:
 - Network create, update, and delete
 - Machine enrollment, approval, label/tag changes, and cleanup
 - Access policy and posture changes
-- Tunnel, Serve, and relay changes
+- Tunnel, Serve, and edge changes
 - SSH-related administrative actions
 - Member, invitation, SSO, and API key changes
 - Certificate and CA operations

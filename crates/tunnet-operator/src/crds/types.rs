@@ -247,7 +247,7 @@ pub struct TunnetTunnelSpec {
 #[serde(rename_all = "camelCase")]
 pub struct TunnelSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub relay_url: Option<String>,
+    pub edge_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subdomain: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

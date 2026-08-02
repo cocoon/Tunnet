@@ -10,6 +10,7 @@ export const statement = {
   ...defaultStatements,
   network: ["create", "read", "update", "delete"],
   device: ["create", "read", "update", "delete", "approve"],
+  edge: ["create", "read", "update", "delete"],
   relay: ["create", "read", "update", "delete"],
   apiKey: ["create", "read", "revoke"],
   policy: ["create", "read", "update", "delete"],
@@ -30,6 +31,7 @@ export const ac = createAccessControl(statement);
 
 const allNetwork = ["create", "read", "update", "delete"] as const;
 const allDevice = ["create", "read", "update", "delete", "approve"] as const;
+const allEdge = ["create", "read", "update", "delete"] as const;
 const allRelay = ["create", "read", "update", "delete"] as const;
 const allApiKey = ["create", "read", "revoke"] as const;
 const allPolicy = ["create", "read", "update", "delete"] as const;
@@ -46,6 +48,7 @@ export const owner = ac.newRole({
   ...ownerAc.statements,
   network: [...allNetwork],
   device: [...allDevice],
+  edge: [...allEdge],
   relay: [...allRelay],
   apiKey: [...allApiKey],
   policy: [...allPolicy],
@@ -66,6 +69,7 @@ export const admin = ac.newRole({
   ...adminAc.statements,
   network: ["create", "read", "update"],
   device: ["create", "read", "update", "approve"],
+  edge: ["read"],
   relay: ["read"],
   apiKey: ["create", "read"],
   policy: ["create", "read", "update", "delete"],
@@ -86,6 +90,7 @@ export const member = ac.newRole({
   ...memberAc.statements,
   network: ["read"],
   device: ["read"],
+  edge: ["read"],
   relay: ["read"],
   apiKey: [],
   policy: ["read"],

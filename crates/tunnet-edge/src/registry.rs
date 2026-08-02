@@ -3,8 +3,9 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use iroh::endpoint::Connection;
 use parking_lot::Mutex;
+
+use crate::transport::AgentTransport;
 
 #[derive(Clone)]
 pub struct TunnelRegistry {
@@ -18,7 +19,7 @@ pub struct TunnelSlot {
     pub local_port: u16,
     #[allow(dead_code)]
     pub protocol: String,
-    pub conn: Mutex<Option<Connection>>,
+    pub transport: Mutex<Option<Arc<dyn AgentTransport>>>,
 }
 
 impl TunnelRegistry {
@@ -31,7 +32,7 @@ impl TunnelRegistry {
     pub fn active_count(&self) -> usize {
         self.by_subdomain
             .iter()
-            .filter(|e| e.value().conn.lock().is_some())
+            .filter(|e| e.value().transport.lock().is_some())
             .count()
     }
 

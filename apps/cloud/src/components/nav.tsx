@@ -14,7 +14,7 @@ const APP_URL = "https://app.tunnet.io";
 const HOME_LINKS = [
   { label: "Mesh", href: "#mesh" },
   { label: "Modes", href: "#modes" },
-  { label: "Relays", href: "#relay" },
+  { label: "Edge", href: "#edge" },
   { label: "Security", href: "#security" },
   { label: "CLI", href: "#cli" },
   { label: "Pricing", href: "/pricing" },

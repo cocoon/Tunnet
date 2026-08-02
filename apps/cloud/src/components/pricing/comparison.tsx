@@ -26,7 +26,7 @@ const RAW_ROWS: { label: string; cells: Cell[] }[] = [
   { label: "REST API", cells: ["no", "yes", "yes", "yes"] },
   { label: "Public tunnels", cells: ["no", "yes", "yes", "yes"] },
   { label: "Policy as Code", cells: ["no", "no", "yes", "yes"] },
-  { label: "Dedicated relays", cells: ["no", "no", "yes", "yes"] },
+  { label: "Dedicated edges", cells: ["no", "no", "yes", "yes"] },
   { label: "Self-host control plane", cells: ["no", "no", "no", "yes"] },
   { label: "24/7 support & SLA", cells: ["no", "no", "no", "yes"] },
 ];

@@ -1,0 +1,139 @@
+import { createFileRoute, Link } from "@tanstack/react-router";
+import type { ColumnDef } from "@tanstack/react-table";
+import type { Relay } from "@tunnet/api/management";
+import { Button } from "@tunnet/ui/components/button";
+import { Skeleton } from "@tunnet/ui/components/skeleton";
+import { formatDistanceToNow } from "date-fns";
+import { PlusIcon } from "lucide-react";
+import { useMemo, useState } from "react";
+import { DataTable } from "@/components/app/data-table";
+import { EmptyState } from "@/components/app/empty-state";
+import { EntityStatus } from "@/components/app/entity-status";
+import { PageHeader } from "@/components/app/page-header";
+import { PageToolbar } from "@/components/app/page-toolbar";
+import { RegisterCloudRelayDialog } from "@/components/app/register-cloud-relay-dialog";
+import { useCloudRelays } from "@/lib/queries/management";
+
+export const Route = createFileRoute("/cloud/relays/")({
+  component: CloudRelaysPage,
+});
+
+function CloudRelaysPage() {
+  const { data: relays, isPending } = useCloudRelays();
+  const [search, setSearch] = useState("");
+  const [registerOpen, setRegisterOpen] = useState(false);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q || !relays) return relays ?? [];
+    return relays.filter(
+      (r) =>
+        r.name.toLowerCase().includes(q) ||
+        r.region.toLowerCase().includes(q) ||
+        r.url.toLowerCase().includes(q),
+    );
+  }, [relays, search]);
+
+  const columns = useMemo<ColumnDef<Relay>[]>(
+    () => [
+      {
+        id: "status",
+        header: "Status",
+        cell: ({ row }) => <EntityStatus status={row.original.status} />,
+      },
+      {
+        id: "name",
+        header: "Name",
+        cell: ({ row }) => (
+          <Link
+            to="/cloud/relays/$relayId"
+            params={{ relayId: row.original.id }}
+            className="font-medium hover:underline"
+          >
+            {row.original.name}
+          </Link>
+        ),
+      },
+      {
+        id: "region",
+        header: "Region",
+        accessorKey: "region",
+      },
+      {
+        id: "url",
+        header: "URL",
+        cell: ({ row }) => (
+          <span className="font-mono text-xs">{row.original.url || "—"}</span>
+        ),
+      },
+      {
+        id: "accessMode",
+        header: "Access",
+        cell: ({ row }) => (
+          <span className="text-sm capitalize">
+            {row.original.accessMode.replace("_", " ")}
+          </span>
+        ),
+      },
+      {
+        id: "heartbeat",
+        header: "Last heartbeat",
+        cell: ({ row }) =>
+          row.original.lastHeartbeatAt ? (
+            <span className="text-muted-foreground text-sm">
+              {formatDistanceToNow(new Date(row.original.lastHeartbeatAt), {
+                addSuffix: true,
+              })}
+            </span>
+          ) : (
+            <span className="text-muted-foreground text-sm">—</span>
+          ),
+      },
+    ],
+    [],
+  );
+
+  return (
+    <>
+      <PageHeader
+        title="Cloud relays"
+        description="Deployment-wide connectivity relays available to organizations."
+        actions={
+          <Button onClick={() => setRegisterOpen(true)}>
+            <PlusIcon className="mr-2 size-4" />
+            Register relay
+          </Button>
+        }
+      />
+
+      <PageToolbar
+        search={search}
+        onSearchChange={setSearch}
+        searchPlaceholder="Search by name, region, URL..."
+        count={filtered.length}
+        countLabel={filtered.length === 1 ? "relay" : "relays"}
+      />
+
+      {isPending ? (
+        <Skeleton className="h-64 w-full" />
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          title="No Cloud relays yet"
+          description="Register a deployment-wide tunnet-relay for mesh connectivity."
+          action={
+            <Button onClick={() => setRegisterOpen(true)}>
+              Register relay
+            </Button>
+          }
+        />
+      ) : (
+        <DataTable columns={columns} data={filtered} getRowId={(r) => r.id} />
+      )}
+
+      <RegisterCloudRelayDialog
+        open={registerOpen}
+        onOpenChange={setRegisterOpen}
+      />
+    </>
+  );
+}

@@ -1,7 +1,8 @@
 import { Elysia } from "elysia";
 
 import { auth } from "../../../auth";
-import type { AuthContext } from "./session";
+import { hasFeature } from "../../../lib/entitlements";
+import type { AuthContext, SessionUserContext } from "./session";
 import { forbidden, unauthorized } from "./session";
 
 export type PermissionCheck = Record<string, string[]>;
@@ -14,6 +15,43 @@ export const requireAuth = new Elysia({ name: "require-auth" }).onBeforeHandle(
     }
   },
 );
+
+/** Require an authenticated session user (no organization membership). */
+export const requireSessionAuth = new Elysia({
+  name: "require-session-auth",
+}).onBeforeHandle({ as: "scoped" }, ({ sessionUser }) => {
+  if (!sessionUser) {
+    return unauthorized();
+  }
+});
+
+/** Cloud admin access via Better Auth `auth.api.userHasPermission`. */
+export const requireCloudAccess = new Elysia({
+  name: "require-cloud-access",
+}).onBeforeHandle({ as: "scoped" }, async ({ sessionUser }) => {
+  if (!sessionUser) {
+    return unauthorized();
+  }
+
+  const result = await auth.api.userHasPermission({
+    body: {
+      userId: sessionUser.user.id,
+      permissions: { cloud: ["access"] },
+    },
+  });
+
+  if (!result?.success) {
+    return forbidden();
+  }
+});
+
+export const requireCloudInfrastructure = new Elysia({
+  name: "require-cloud-infrastructure",
+}).onBeforeHandle({ as: "scoped" }, async () => {
+  if (!(await hasFeature("cloudInfrastructure"))) {
+    return forbidden();
+  }
+});
 
 export function requirePermission(permissions: PermissionCheck) {
   const name = `require-permission-${Object.entries(permissions)
@@ -47,4 +85,13 @@ export function getAuth(ctx: { authContext: AuthContext | null }): AuthContext {
     throw new Error("Auth context missing");
   }
   return ctx.authContext;
+}
+
+export function getSessionUser(ctx: {
+  sessionUser: SessionUserContext | null;
+}): SessionUserContext {
+  if (!ctx.sessionUser) {
+    throw new Error("Session user missing");
+  }
+  return ctx.sessionUser;
 }

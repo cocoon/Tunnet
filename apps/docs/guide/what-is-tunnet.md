@@ -12,7 +12,7 @@ Tunnet is not a single tool. It is a collection of networking primitives that co
 
 **Serve** exposes a local port to other machines on the mesh with an internal hostname and TLS from your organization's internal CA. Think of it as an internal service mesh - like what Cloudflare Access provides, but running on your own infrastructure.
 
-**Tunnel** gives a local port a public HTTPS URL through a relay. This is the ngrok competitor: instant public endpoints for webhooks, demos, or permanent services without opening firewall holes.
+**Tunnel** gives a local port a public HTTPS URL through an edge. This is the ngrok competitor: instant public endpoints for webhooks, demos, or permanent services without opening firewall holes.
 
 **Send** is peer-to-peer file transfer over the mesh, verified with BLAKE3 via iroh-blobs. No intermediate storage, no cloud upload - direct machine-to-machine transfer with consent controls.
 
@@ -20,7 +20,7 @@ Tunnet is not a single tool. It is a collection of networking primitives that co
 
 **Device Posture** checks the security state of each machine (disk encryption, firewall, antivirus, and more) and can require passing definitions before ACL policies allow traffic. Definitions and compliance live in the dashboard under **Security → Posture**.
 
-**Relay** is a self-hosted edge server that terminates public tunnels. You point DNS at it, optionally configure Let's Encrypt, and it becomes your tunnel infrastructure. This competes with Cloudflare Tunnel's edge network, except you own the servers.
+**Edge** is a self-hosted edge server that terminates public tunnels. You point DNS at it, optionally configure Let's Encrypt, and it becomes your tunnel infrastructure. This competes with Cloudflare Tunnel's edge network, except you own the servers.
 
 ## What makes Tunnet different
 

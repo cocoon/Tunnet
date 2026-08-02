@@ -26,7 +26,9 @@ The `tunnet` CLI is the primary interface for interacting with Tunnet from the c
 | `tunnet diag` | Full connectivity diagnostics |
 | `tunnet netcheck` | Quick pass/fail connectivity check |
 | `tunnet serve` | Expose a local port on the mesh |
-| `tunnet tunnel` | Expose a local port via a public relay |
+| `tunnet tunnel` | Expose a local port via a public edge |
+| `tunnet-edge` | Separate binary: public tunnel edge server |
+| `tunnet-relay` | Separate binary: iroh connectivity relay (mesh DERP) |
 | `tunnet send` | P2P file transfer over the mesh |
 | `tunnet ssh` | Identity-based SSH (OpenSSH wrapper; sessions / recordings / config) |
 | `tunnet ssh-keyscan` | Print or refresh mesh SSH host keys |

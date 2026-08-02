@@ -47,7 +47,7 @@ Peers can reach the service via the mesh hostname (PeerDNS) once the ingress is 
 
 ## Public HTTPS (`TunnetTunnel`)
 
-[`Tunnel`](/products/tunnel/) gives a Service a public URL through a Tunnet relay.
+[`Tunnel`](/products/tunnel/) gives a Service a public URL through a Tunnet edge.
 
 ```yaml
 apiVersion: tunnet.io/v1alpha1
@@ -64,7 +64,7 @@ spec:
   tunnel:
     protocol: https
     # subdomain: optional preferred subdomain
-    # relayUrl: optional specific relay
+    # edgeUrl: optional specific edge
     # customDomain: optional custom hostname
 ```
 

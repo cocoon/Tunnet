@@ -5,7 +5,7 @@ import {
   registerMarketingMotion,
   setupReveals,
 } from "#/components/motion/landing-timeline";
-import { RelayGlobe } from "#/components/visuals/relay-map";
+import { EdgeGlobe } from "#/components/visuals/edge-map";
 
 const BULLETS = [
   "Anycast public HTTPS endpoints for every tunnel",
@@ -14,7 +14,7 @@ const BULLETS = [
   "Same identity everywhere - one policy engine",
 ];
 
-export function RelayGlobeSection(): ReactNode {
+export function EdgeGlobeSection(): ReactNode {
   const root = useRef<HTMLElement>(null);
   useGSAP(
     () => {
@@ -27,7 +27,7 @@ export function RelayGlobeSection(): ReactNode {
   return (
     <section
       ref={root}
-      id="relay"
+      id="edge"
       className="relative isolate overflow-hidden border-y border-[var(--l1-steel)]"
       style={{ backgroundColor: "var(--l1-bg-2)" }}
     >
@@ -41,7 +41,7 @@ export function RelayGlobeSection(): ReactNode {
         className="pointer-events-none absolute inset-0 -z-0 hidden items-center justify-end lg:flex"
       >
         <div className="absolute -right-[14%] top-1/2 aspect-square w-[min(1080px,118%)] -translate-y-1/2 opacity-80">
-          <RelayGlobe interactive size={900} />
+          <EdgeGlobe interactive size={900} />
         </div>
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_65%_85%_at_18%_50%,var(--l1-bg-2)_15%,transparent_72%)]" />
         <div className="absolute inset-0 bg-[linear-gradient(180deg,var(--l1-bg-2)_0%,transparent_12%,transparent_88%,var(--l1-bg-2)_100%)]" />
@@ -55,7 +55,7 @@ export function RelayGlobeSection(): ReactNode {
             <span className="l1-copper-text">Your control plane.</span>
           </h2>
           <p className="mt-5 max-w-[54ch] text-[15px] leading-relaxed text-[var(--l1-muted)] sm:text-lg">
-            Tunnet's public tunnels ride on relays you can run yourself. Point
+            Tunnet's public tunnels ride on edges you can run yourself. Point
             DNS, configure ACME, and your team gets public HTTPS endpoints on
             infrastructure that never leaves your account.
           </p>
@@ -78,7 +78,7 @@ export function RelayGlobeSection(): ReactNode {
         {/* Globe - inline on mobile, ambient on desktop */}
         <div className="l1-reveal relative lg:hidden">
           <div className="mx-auto aspect-square w-full max-w-md">
-            <RelayGlobe size={560} />
+            <EdgeGlobe size={560} />
           </div>
         </div>
       </div>

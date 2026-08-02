@@ -1,6 +1,6 @@
 //! Re-issue OpenTunnel / StartServe when an agent WebSocket reconnects.
 //!
-//! Snapshot deliberately omits `relay_auth_token`; TunnelManager only starts
+//! Snapshot deliberately omits `edge_auth_token`; TunnelManager only starts
 //! connections when it receives `ServerMsg::OpenTunnel` with the real token
 //! loaded from `tunnel_secrets`.
 
@@ -34,32 +34,31 @@ async fn replay_tunnels(pool: &PgPool, hub: &WsHub, endpoint_id: &str) -> anyhow
         Option<String>,
     )> = sqlx::query_as(
         "SELECT t.id, t.local_port, t.protocol, t.subdomain, t.public_hostname, \
-                s.relay_auth_token, r.public_key \
+                s.edge_auth_token, e.public_key \
          FROM tunnels t \
          LEFT JOIN tunnel_secrets s ON s.tunnel_id = t.id \
-         LEFT JOIN relays r ON r.id = t.relay_id \
+         LEFT JOIN edges e ON e.id = t.edge_id \
          WHERE t.endpoint_id = $1 AND t.status IN ('active', 'connecting')",
     )
     .bind(endpoint_id)
     .fetch_all(pool)
     .await?;
 
-    for (tunnel_id, local_port, protocol, subdomain, public_hostname, auth_token, relay_addr) in
-        rows
+    for (tunnel_id, local_port, protocol, subdomain, public_hostname, auth_token, edge_addr) in rows
     {
         let Some(auth_token) = auth_token.filter(|t| !t.is_empty()) else {
-            tracing::warn!(%tunnel_id, %endpoint_id, "skip OpenTunnel replay: missing relay_auth_token");
+            tracing::warn!(%tunnel_id, %endpoint_id, "skip OpenTunnel replay: missing edge_auth_token");
             continue;
         };
-        let Some(relay_addr) = relay_addr.filter(|a| !a.is_empty()) else {
-            tracing::warn!(%tunnel_id, %endpoint_id, "skip OpenTunnel replay: relay missing public_key");
+        let Some(edge_addr) = edge_addr.filter(|a| !a.is_empty()) else {
+            tracing::warn!(%tunnel_id, %endpoint_id, "skip OpenTunnel replay: edge missing public_key");
             let _ = sqlx::query(
                 "UPDATE tunnels SET status = 'error', \
                  error_message = $2, updated_at = now() \
                  WHERE id = $1",
             )
             .bind(tunnel_id)
-            .bind("Relay has no public key - cannot re-open tunnel on reconnect")
+            .bind("Edge has no public key - cannot re-open tunnel on reconnect")
             .execute(pool)
             .await;
             continue;
@@ -78,7 +77,7 @@ async fn replay_tunnels(pool: &PgPool, hub: &WsHub, endpoint_id: &str) -> anyhow
             endpoint_id,
             ServerMsg::OpenTunnel {
                 tunnel_id: tunnel_id.to_string(),
-                relay_addr,
+                edge_addr,
                 subdomain,
                 public_hostname,
                 local_port,

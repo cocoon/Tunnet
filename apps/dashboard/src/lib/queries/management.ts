@@ -8,7 +8,10 @@ import type {
 } from "@tunnet/api/management";
 
 import { type AggregatedMachine, aggregateMachines } from "@/lib/machine-utils";
-import { createManagementClient } from "@/lib/management-client";
+import {
+  createCloudAdminClient,
+  createManagementClient,
+} from "@/lib/management-client";
 import type {
   CreatePostureBody,
   CreatePostureIntegrationBody,
@@ -618,36 +621,112 @@ export function useDeviceMutations(orgId: string | undefined) {
   };
 }
 
-export function useRelays(orgId: string | undefined) {
+export function useEdges(orgId: string | undefined) {
   return useQuery({
-    queryKey: orgId ? queryKeys.relays(orgId) : ["relays"],
+    queryKey: orgId ? queryKeys.edges(orgId) : ["edges"],
     enabled: Boolean(orgId),
     queryFn: async () => {
-      const { relays } = await createManagementClient(orgId!).listRelays();
-      return relays;
+      const { edges } = await createManagementClient(orgId!).listEdges();
+      return edges;
     },
     refetchInterval: 15_000,
   });
 }
 
-export function useRelay(orgId: string | undefined, relayId: string) {
+export function useEdge(orgId: string | undefined, edgeId: string) {
+  return useQuery({
+    queryKey: orgId ? queryKeys.edge(orgId, edgeId) : ["edge"],
+    enabled: Boolean(orgId && edgeId),
+    queryFn: async () => {
+      const { edge } = await createManagementClient(orgId!).getEdge(edgeId);
+      return edge;
+    },
+    refetchInterval: 10_000,
+  });
+}
+
+export function useEdgeHealth(orgId: string | undefined, edgeId: string) {
+  return useQuery({
+    queryKey: orgId ? queryKeys.edgeHealth(orgId, edgeId) : ["edge-health"],
+    enabled: Boolean(orgId && edgeId),
+    queryFn: async () => {
+      return createManagementClient(orgId!).getEdgeHealth(edgeId);
+    },
+    refetchInterval: 15_000,
+  });
+}
+
+export function useConnectivityRelays(orgId: string | undefined) {
+  return useQuery({
+    queryKey: orgId ? queryKeys.relays(orgId) : ["relays"],
+    enabled: Boolean(orgId),
+    queryFn: async () => {
+      return createManagementClient(orgId!).listConnectivityRelays();
+    },
+    refetchInterval: 15_000,
+  });
+}
+
+export function useConnectivityRelay(
+  orgId: string | undefined,
+  relayId: string,
+) {
   return useQuery({
     queryKey: orgId ? queryKeys.relay(orgId, relayId) : ["relay"],
     enabled: Boolean(orgId && relayId),
     queryFn: async () => {
-      const { relay } = await createManagementClient(orgId!).getRelay(relayId);
+      const { relay } = await createManagementClient(
+        orgId!,
+      ).getConnectivityRelay(relayId);
       return relay;
     },
     refetchInterval: 10_000,
   });
 }
 
-export function useRelayHealth(orgId: string | undefined, relayId: string) {
+export function useConnectivityRelayHealth(
+  orgId: string | undefined,
+  relayId: string,
+) {
   return useQuery({
     queryKey: orgId ? queryKeys.relayHealth(orgId, relayId) : ["relay-health"],
     enabled: Boolean(orgId && relayId),
     queryFn: async () => {
-      return createManagementClient(orgId!).getRelayHealth(relayId);
+      return createManagementClient(orgId!).getOrgRelayHealth(relayId);
+    },
+    refetchInterval: 15_000,
+  });
+}
+
+export function useCloudRelays() {
+  return useQuery({
+    queryKey: queryKeys.cloudRelays(),
+    queryFn: async () => {
+      const { relays } = await createCloudAdminClient().cloudListRelays();
+      return relays;
+    },
+    refetchInterval: 15_000,
+  });
+}
+
+export function useCloudRelay(relayId: string) {
+  return useQuery({
+    queryKey: queryKeys.cloudRelay(relayId),
+    enabled: Boolean(relayId),
+    queryFn: async () => {
+      const { relay } = await createCloudAdminClient().cloudGetRelay(relayId);
+      return relay;
+    },
+    refetchInterval: 10_000,
+  });
+}
+
+export function useCloudRelayHealth(relayId: string) {
+  return useQuery({
+    queryKey: queryKeys.cloudRelayHealth(relayId),
+    enabled: Boolean(relayId),
+    queryFn: async () => {
+      return createCloudAdminClient().cloudGetRelayHealth(relayId);
     },
     refetchInterval: 15_000,
   });
@@ -947,7 +1026,51 @@ export function useOrgSettings(orgId: string | undefined) {
   });
 }
 
-export function useRelayMutations(orgId: string | undefined) {
+export function useEdgeMutations(orgId: string | undefined) {
+  const queryClient = useQueryClient();
+  const invalidate = () => {
+    if (orgId) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.edges(orgId) });
+    }
+  };
+  return {
+    create: useMutation({
+      mutationFn: async (
+        body: Parameters<
+          ReturnType<typeof createManagementClient>["createEdge"]
+        >[0],
+      ) => {
+        if (!orgId) throw new Error("No organization");
+        return createManagementClient(orgId).createEdge(body);
+      },
+      onSuccess: invalidate,
+    }),
+    update: useMutation({
+      mutationFn: async ({
+        edgeId,
+        body,
+      }: {
+        edgeId: string;
+        body: Parameters<
+          ReturnType<typeof createManagementClient>["updateEdge"]
+        >[1];
+      }) => {
+        if (!orgId) throw new Error("No organization");
+        return createManagementClient(orgId).updateEdge(edgeId, body);
+      },
+      onSuccess: invalidate,
+    }),
+    remove: useMutation({
+      mutationFn: async (edgeId: string) => {
+        if (!orgId) throw new Error("No organization");
+        return createManagementClient(orgId).deleteEdge(edgeId);
+      },
+      onSuccess: invalidate,
+    }),
+  };
+}
+
+export function useOrgRelayMutations(orgId: string | undefined) {
   const queryClient = useQueryClient();
   const invalidate = () => {
     if (orgId) {
@@ -958,11 +1081,11 @@ export function useRelayMutations(orgId: string | undefined) {
     create: useMutation({
       mutationFn: async (
         body: Parameters<
-          ReturnType<typeof createManagementClient>["createRelay"]
+          ReturnType<typeof createManagementClient>["createOrgRelay"]
         >[0],
       ) => {
         if (!orgId) throw new Error("No organization");
-        return createManagementClient(orgId).createRelay(body);
+        return createManagementClient(orgId).createOrgRelay(body);
       },
       onSuccess: invalidate,
     }),
@@ -973,19 +1096,53 @@ export function useRelayMutations(orgId: string | undefined) {
       }: {
         relayId: string;
         body: Parameters<
-          ReturnType<typeof createManagementClient>["updateRelay"]
+          ReturnType<typeof createManagementClient>["updateOrgRelay"]
         >[1];
       }) => {
         if (!orgId) throw new Error("No organization");
-        return createManagementClient(orgId).updateRelay(relayId, body);
+        return createManagementClient(orgId).updateOrgRelay(relayId, body);
       },
       onSuccess: invalidate,
     }),
     remove: useMutation({
       mutationFn: async (relayId: string) => {
         if (!orgId) throw new Error("No organization");
-        return createManagementClient(orgId).deleteRelay(relayId);
+        return createManagementClient(orgId).deleteOrgRelay(relayId);
       },
+      onSuccess: invalidate,
+    }),
+  };
+}
+
+export function useCloudRelayMutations() {
+  const queryClient = useQueryClient();
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.cloudRelays() });
+  };
+  return {
+    create: useMutation({
+      mutationFn: async (
+        body: Parameters<
+          ReturnType<typeof createCloudAdminClient>["cloudCreateRelay"]
+        >[0],
+      ) => createCloudAdminClient().cloudCreateRelay(body),
+      onSuccess: invalidate,
+    }),
+    update: useMutation({
+      mutationFn: async ({
+        relayId,
+        body,
+      }: {
+        relayId: string;
+        body: Parameters<
+          ReturnType<typeof createCloudAdminClient>["cloudPatchRelay"]
+        >[1];
+      }) => createCloudAdminClient().cloudPatchRelay(relayId, body),
+      onSuccess: invalidate,
+    }),
+    remove: useMutation({
+      mutationFn: async (relayId: string) =>
+        createCloudAdminClient().cloudDeleteRelay(relayId),
       onSuccess: invalidate,
     }),
   };

@@ -765,7 +765,7 @@ export const auditEvents = pgTable(
   ],
 );
 
-export const relayStatusValues = [
+export const edgeStatusValues = [
   "pending",
   "healthy",
   "degraded",
@@ -773,10 +773,11 @@ export const relayStatusValues = [
   "disabled",
 ] as const;
 
-export const relayKindValues = ["hosted", "self_hosted"] as const;
+export const edgeKindValues = ["hosted", "self_hosted"] as const;
 
-export const relays = pgTable(
-  "relays",
+// SQL migration relays→edges applied separately (drizzle-kit); do not hand-write migrate SQL.
+export const edges = pgTable(
+  "edges",
   {
     id: id(),
     organizationId: text("organization_id")
@@ -792,7 +793,7 @@ export const relays = pgTable(
     activeTunnels: integer("active_tunnels").notNull().default(0),
     status: text("status").notNull().default("pending"),
     lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
-    /** Ed25519 public key hex used to authenticate relay heartbeats. */
+    /** Ed25519 public key hex used to authenticate edge heartbeats. */
     publicKey: text("public_key"),
     metadata: jsonb("metadata").notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -803,36 +804,36 @@ export const relays = pgTable(
       .notNull(),
   },
   (table) => [
-    unique("relays_organization_name_unique").on(
+    unique("edges_organization_name_unique").on(
       table.organizationId,
       table.name,
     ),
-    unique("relays_organization_domain_unique").on(
+    unique("edges_organization_domain_unique").on(
       table.organizationId,
       table.domain,
     ),
-    check("relays_kind_check", sql`${table.kind} IN ('hosted', 'self_hosted')`),
+    check("edges_kind_check", sql`${table.kind} IN ('hosted', 'self_hosted')`),
     check(
-      "relays_status_check",
+      "edges_status_check",
       sql`${table.status} IN ('pending', 'healthy', 'degraded', 'offline', 'disabled')`,
     ),
-    index("relays_by_organization_status_idx").on(
+    index("edges_by_organization_status_idx").on(
       table.organizationId,
       table.status,
     ),
   ],
 );
 
-export const relayRegistrationTokens = pgTable(
-  "relay_registration_tokens",
+export const edgeRegistrationTokens = pgTable(
+  "edge_registration_tokens",
   {
     tokenHash: text("token_hash").primaryKey(),
     organizationId: text("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
-    relayId: uuid("relay_id")
+    edgeId: uuid("edge_id")
       .notNull()
-      .references(() => relays.id, { onDelete: "cascade" }),
+      .references(() => edges.id, { onDelete: "cascade" }),
     createdBy: text("created_by")
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
@@ -843,7 +844,7 @@ export const relayRegistrationTokens = pgTable(
       .notNull(),
   },
   (table) => [
-    index("relay_registration_tokens_by_expires_at_idx").on(table.expiresAt),
+    index("edge_registration_tokens_by_expires_at_idx").on(table.expiresAt),
   ],
 );
 
@@ -870,7 +871,7 @@ export const tunnels = pgTable(
     endpointId: text("endpoint_id")
       .notNull()
       .references(() => devices.endpointId, { onDelete: "cascade" }),
-    relayId: uuid("relay_id").references(() => relays.id, {
+    edgeId: uuid("edge_id").references(() => edges.id, {
       onDelete: "set null",
     }),
     /** Local port on the machine. */
@@ -880,8 +881,8 @@ export const tunnels = pgTable(
     /** Full public hostname, e.g. app.myorg.tunnet.pub */
     publicHostname: text("public_hostname").notNull(),
     status: text("status").notNull().default("connecting"),
-    /** Hash of the relay auth token (verification only - plaintext lives in tunnel_secrets). */
-    relayAuthHash: text("relay_auth_hash"),
+    /** Hash of the edge auth token (verification only - plaintext lives in tunnel_secrets). */
+    edgeAuthHash: text("edge_auth_hash"),
     /** Optional HTTP basic auth on the public tunnel. */
     basicAuthUser: text("basic_auth_user"),
     basicAuthPasswordHash: text("basic_auth_password_hash"),
@@ -911,7 +912,7 @@ export const tunnels = pgTable(
     index("tunnels_by_organization_idx").on(table.organizationId),
     index("tunnels_by_network_idx").on(table.networkId),
     index("tunnels_by_endpoint_idx").on(table.endpointId),
-    index("tunnels_by_relay_idx").on(table.relayId),
+    index("tunnels_by_edge_idx").on(table.edgeId),
     index("tunnels_by_status_idx").on(table.status),
     index("tunnels_by_expires_at_idx").on(table.expiresAt),
   ],
@@ -921,7 +922,7 @@ export const tunnelSecrets = pgTable("tunnel_secrets", {
   tunnelId: uuid("tunnel_id")
     .primaryKey()
     .references(() => tunnels.id, { onDelete: "cascade" }),
-  relayAuthToken: text("relay_auth_token").notNull(),
+  edgeAuthToken: text("edge_auth_token").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
@@ -1027,7 +1028,7 @@ export const organizationTunnelSettings = pgTable(
     organizationId: text("organization_id")
       .primaryKey()
       .references(() => organization.id, { onDelete: "cascade" }),
-    defaultRelayId: uuid("default_relay_id").references(() => relays.id, {
+    defaultEdgeId: uuid("default_edge_id").references(() => edges.id, {
       onDelete: "set null",
     }),
     defaultTtlSeconds: integer("default_ttl_seconds"),
@@ -1042,7 +1043,115 @@ export const organizationTunnelSettings = pgTable(
   },
 );
 
-/** Historical relay heartbeat samples for health charts. */
+/** Historical edge heartbeat samples for health charts. */
+export const edgeHeartbeats = pgTable(
+  "edge_heartbeats",
+  {
+    id: id(),
+    edgeId: uuid("edge_id")
+      .notNull()
+      .references(() => edges.id, { onDelete: "cascade" }),
+    activeTunnels: integer("active_tunnels").notNull().default(0),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("edge_heartbeats_by_edge_recorded_idx").on(
+      table.edgeId,
+      table.recordedAt,
+    ),
+  ],
+);
+
+export const relayStatusValues = [
+  "pending",
+  "healthy",
+  "degraded",
+  "offline",
+  "suspended",
+] as const;
+
+export const relayPolicyValues = ["inherit", "augment", "exclusive"] as const;
+
+/**
+ * Connectivity relays (mesh DERP / hybrid relay), distinct from public-ingress `edges`.
+ * `organizationId` NULL = deployment-owned Cloud relay.
+ */
+export const relays = pgTable(
+  "relays",
+  {
+    id: id(),
+    organizationId: text("organization_id").references(() => organization.id, {
+      onDelete: "cascade",
+    }),
+    name: text("name").notNull(),
+    /** Public relay URL, e.g. https://... */
+    url: text("url").notNull(),
+    region: text("region").notNull().default("unknown"),
+    status: text("status").notNull().default("pending"),
+    qadEnabled: boolean("qad_enabled").notNull().default(false),
+    metricsUrl: text("metrics_url"),
+    /** open | shared_token | http */
+    accessMode: text("access_mode").notNull().default("open"),
+    lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
+    /** Public key / identity metadata (e.g. `{ publicKey: "..." }`). */
+    identity: jsonb("identity").notNull().default({}),
+    suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("relays_organization_name_unique")
+      .on(table.organizationId, table.name)
+      .where(sql`${table.organizationId} IS NOT NULL`),
+    uniqueIndex("relays_deployment_name_unique")
+      .on(table.name)
+      .where(sql`${table.organizationId} IS NULL`),
+    check(
+      "relays_status_check",
+      sql`${table.status} IN ('pending', 'healthy', 'degraded', 'offline', 'suspended')`,
+    ),
+    index("relays_by_organization_status_idx").on(
+      table.organizationId,
+      table.status,
+    ),
+    index("relays_by_deployment_status_idx")
+      .on(table.status)
+      .where(sql`${table.organizationId} IS NULL`),
+  ],
+);
+
+export const relayRegistrationTokens = pgTable(
+  "relay_registration_tokens",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    /** Null for deployment-owned (Cloud) relay registration. */
+    organizationId: text("organization_id").references(() => organization.id, {
+      onDelete: "cascade",
+    }),
+    relayId: uuid("relay_id")
+      .notNull()
+      .references(() => relays.id, { onDelete: "cascade" }),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("relay_registration_tokens_by_expires_at_idx").on(table.expiresAt),
+  ],
+);
+
+/** Historical connectivity-relay heartbeat samples. */
 export const relayHeartbeats = pgTable(
   "relay_heartbeats",
   {
@@ -1050,15 +1159,36 @@ export const relayHeartbeats = pgTable(
     relayId: uuid("relay_id")
       .notNull()
       .references(() => relays.id, { onDelete: "cascade" }),
-    activeTunnels: integer("active_tunnels").notNull().default(0),
     recordedAt: timestamp("recorded_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    metrics: jsonb("metrics"),
   },
   (table) => [
     index("relay_heartbeats_by_relay_recorded_idx").on(
       table.relayId,
       table.recordedAt,
+    ),
+  ],
+);
+
+/** Org policy for which connectivity relays agents use (vs deployment Cloud relays). */
+export const organizationRelaySettings = pgTable(
+  "organization_relay_settings",
+  {
+    organizationId: text("organization_id")
+      .primaryKey()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    /** inherit | augment | exclusive */
+    policy: text("policy").notNull().default("inherit"),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    check(
+      "organization_relay_settings_policy_check",
+      sql`${table.policy} IN ('inherit', 'augment', 'exclusive')`,
     ),
   ],
 );
@@ -1762,29 +1892,29 @@ export const devicesRelations = relations(devices, ({ one, many }) => ({
   postureEvaluations: many(postureEvaluations),
 }));
 
-export const relaysRelations = relations(relays, ({ one, many }) => ({
+export const edgesRelations = relations(edges, ({ one, many }) => ({
   organization: one(organization, {
-    fields: [relays.organizationId],
+    fields: [edges.organizationId],
     references: [organization.id],
   }),
   tunnels: many(tunnels),
-  registrationTokens: many(relayRegistrationTokens),
-  heartbeats: many(relayHeartbeats),
+  registrationTokens: many(edgeRegistrationTokens),
+  heartbeats: many(edgeHeartbeats),
 }));
 
-export const relayRegistrationTokensRelations = relations(
-  relayRegistrationTokens,
+export const edgeRegistrationTokensRelations = relations(
+  edgeRegistrationTokens,
   ({ one }) => ({
     organization: one(organization, {
-      fields: [relayRegistrationTokens.organizationId],
+      fields: [edgeRegistrationTokens.organizationId],
       references: [organization.id],
     }),
-    relay: one(relays, {
-      fields: [relayRegistrationTokens.relayId],
-      references: [relays.id],
+    edge: one(edges, {
+      fields: [edgeRegistrationTokens.edgeId],
+      references: [edges.id],
     }),
     creator: one(user, {
-      fields: [relayRegistrationTokens.createdBy],
+      fields: [edgeRegistrationTokens.createdBy],
       references: [user.id],
     }),
   }),
@@ -1803,9 +1933,9 @@ export const tunnelsRelations = relations(tunnels, ({ one, many }) => ({
     fields: [tunnels.endpointId],
     references: [devices.endpointId],
   }),
-  relay: one(relays, {
-    fields: [tunnels.relayId],
-    references: [relays.id],
+  edge: one(edges, {
+    fields: [tunnels.edgeId],
+    references: [edges.id],
   }),
   secrets: one(tunnelSecrets, {
     fields: [tunnels.id],
@@ -1857,9 +1987,43 @@ export const organizationTunnelSettingsRelations = relations(
       fields: [organizationTunnelSettings.organizationId],
       references: [organization.id],
     }),
-    defaultRelay: one(relays, {
-      fields: [organizationTunnelSettings.defaultRelayId],
+    defaultEdge: one(edges, {
+      fields: [organizationTunnelSettings.defaultEdgeId],
+      references: [edges.id],
+    }),
+  }),
+);
+
+export const edgeHeartbeatsRelations = relations(edgeHeartbeats, ({ one }) => ({
+  edge: one(edges, {
+    fields: [edgeHeartbeats.edgeId],
+    references: [edges.id],
+  }),
+}));
+
+export const relaysRelations = relations(relays, ({ one, many }) => ({
+  organization: one(organization, {
+    fields: [relays.organizationId],
+    references: [organization.id],
+  }),
+  registrationTokens: many(relayRegistrationTokens),
+  heartbeats: many(relayHeartbeats),
+}));
+
+export const relayRegistrationTokensRelations = relations(
+  relayRegistrationTokens,
+  ({ one }) => ({
+    organization: one(organization, {
+      fields: [relayRegistrationTokens.organizationId],
+      references: [organization.id],
+    }),
+    relay: one(relays, {
+      fields: [relayRegistrationTokens.relayId],
       references: [relays.id],
+    }),
+    creator: one(user, {
+      fields: [relayRegistrationTokens.createdBy],
+      references: [user.id],
     }),
   }),
 );
@@ -1870,6 +2034,16 @@ export const relayHeartbeatsRelations = relations(
     relay: one(relays, {
       fields: [relayHeartbeats.relayId],
       references: [relays.id],
+    }),
+  }),
+);
+
+export const organizationRelaySettingsRelations = relations(
+  organizationRelaySettings,
+  ({ one }) => ({
+    organization: one(organization, {
+      fields: [organizationRelaySettings.organizationId],
+      references: [organization.id],
     }),
   }),
 );

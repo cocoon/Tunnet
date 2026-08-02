@@ -33,11 +33,11 @@ const ARCS: [string, string][] = [
 
 const byId = (id: string) => {
   const region = REGIONS.find((r) => r.id === id);
-  if (!region) throw new Error(`Unknown relay region: ${id}`);
+  if (!region) throw new Error(`Unknown edge region: ${id}`);
   return region;
 };
 
-export function RelayGlobe({
+export function EdgeGlobe({
   className,
   interactive = false,
   size = 720,

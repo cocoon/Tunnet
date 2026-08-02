@@ -1068,9 +1068,9 @@ pub struct TunnelArgs {
     pub port: Option<u16>,
     #[arg(long, default_value = "https")]
     pub protocol: String,
-    /// Relay id, name, or omit for auto
+    /// Edge id, name, or omit for auto
     #[arg(long)]
-    pub relay: Option<String>,
+    pub edge: Option<String>,
     #[arg(long)]
     pub subdomain: Option<String>,
     /// Capture HTTP traffic and open a local inspector UI
@@ -1121,7 +1121,7 @@ pub async fn run_tunnel(args: TunnelArgs) -> anyhow::Result<()> {
             run_tunnel_start(
                 port,
                 &args.protocol,
-                args.relay.as_deref(),
+                args.edge.as_deref(),
                 args.subdomain.as_deref(),
                 args.inspect,
                 args.inspect_addr.as_deref(),
@@ -1137,7 +1137,7 @@ pub async fn run_tunnel(args: TunnelArgs) -> anyhow::Result<()> {
 async fn run_tunnel_start(
     port: u16,
     protocol: &str,
-    relay: Option<&str>,
+    edge: Option<&str>,
     subdomain: Option<&str>,
     inspect: bool,
     inspect_addr: Option<&str>,
@@ -1152,7 +1152,7 @@ async fn run_tunnel_start(
     let body = TunnelStartRequest {
         port,
         protocol: protocol.to_string(),
-        relay: relay.map(str::to_string),
+        edge: edge.map(str::to_string),
         subdomain: subdomain.map(str::to_string),
         inspect,
         inspect_addr: inspect_addr.map(str::to_string),

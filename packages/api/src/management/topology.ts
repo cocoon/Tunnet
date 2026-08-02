@@ -5,7 +5,7 @@ export const topologyNodeKindSchema = z.enum([
   "subnet",
   "hostname",
   "exit",
-  "relay",
+  "edge",
 ]);
 
 export const topologyNodeSchema = z.object({
@@ -22,7 +22,7 @@ export const topologyNodeSchema = z.object({
   viaEndpointId: z.string().length(64).nullable().optional(),
   /** Active serve count (machines). */
   serveCount: z.number().int().nonnegative().optional(),
-  /** Active tunnel count (machines / relays). */
+  /** Active tunnel count (machines / edges). */
   tunnelCount: z.number().int().nonnegative().optional(),
   publicHostname: z.string().nullable().optional(),
   /** devices.type for machine nodes. */

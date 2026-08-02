@@ -101,7 +101,7 @@ export function ArchitectureDiagram(): ReactNode {
       viewBox="0 0 1120 380"
       className="block w-full"
       role="img"
-      aria-label="Request flow: client through encrypted transport into the mesh fabric, gated by policy and audit, with self-hosted relay edge"
+      aria-label="Request flow: client through encrypted transport into the mesh fabric, gated by policy and audit, with self-hosted edge"
       style={{ minHeight: 220 }}
     >
       {FLOW.map((f) => (
@@ -184,7 +184,7 @@ export function ArchitectureDiagram(): ReactNode {
         y={260}
         w={170}
         h={60}
-        label="RELAY EDGE"
+        label="EDGE"
         sub="your infra · your certs"
       />
     </svg>

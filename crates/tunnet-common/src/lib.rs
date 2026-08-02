@@ -1,20 +1,21 @@
 pub mod agent_policy;
 pub mod duration;
+pub mod edge;
 pub mod ipv6;
 pub mod license;
 pub mod local_api;
 pub mod policy;
 pub mod posture;
 pub mod recording;
-pub mod relay;
 pub mod send;
 pub mod signing;
 pub mod ws;
 
 pub use agent_policy::{
-    ConfigSource, EffectiveAgentConfig, LocalDualOverrides, LocalOnlySettings, RemoteAgentPolicy,
-    RemoteAutoUpdatePolicy, RemoteDnsPolicy, RemoteExitNodesPolicy, RemotePostureCollectorPolicy,
-    RemoteRelayPolicy, ResolvedSetting, inherit_remote_policy, merge_agent_config,
+    ConfigSource, EffectiveAgentConfig, LocalDualOverrides, LocalOnlySettings, RelayPolicy,
+    RemoteAgentPolicy, RemoteAutoUpdatePolicy, RemoteDnsPolicy, RemoteExitNodesPolicy,
+    RemotePostureCollectorPolicy, RemoteRelayPolicy, ResolvedSetting, inherit_remote_policy,
+    merge_agent_config,
 };
 
 use serde::{Deserialize, Serialize};
@@ -27,8 +28,8 @@ pub type EndpointIdHex = String;
 /// ALPN identifier for our tunnel protocol (mesh datagrams).
 pub const TUNNEL_ALPN: &[u8] = b"tunnet/tunnel/1";
 
-/// ALPN for agent ↔ public relay reverse tunnels.
-pub const RELAY_ALPN: &[u8] = b"tunnet/relay/1";
+/// ALPN for agent ↔ public edge reverse tunnels.
+pub const EDGE_ALPN: &[u8] = b"tunnet/edge/1";
 
 /// ALPN for SSH session recording streams.
 pub use recording::RECORDING_ALPN;
@@ -258,8 +259,8 @@ pub struct TunnelConfig {
     pub protocol: String,
     pub subdomain: String,
     pub public_hostname: String,
-    pub relay_addr: String,
-    pub relay_auth_token: String,
+    pub edge_addr: String,
+    pub edge_auth_token: String,
     pub status: String,
 }
 
@@ -274,7 +275,7 @@ pub struct RedirectRule {
     pub target_ipv4: Option<Ipv4Addr>,
 }
 
-/// Public TCP port mapping on the relay edge.
+/// Public TCP port mapping on the public edge.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PortMapping {
@@ -347,6 +348,28 @@ pub struct NetworkMembershipSnapshot {
     pub version: u64,
 }
 
+/// Connectivity relay entry pushed to agents (mesh DERP / hybrid).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectivityRelayConfig {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_token: Option<String>,
+}
+
+/// What the agent should use when `connectivity_relays` is empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectivityRelayFallback {
+    /// No public n0 fallback (Cloud fail-closed, or explicitly disabled).
+    #[default]
+    None,
+    /// Use iroh's public n0 relay map.
+    N0,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EndpointSnapshot {
     pub ipv6_enabled: bool,
@@ -360,6 +383,12 @@ pub struct EndpointSnapshot {
     /// Org-level remote agent policy defaults (before network inheritance).
     #[serde(default)]
     pub agent_policy: agent_policy::RemoteAgentPolicy,
+    /// Effective connectivity relays for this endpoint (after org policy).
+    #[serde(default)]
+    pub connectivity_relays: Vec<ConnectivityRelayConfig>,
+    /// Fallback when `connectivity_relays` is empty (agent-side n0 vs disabled).
+    #[serde(default)]
+    pub connectivity_relay_fallback: ConnectivityRelayFallback,
     /// Org internal CA root cert (PEM) so agents can verify peer Serve TLS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org_ca_pem: Option<String>,

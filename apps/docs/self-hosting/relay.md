@@ -1,10 +1,8 @@
-# Self-Hosting a Relay
+# Self-Hosting a Connectivity Relay
 
-The relay (`tunnet-relay`) is an optional component for organizations that need public tunnels (`tunnet tunnel`). It is a standalone Rust binary that terminates public HTTPS/TCP connections and forwards them to agents through reverse tunnels.
+`tunnet-relay` wraps the official iroh-relay server for mesh NAT traversal. This is **not** the public tunnel edge - for tunnels see [Self-Hosting an Edge](/self-hosting/edge).
 
 ## Running with Docker
-
-The relay is **not** included in the default `docker-compose.yml` because it requires public DNS pointing to your server and TLS certificates. To add it:
 
 ```yaml
 # Add to docker-compose.yml services:
@@ -13,59 +11,54 @@ relay:
     context: .
     dockerfile: deploy/Dockerfile.relay
   restart: unless-stopped
-  depends_on:
-    control:
-      condition: service_started
   ports:
-    - "443:443"
     - "80:80"
+    - "443:443"
+    - "9090:9090"
   environment:
-    TUNNET_RELAY_CONTROL_URL: "http://control:8080"
-  volumes:
-    - relay-certs:/etc/tunnet/certs
-
-# Add to volumes:
-volumes:
-  pgdata:
-  relay-certs:
+    TUNNET_CONTROL_URL: "http://control:8080"
+    TUNNET_RELAY_TOKEN: "YOUR_RELAY_TOKEN"
+    TUNNET_RELAY_URL: "https://relay.example.com"
+    TUNNET_RELAY_REGION: "us-east"
+    # Optional shared access token for clients:
+    # IROH_RELAY_ACCESS_TOKEN: "..."
 ```
 
-The relay image is built from `deploy/Dockerfile.relay` - a simple multi-stage Rust build into `debian:bookworm-slim`. It exposes ports 80 and 443.
+The image is built from `deploy/Dockerfile.relay`. It exposes HTTP(S) (80/443), metrics (9090), iroh `--dev` HTTP (3340), and QAD QUIC (7842).
 
-## Running manually
+## Development / plaintext
+
+For local testing (matches upstream iroh-relay `--dev`):
 
 ```bash
-# Register the relay with the control plane
-tunnet-relay register \
-  --control-url http://control:8080 \
-  --token YOUR_RELAY_TOKEN
-
-# Run the relay
-tunnet-relay run
+tunnet-relay run --dev
+# HTTP plaintext on :3340 by default
 ```
 
-## DNS setup
+## Production
 
-Point your tunnel wildcard domain at the relay server's public IP:
-
-```
-*.tunnel.example.com  →  A  →  <relay-public-ip>
-```
-
-## TLS certificates
-
-The relay needs TLS certificates to terminate public HTTPS. You have three options:
-
-**ACME (Let's Encrypt)** - the relay can automatically obtain and renew certificates. Configure the ACME settings in the relay startup options.
-
-**Bring your own certs** - pass certificates directly:
+Provide TLS certificates and bind HTTPS:
 
 ```bash
 tunnet-relay run \
-  --cert-file /path/to/fullchain.pem \
-  --key-file /path/to/privkey.pem
+  --http-bind 0.0.0.0:80 \
+  --https-bind 0.0.0.0:443 \
+  --tls-cert /path/to/fullchain.pem \
+  --tls-key /path/to/privkey.pem \
+  --control-url http://control:8080 \
+  --token YOUR_RELAY_TOKEN \
+  --relay-url https://relay.example.com \
+  --region us-east
 ```
 
-**Reverse proxy** - put the relay behind a reverse proxy (Caddy, nginx, Traefik) that handles TLS termination, and run the relay in HTTP mode.
+You can also pass an iroh-relay-compatible TOML via `--config` / `TUNNET_RELAY_CONFIG`.
 
-See `tunnet-relay --help` for all available options.
+## Control plane registration
+
+When `TUNNET_CONTROL_URL` and `TUNNET_RELAY_TOKEN` are set, the relay registers and heartbeats so the control plane can put its URL into agent connectivity snapshots (`RelayMode::Custom`).
+
+## Related
+
+- [Product overview](/products/connectivity-relay/)
+- [CLI reference](/cli/relay)
+- [Environment variables](/self-hosting/env)

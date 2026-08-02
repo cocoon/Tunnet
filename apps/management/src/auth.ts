@@ -1,6 +1,14 @@
 import { oauthProvider } from "@better-auth/oauth-provider";
 import { sso } from "@better-auth/sso";
-import { ac, member, admin as orgAdmin, owner } from "@tunnet/api/auth";
+import {
+  ac,
+  adminPluginAc,
+  adminPluginAdminRole,
+  adminPluginUserRole,
+  member,
+  admin as orgAdmin,
+  owner,
+} from "@tunnet/api/auth";
 import { getDb, schema } from "@tunnet/db";
 import { getDashboardUrl, getManagementUrl } from "@tunnet/env";
 import { betterAuth } from "better-auth";
@@ -190,6 +198,11 @@ export const auth = betterAuth({
   },
   plugins: [
     admin({
+      ac: adminPluginAc,
+      roles: {
+        admin: adminPluginAdminRole,
+        user: adminPluginUserRole,
+      },
       defaultRole: "user",
       adminRoles: ["admin"],
     }),

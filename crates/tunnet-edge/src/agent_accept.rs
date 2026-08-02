@@ -1,4 +1,4 @@
-//! Accept agent QUIC connections (RELAY_ALPN) and register reverse tunnels.
+//! Accept agent QUIC connections (EDGE_ALPN) and register reverse tunnels.
 
 use std::fmt;
 use std::sync::Arc;
@@ -9,43 +9,53 @@ use iroh::Endpoint;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tunnet_common::RELAY_ALPN;
-use tunnet_common::relay::RelayCtrl;
+use tunnet_common::EDGE_ALPN;
+use tunnet_common::edge::EdgeCtrl;
 use tunnet_common::{PortMapping, RedirectRule};
 
+use crate::metrics::EdgeMetrics;
 use crate::registry::{TunnelRegistry, TunnelSlot};
+use crate::transport::QuicAgentTransport;
 
-/// Spawn the relay ALPN router. Keep the returned [`Router`] alive.
+/// Spawn the edge ALPN router. Keep the returned [`Router`] alive.
 pub fn spawn_acceptor(
     endpoint: Endpoint,
     registry: TunnelRegistry,
     auth_tokens: AuthStore,
+    metrics: EdgeMetrics,
 ) -> Router {
-    let handler = RelayHandler {
+    let handler = EdgeHandler {
         registry,
         auth: auth_tokens,
+        metrics,
     };
-    tracing::info!("relay QUIC acceptor started");
-    Router::builder(endpoint)
-        .accept(RELAY_ALPN, handler)
-        .spawn()
+    tracing::info!("edge QUIC acceptor started");
+    Router::builder(endpoint).accept(EDGE_ALPN, handler).spawn()
 }
 
 #[derive(Clone)]
-struct RelayHandler {
+struct EdgeHandler {
     registry: TunnelRegistry,
     auth: AuthStore,
+    metrics: EdgeMetrics,
 }
 
-impl fmt::Debug for RelayHandler {
+impl fmt::Debug for EdgeHandler {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RelayHandler").finish_non_exhaustive()
+        f.debug_struct("EdgeHandler").finish_non_exhaustive()
     }
 }
 
-impl ProtocolHandler for RelayHandler {
+impl ProtocolHandler for EdgeHandler {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
-        if let Err(e) = handle_agent(conn, self.registry.clone(), self.auth.clone()).await {
+        if let Err(e) = handle_agent(
+            conn,
+            self.registry.clone(),
+            self.auth.clone(),
+            self.metrics.clone(),
+        )
+        .await
+        {
             tracing::debug!(?e, "agent session ended");
         }
         Ok(())
@@ -100,6 +110,7 @@ async fn handle_agent(
     conn: Connection,
     registry: TunnelRegistry,
     auth: AuthStore,
+    metrics: EdgeMetrics,
 ) -> anyhow::Result<()> {
     let (mut send, recv) = conn.accept_bi().await.context("accept control bi")?;
     let mut reader = BufReader::new(recv);
@@ -108,8 +119,8 @@ async fn handle_agent(
         .await
         .context("auth timeout")??;
 
-    let ctrl = RelayCtrl::from_line(&line)?;
-    let RelayCtrl::Register {
+    let ctrl = EdgeCtrl::from_line(&line)?;
+    let EdgeCtrl::Register {
         tunnel_id,
         subdomain,
         auth_token,
@@ -119,7 +130,7 @@ async fn handle_agent(
     else {
         write_ctrl(
             &mut send,
-            &RelayCtrl::Error {
+            &EdgeCtrl::Error {
                 message: "expected register".into(),
             },
         )
@@ -130,7 +141,7 @@ async fn handle_agent(
     if !auth.verify(&subdomain, &auth_token) {
         write_ctrl(
             &mut send,
-            &RelayCtrl::Error {
+            &EdgeCtrl::Error {
                 message: "invalid auth token".into(),
             },
         )
@@ -162,32 +173,34 @@ async fn handle_agent(
         },
     );
 
-    write_ctrl(&mut send, &RelayCtrl::Ok).await?;
+    write_ctrl(&mut send, &EdgeCtrl::Ok).await?;
 
+    let transport = QuicAgentTransport::new(conn);
     let slot = Arc::new(TunnelSlot {
         tunnel_id: tunnel_id.clone(),
         subdomain: subdomain.clone(),
         local_port,
         protocol,
-        conn: parking_lot::Mutex::new(Some(conn.clone())),
+        transport: parking_lot::Mutex::new(Some(transport)),
     });
     registry.insert(slot.clone());
+    metrics.set_active_tunnels(registry.active_count());
     tracing::info!(%subdomain, %tunnel_id, local_port, "agent tunnel registered");
 
     let mut ping = tokio::time::interval(Duration::from_secs(25));
     loop {
         tokio::select! {
             _ = ping.tick() => {
-                if write_ctrl(&mut send, &RelayCtrl::Ping).await.is_err() {
+                if write_ctrl(&mut send, &EdgeCtrl::Ping).await.is_err() {
                     break;
                 }
             }
             result = read_ctrl(&mut reader) => {
                 match result {
-                    Ok(Some(RelayCtrl::Ping)) => {
-                        let _ = write_ctrl(&mut send, &RelayCtrl::Pong).await;
+                    Ok(Some(EdgeCtrl::Ping)) => {
+                        let _ = write_ctrl(&mut send, &EdgeCtrl::Pong).await;
                     }
-                    Ok(Some(RelayCtrl::Pong)) => {}
+                    Ok(Some(EdgeCtrl::Pong)) => {}
                     Ok(Some(_)) => {}
                     Ok(None) | Err(_) => break,
                 }
@@ -196,21 +209,22 @@ async fn handle_agent(
     }
 
     registry.remove_tunnel(&tunnel_id);
-    *slot.conn.lock() = None;
+    *slot.transport.lock() = None;
+    metrics.set_active_tunnels(registry.active_count());
     tracing::info!(%subdomain, %tunnel_id, "agent tunnel disconnected");
     Ok(())
 }
 
-async fn write_ctrl(send: &mut SendStream, msg: &RelayCtrl) -> anyhow::Result<()> {
+async fn write_ctrl(send: &mut SendStream, msg: &EdgeCtrl) -> anyhow::Result<()> {
     send.write_all(&msg.to_line()?).await?;
     Ok(())
 }
 
-async fn read_ctrl(reader: &mut BufReader<RecvStream>) -> anyhow::Result<Option<RelayCtrl>> {
+async fn read_ctrl(reader: &mut BufReader<RecvStream>) -> anyhow::Result<Option<EdgeCtrl>> {
     let mut line = String::new();
     let n = reader.read_line(&mut line).await?;
     if n == 0 {
         return Ok(None);
     }
-    Ok(Some(RelayCtrl::from_line(&line)?))
+    Ok(Some(EdgeCtrl::from_line(&line)?))
 }

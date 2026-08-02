@@ -5,23 +5,24 @@ export const relayStatusSchema = z.enum([
   "healthy",
   "degraded",
   "offline",
-  "disabled",
+  "suspended",
 ]);
 
-export const relayKindSchema = z.enum(["hosted", "self_hosted"]);
+export const relayAccessModeSchema = z.enum(["open", "shared_token", "http"]);
 
 export const relaySchema = z.object({
   id: z.string().uuid(),
-  organizationId: z.string(),
+  organizationId: z.string().nullable(),
   name: z.string().min(1).max(64),
-  kind: relayKindSchema,
+  url: z.string(),
   region: z.string(),
-  publicIp: z.string().nullable(),
-  domain: z.string().min(1),
-  capacityLimit: z.number().int().positive(),
-  activeTunnels: z.number().int().nonnegative(),
   status: relayStatusSchema,
+  qadEnabled: z.boolean(),
+  metricsUrl: z.string().nullable(),
+  accessMode: relayAccessModeSchema,
   lastHeartbeatAt: z.string().datetime().nullable(),
+  identity: z.record(z.string(), z.unknown()),
+  suspendedAt: z.string().datetime().nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
@@ -33,20 +34,27 @@ export const createRelayBody = z.object({
     .max(64)
     .regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/),
   region: z.string().min(1).max(64).default("unknown"),
-  domain: z.string().min(1).max(253),
-  publicIp: z.string().optional(),
-  capacityLimit: z.number().int().min(1).max(100_000).default(100),
-  kind: relayKindSchema.default("self_hosted"),
+  url: z.string().max(2048).optional().default(""),
+  qadEnabled: z.boolean().optional().default(false),
+  metricsUrl: z.string().max(2048).nullable().optional(),
+  accessMode: relayAccessModeSchema.optional().default("open"),
 });
 
 export const patchRelayBody = z
   .object({
-    name: z.string().min(1).max(64).optional(),
+    name: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/)
+      .optional(),
     region: z.string().min(1).max(64).optional(),
-    domain: z.string().min(1).max(253).optional(),
-    publicIp: z.string().nullable().optional(),
-    capacityLimit: z.number().int().min(1).max(100_000).optional(),
-    status: z.enum(["healthy", "degraded", "offline", "disabled"]).optional(),
+    url: z.string().max(2048).optional(),
+    qadEnabled: z.boolean().optional(),
+    metricsUrl: z.string().max(2048).nullable().optional(),
+    accessMode: relayAccessModeSchema.optional(),
+    /** Set `suspended` to suspend, `healthy` to resume. */
+    status: z.enum(["healthy", "degraded", "offline", "suspended"]).optional(),
   })
   .refine((b) => Object.keys(b).length > 0, {
     message: "At least one field must be provided",
@@ -54,6 +62,8 @@ export const patchRelayBody = z
 
 export const relayListResponse = z.object({
   relays: z.array(relaySchema),
+  /** Healthy Cloud deployment relay regions (read-only; org list only). */
+  availableRelayRegions: z.array(z.string()).optional(),
 });
 
 export const createRelayResponse = z.object({
@@ -61,6 +71,10 @@ export const createRelayResponse = z.object({
   /** One-time registration token (plaintext, shown once). */
   registrationToken: z.string(),
   expiresAt: z.string().datetime(),
+});
+
+export const availableRelayRegionsResponse = z.object({
+  regions: z.array(z.string()),
 });
 
 export type Relay = z.infer<typeof relaySchema>;

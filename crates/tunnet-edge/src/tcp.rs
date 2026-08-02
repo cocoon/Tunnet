@@ -10,9 +10,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tunnet_common::PortMapping;
-use tunnet_common::relay::RelayCtrl;
 
+use crate::metrics::EdgeMetrics;
 use crate::registry::TunnelRegistry;
+use crate::transport::AgentStream;
 
 type MappingKey = (String, u16); // (subdomain, external_port)
 
@@ -31,7 +32,12 @@ impl TcpMappingManager {
     }
 
     /// Reconcile desired mappings from heartbeat against live listeners.
-    pub fn reconcile(&self, desired: Vec<(String, String, PortMapping)>, registry: TunnelRegistry) {
+    pub fn reconcile(
+        &self,
+        desired: Vec<(String, String, PortMapping)>,
+        registry: TunnelRegistry,
+        metrics: EdgeMetrics,
+    ) {
         let desired_keys: Vec<MappingKey> = desired
             .iter()
             .map(|(sub, _, m)| (sub.to_ascii_lowercase(), m.external_port))
@@ -71,6 +77,7 @@ impl TcpMappingManager {
 
             let registry = registry.clone();
             let mgr = self.clone();
+            let metrics = metrics.clone();
             let subdomain = key.0.clone();
             let external_port = mapping.external_port;
             let target_port = mapping.target_port;
@@ -83,6 +90,7 @@ impl TcpMappingManager {
                     target_port,
                     target_ip,
                     registry,
+                    metrics,
                     stop_rx,
                 )
                 .await
@@ -100,6 +108,7 @@ impl TcpMappingManager {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_tcp_listener(
     subdomain: String,
     _tunnel_id: String,
@@ -107,6 +116,7 @@ async fn run_tcp_listener(
     target_port: u16,
     target_ip: Option<String>,
     registry: TunnelRegistry,
+    metrics: EdgeMetrics,
     mut stop: oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
     let bind = SocketAddr::from(([0, 0, 0, 0], external_port));
@@ -126,9 +136,10 @@ async fn run_tcp_listener(
                 let registry = registry.clone();
                 let subdomain = subdomain.clone();
                 let target_ip = target_ip.clone();
+                let metrics = metrics.clone();
                 tokio::spawn(async move {
                     if let Err(e) =
-                        handle_tcp_client(tcp, peer, &subdomain, target_port, target_ip, registry).await
+                        handle_tcp_client(tcp, peer, &subdomain, target_port, target_ip, registry, metrics).await
                     {
                         tracing::debug!(?e, %peer, %subdomain, "TCP mapping session ended");
                     }
@@ -146,53 +157,75 @@ async fn handle_tcp_client(
     target_port: u16,
     target_ip: Option<String>,
     registry: TunnelRegistry,
+    metrics: EdgeMetrics,
 ) -> anyhow::Result<()> {
-    let slot = registry
-        .get(subdomain)
-        .with_context(|| format!("no tunnel for subdomain {subdomain}"))?;
-    let conn = {
-        let guard = slot.conn.lock();
-        guard
-            .clone()
-            .with_context(|| format!("tunnel for {subdomain} not connected"))?
+    metrics.tcp_accept();
+    metrics.active_connections_inc();
+    struct Guard(EdgeMetrics);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            self.0.active_connections_dec();
+        }
+    }
+    let _guard = Guard(metrics.clone());
+
+    let slot = match registry.get(subdomain) {
+        Some(s) => s,
+        None => {
+            metrics.forward_failure("no_tunnel");
+            anyhow::bail!("no tunnel for subdomain {subdomain}");
+        }
+    };
+    let transport = {
+        let guard = slot.transport.lock();
+        match guard.clone() {
+            Some(t) => t,
+            None => {
+                metrics.forward_failure("not_connected");
+                anyhow::bail!("tunnel for {subdomain} not connected");
+            }
+        }
     };
 
-    let (mut send, mut recv) = conn.open_bi().await.context("open bi to agent")?;
-    // Tell agent which host:port to dial.
-    send.write_all(
-        &RelayCtrl::Forward {
-            target_port,
-            target_ip,
+    let stream = match transport.open_forward(target_port, target_ip).await {
+        Ok(s) => s,
+        Err(e) => {
+            metrics.forward_failure("open_forward");
+            return Err(e).context("open bi to agent");
         }
-        .to_line()
-        .context("encode forward")?,
-    )
-    .await?;
+    };
+    let AgentStream { mut send, mut recv } = stream;
 
     tracing::debug!(%subdomain, %peer, target_port, "TCP mapping proxying to agent");
 
     let (mut tcp_read, mut tcp_write) = tcp.into_split();
     let up = async {
         let mut buf = vec![0u8; 32 * 1024];
+        let mut total = 0u64;
         loop {
             let n = tcp_read.read(&mut buf).await?;
             if n == 0 {
                 break;
             }
             send.write_all(&buf[..n]).await?;
+            total += n as u64;
         }
         send.finish().ok();
-        Ok::<_, anyhow::Error>(())
+        Ok::<_, anyhow::Error>(total)
     };
     let down = async {
         let mut buf = vec![0u8; 32 * 1024];
+        let mut total = 0u64;
         while let Some(n) = recv.read(&mut buf).await? {
             tcp_write.write_all(&buf[..n]).await?;
+            total += n as u64;
         }
-        Ok::<_, anyhow::Error>(())
+        Ok::<_, anyhow::Error>(total)
     };
     let (a, b) = tokio::join!(up, down);
-    a?;
-    b?;
+    let tx = a?;
+    let rx = b?;
+    metrics.bytes_add("tx", tx);
+    metrics.bytes_add("rx", rx);
     Ok(())
 }

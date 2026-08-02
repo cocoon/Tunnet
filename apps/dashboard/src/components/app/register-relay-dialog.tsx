@@ -9,11 +9,22 @@ import {
 } from "@tunnet/ui/components/dialog";
 import { Input } from "@tunnet/ui/components/input";
 import { Label } from "@tunnet/ui/components/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@tunnet/ui/components/select";
+import { Switch } from "@tunnet/ui/components/switch";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { CopyField } from "@/components/app/copy-field";
 import { getControlPlaneUrl } from "@/lib/env";
-import { useRelayMutations, useRelays } from "@/lib/queries/management";
+import {
+  useConnectivityRelays,
+  useOrgRelayMutations,
+} from "@/lib/queries/management";
 
 type RegisterRelayDialogProps = {
   orgId: string;
@@ -26,19 +37,22 @@ export function RegisterRelayDialog({
   open,
   onOpenChange,
 }: RegisterRelayDialogProps) {
-  const { create } = useRelayMutations(orgId);
-  const { data: relays } = useRelays(orgId);
+  const { create } = useOrgRelayMutations(orgId);
+  const { data: list } = useConnectivityRelays(orgId);
   const [name, setName] = useState("");
   const [region, setRegion] = useState("unknown");
-  const [domain, setDomain] = useState("");
-  const [publicIp, setPublicIp] = useState("");
-  const [capacity, setCapacity] = useState("100");
+  const [url, setUrl] = useState("");
+  const [accessMode, setAccessMode] = useState<
+    "open" | "shared_token" | "http"
+  >("open");
+  const [qadEnabled, setQadEnabled] = useState(false);
+  const [metricsUrl, setMetricsUrl] = useState("");
   const [registrationToken, setRegistrationToken] = useState<string | null>(
     null,
   );
   const [createdRelayId, setCreatedRelayId] = useState<string | null>(null);
 
-  const createdRelay = relays?.find((r) => r.id === createdRelayId);
+  const createdRelay = list?.relays.find((r) => r.id === createdRelayId);
   const isHealthy = createdRelay?.status === "healthy";
 
   useEffect(() => {
@@ -49,9 +63,10 @@ export function RegisterRelayDialog({
   function reset() {
     setName("");
     setRegion("unknown");
-    setDomain("");
-    setPublicIp("");
-    setCapacity("100");
+    setUrl("");
+    setAccessMode("open");
+    setQadEnabled(false);
+    setMetricsUrl("");
     setRegistrationToken(null);
     setCreatedRelayId(null);
   }
@@ -67,10 +82,10 @@ export function RegisterRelayDialog({
       const result = await create.mutateAsync({
         name: name.trim(),
         region: region.trim() || "unknown",
-        domain: domain.trim(),
-        publicIp: publicIp.trim() || undefined,
-        capacityLimit: Number(capacity) || 100,
-        kind: "self_hosted",
+        url: url.trim(),
+        accessMode,
+        qadEnabled,
+        metricsUrl: metricsUrl.trim() || null,
       });
       setRegistrationToken(result.registrationToken);
       setCreatedRelayId(result.relay.id);
@@ -103,7 +118,7 @@ export function RegisterRelayDialog({
               <CopyField label="Register command" value={command} />
               {isHealthy ? (
                 <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600 dark:text-emerald-400">
-                  ✓ Connected - relay is healthy
+                  Connected - relay is healthy
                 </p>
               ) : (
                 <p className="text-muted-foreground text-xs">
@@ -118,15 +133,11 @@ export function RegisterRelayDialog({
         ) : (
           <form onSubmit={(e) => void handleSubmit(e)}>
             <DialogHeader>
-              <DialogTitle>Register relay</DialogTitle>
+              <DialogTitle>Register connectivity relay</DialogTitle>
               <DialogDescription>
-                Add a self-hosted relay that terminates public tunnels for your
-                organization. Point wildcard DNS{" "}
-                <span className="font-mono">*.your-domain</span> at the relay
-                IP. Provide TLS via{" "}
-                <span className="font-mono">--cert/--key</span> or{" "}
-                <span className="font-mono">--acme-domain</span> (HTTP-01,
-                non-wildcard).
+                Add an org-scoped{" "}
+                <span className="font-mono">tunnet-relay</span> for mesh
+                connectivity. Distinct from Edges (public tunnel ingress).
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
@@ -152,34 +163,47 @@ export function RegisterRelayDialog({
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="relay-domain">Domain</Label>
+                <Label htmlFor="relay-url">Relay URL (optional)</Label>
                 <Input
-                  id="relay-domain"
-                  value={domain}
-                  onChange={(e) => setDomain(e.target.value)}
-                  placeholder="tunnel.example.com"
-                  required
+                  id="relay-url"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://relay.example.com:443"
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="relay-ip">Public IP (optional)</Label>
-                <Input
-                  id="relay-ip"
-                  value={publicIp}
-                  onChange={(e) => setPublicIp(e.target.value)}
-                  placeholder="203.0.113.5"
+                <Label>Access mode</Label>
+                <Select
+                  value={accessMode}
+                  onValueChange={(v) =>
+                    setAccessMode(v as "open" | "shared_token" | "http")
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="open">Open</SelectItem>
+                    <SelectItem value="shared_token">Shared token</SelectItem>
+                    <SelectItem value="http">HTTP</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <Label htmlFor="relay-qad">QAD enabled</Label>
+                <Switch
+                  id="relay-qad"
+                  checked={qadEnabled}
+                  onCheckedChange={setQadEnabled}
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="relay-capacity">Capacity</Label>
+                <Label htmlFor="relay-metrics">Metrics URL (optional)</Label>
                 <Input
-                  id="relay-capacity"
-                  type="number"
-                  min={1}
-                  max={100000}
-                  value={capacity}
-                  onChange={(e) => setCapacity(e.target.value)}
-                  required
+                  id="relay-metrics"
+                  value={metricsUrl}
+                  onChange={(e) => setMetricsUrl(e.target.value)}
+                  placeholder="https://metrics.example.com"
                 />
               </div>
             </div>

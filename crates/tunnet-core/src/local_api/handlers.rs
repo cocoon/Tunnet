@@ -244,7 +244,7 @@ pub(crate) async fn start_tunnel(
     state: &LocalApiState,
     port: u16,
     protocol: &str,
-    relay: Option<&str>,
+    edge: Option<&str>,
     subdomain: Option<&str>,
     inspect: bool,
     inspect_addr: Option<&str>,
@@ -274,7 +274,7 @@ pub(crate) async fn start_tunnel(
     )?;
 
     let created = client
-        .create_tunnel(port, protocol, subdomain, relay)
+        .create_tunnel(port, protocol, subdomain, edge)
         .await
         .context("control plane create tunnel")?;
 
@@ -282,7 +282,7 @@ pub(crate) async fn start_tunnel(
         .tunnels
         .start(
             created.tunnel_id.clone(),
-            &created.relay_endpoint_id,
+            &created.edge_endpoint_id,
             &created.subdomain,
             &created.public_hostname,
             created.local_port,

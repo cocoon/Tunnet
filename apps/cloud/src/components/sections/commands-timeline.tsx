@@ -35,7 +35,7 @@ tunnet serve status`,
     code: `tunnet tunnel 3000
 # → https://demo-api.rl.acme.tunnet.io
 tunnet tunnel status`,
-    title2: "public tunnel via relay",
+    title2: "public tunnel via edge",
   },
   {
     title: "SSH by identity",

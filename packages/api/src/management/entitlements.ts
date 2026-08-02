@@ -4,6 +4,7 @@ export const entitlementsSchema = z.object({
   tier: z.enum(["community", "cloud", "enterprise"]),
   multiOrganization: z.boolean(),
   cloudLanding: z.boolean(),
+  cloudInfrastructure: z.boolean(),
   openSignUp: z.boolean(),
   clickhouseAudit: z.boolean(),
   auditEnterpriseStreams: z.boolean(),

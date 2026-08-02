@@ -1,10 +1,10 @@
 # Tunnel
 
-`tunnet tunnel` gives a local port a public HTTPS URL through a Tunnet relay. The URL is reachable from the public internet, but the traffic flows through the relay to your agent - no inbound firewall rules needed.
+`tunnet tunnel` gives a local port a public HTTPS URL through a Tunnet edge. The URL is reachable from the public internet, but the traffic flows through the edge to your agent - no inbound firewall rules needed.
 
 ## How it competes
 
-Tunnel competes directly with **ngrok** (public tunnels to local services), **Cloudflare Tunnel** (exposing internal services to the internet), and **Tailscale Funnel** (public access to tailnet services). Tunnet's advantage is self-hosted relay infrastructure and integration with the mesh network.
+Tunnel competes directly with **ngrok** (public tunnels to local services), **Cloudflare Tunnel** (exposing internal services to the internet), and **Tailscale Funnel** (public access to tailnet services). Tunnet's advantage is self-hosted edge infrastructure and integration with the mesh network.
 
 ## Quick start
 
@@ -26,13 +26,13 @@ tunnet tunnel status
 tunnet tunnel off 3000
 ```
 
-The CLI outputs a public URL like `https://abc123.your-relay.example.com` that anyone can access.
+The CLI outputs a public URL like `https://abc123.your-edge.example.com` that anyone can access.
 
 ## Traffic inspection & replay
 
 With `--inspect`, the agent captures plaintext HTTP (headers and bodies, up to 1 MiB each) on the machine and serves a local UI at `http://127.0.0.1:4040` by default. The CLI stays attached and streams each request to the console (Ctrl+C stops the tunnel). You can also open the UI to inspect details and **Replay** any captured request against your local upstream. Bodies never leave the machine.
 
-`--inspect` works in **Managed** mode (public HTTPS URL via relay) and **Direct** mode. In Direct mode Tunnet binds your **mesh IP:port** (same idea as `tunnet serve`) and proxies to `127.0.0.1:port`, so peers keep curling `http://100.x.x.x:3000` and requests show up in the inspector. Bind the app to localhost only - not `0.0.0.0` - so Tunnet can own the mesh port.
+`--inspect` works in **Managed** mode (public HTTPS URL via edge) and **Direct** mode. In Direct mode Tunnet binds your **mesh IP:port** (same idea as `tunnet serve`) and proxies to `127.0.0.1:port`, so peers keep curling `http://100.x.x.x:3000` and requests show up in the inspector. Bind the app to localhost only - not `0.0.0.0` - so Tunnet can own the mesh port.
 
 Without `--inspect`, public tunnels still require Managed mode.
 
@@ -41,20 +41,20 @@ Without `--inspect`, public tunnels still require Managed mode.
 ```mermaid
 sequenceDiagram
     participant Browser as Public Browser
-    participant Relay as tunnet-relay
+    participant Edge as tunnet-edge
     participant Agent as tunnet agent
     participant App as localhost:3000
 
-    Agent->>Relay: Reverse tunnel (QUIC stream, RELAY_ALPN)
-    Browser->>Relay: HTTPS request to abc123.relay.example.com
-    Relay->>Agent: Forward request over reverse tunnel
+    Agent->>Edge: Reverse tunnel (QUIC stream, EDGE_ALPN)
+    Browser->>Edge: HTTPS request to abc123.edge.example.com
+    Edge->>Agent: Forward request over reverse tunnel
     Agent->>App: Proxy to localhost:3000
     App-->>Agent: Response
-    Agent-->>Relay: Response over reverse tunnel
-    Relay-->>Browser: HTTPS response
+    Agent-->>Edge: Response over reverse tunnel
+    Edge-->>Browser: HTTPS response
 ```
 
-When you create a tunnel, the agent establishes a persistent reverse tunnel to the assigned relay. The relay terminates public HTTPS and forwards incoming requests to the agent through the reverse tunnel. The agent proxies the request to your local service.
+When you create a tunnel, the agent establishes a persistent reverse tunnel to the assigned edge. The edge terminates public HTTPS and forwards incoming requests to the agent through the reverse tunnel. The agent proxies the request to your local service.
 
 ## Dashboard management
 

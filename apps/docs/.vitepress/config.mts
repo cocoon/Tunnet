@@ -61,7 +61,11 @@ export default defineConfig({
           { text: "Tunnel", link: "/products/tunnel/" },
           { text: "Send", link: "/products/send/" },
           { text: "SSH", link: "/products/ssh/" },
-          { text: "Relay", link: "/products/relay/" },
+          { text: "Edge", link: "/products/edge/" },
+          {
+            text: "Connectivity Relay",
+            link: "/products/connectivity-relay/",
+          },
         ],
       },
       {
@@ -219,17 +223,24 @@ export default defineConfig({
         },
       ],
 
-      "/products/relay/": [
+      "/products/edge/": [
         {
-          text: "Relay",
+          text: "Edge",
           items: [
-            { text: "Overview", link: "/products/relay/" },
+            { text: "Overview", link: "/products/edge/" },
             {
               text: "Self-Hosted Setup",
-              link: "/products/relay/self-hosted",
+              link: "/products/edge/self-hosted",
             },
-            { text: "ACME & Certificates", link: "/products/relay/acme" },
+            { text: "ACME & Certificates", link: "/products/edge/acme" },
           ],
+        },
+      ],
+
+      "/products/connectivity-relay/": [
+        {
+          text: "Connectivity Relay",
+          items: [{ text: "Overview", link: "/products/connectivity-relay/" }],
         },
       ],
 
@@ -269,6 +280,7 @@ export default defineConfig({
             { text: "Direct Mode Commands", link: "/cli/direct" },
             { text: "tunnet service", link: "/cli/service" },
             { text: "tunnet update", link: "/cli/update" },
+            { text: "tunnet-edge", link: "/cli/edge" },
             { text: "tunnet-relay", link: "/cli/relay" },
           ],
         },
@@ -340,7 +352,8 @@ export default defineConfig({
             { text: "Control Plane", link: "/self-hosting/control-plane" },
             { text: "Management Server", link: "/self-hosting/management" },
             { text: "Dashboard", link: "/self-hosting/dashboard" },
-            { text: "Relay", link: "/self-hosting/relay" },
+            { text: "Edge", link: "/self-hosting/edge" },
+            { text: "Connectivity Relay", link: "/self-hosting/relay" },
             { text: "Database", link: "/self-hosting/database" },
             { text: "Environment Variables", link: "/self-hosting/env" },
           ],

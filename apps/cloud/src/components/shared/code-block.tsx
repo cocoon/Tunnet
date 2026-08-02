@@ -37,7 +37,7 @@ const TUNNET_VERBS = [
   "config",
   "up",
   "down",
-  "relay",
+  "edge",
   "register",
   "run",
 ];
@@ -57,7 +57,7 @@ function tokenize(line: string, lineId: number) {
             ? ("op" as const)
             : KEYWORDS.includes(p)
               ? ("cmd" as const)
-              : p === "tunnet" || p === "tunnet-relay"
+              : p === "tunnet" || p === "tunnet-edge"
                 ? ("cmd" as const)
                 : TUNNET_VERBS.includes(p)
                   ? ("verb" as const)

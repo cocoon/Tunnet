@@ -12,7 +12,9 @@ Tunnet is designed to be fully self-hosted. Unlike competitors where the control
 
 **Dashboard** (Tanstack Start) - the web UI on port 5173 (or built and served statically in production).
 
-**tunnet-relay** (Rust, optional) - the public tunnel edge server.
+**tunnet-edge** (Rust, optional) - the public tunnel edge server.
+
+**tunnet-relay** (Rust, optional) - iroh connectivity relay for mesh NAT traversal (not public tunnels).
 
 ## Quick deployment
 

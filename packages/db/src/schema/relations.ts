@@ -12,9 +12,11 @@ import {
 import {
   apiKeys,
   devices,
+  edges,
   internalCertificates,
   networks,
   organizationCas,
+  organizationRelaySettings,
   organizationTunnelSettings,
   policies,
   postureDefinitions,
@@ -43,6 +45,7 @@ export const organizationRelations = relations(
     devices: many(devices),
     policies: many(policies),
     apiKeys: many(apiKeys),
+    edges: many(edges),
     relays: many(relays),
     tunnels: many(tunnels),
     serves: many(serves),
@@ -51,6 +54,10 @@ export const organizationRelations = relations(
     tunnelSettings: one(organizationTunnelSettings, {
       fields: [organization.id],
       references: [organizationTunnelSettings.organizationId],
+    }),
+    relaySettings: one(organizationRelaySettings, {
+      fields: [organization.id],
+      references: [organizationRelaySettings.organizationId],
     }),
     postureDefinitions: many(postureDefinitions),
     postureIntegrations: many(postureIntegrations),

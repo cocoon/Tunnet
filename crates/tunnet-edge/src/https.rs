@@ -17,7 +17,9 @@ use tokio_rustls::server::TlsStream;
 
 use crate::agent_accept::AuthStore;
 use crate::control::ControlClient;
+use crate::metrics::EdgeMetrics;
 use crate::registry::TunnelRegistry;
+use crate::transport::AgentStream;
 
 pub async fn serve_https(
     bind: SocketAddr,
@@ -25,6 +27,7 @@ pub async fn serve_https(
     registry: TunnelRegistry,
     auth: AuthStore,
     control: Option<ControlClient>,
+    metrics: EdgeMetrics,
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(bind)
         .await
@@ -37,8 +40,10 @@ pub async fn serve_https(
         let registry = registry.clone();
         let auth = auth.clone();
         let control = control.clone();
+        let metrics = metrics.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_https_client(tcp, peer, acceptor, registry, auth, control).await
+            if let Err(e) =
+                handle_https_client(tcp, peer, acceptor, registry, auth, control, metrics).await
             {
                 tracing::debug!(?e, %peer, "HTTPS session ended");
             }
@@ -53,20 +58,33 @@ async fn handle_https_client(
     registry: TunnelRegistry,
     auth: AuthStore,
     control: Option<ControlClient>,
+    metrics: EdgeMetrics,
 ) -> anyhow::Result<()> {
+    metrics.http_request();
+    metrics.active_connections_inc();
+    let _guard = ConnectionGuard(metrics.clone());
+
     let started = Instant::now();
     let tls = acceptor.accept(tcp).await.context("TLS handshake")?;
     let host = extract_server_name(&tls)
         .with_context(|| format!("client {peer} sent no SNI - cannot route tunnel"))?;
 
-    let slot = registry
-        .get(&host)
-        .with_context(|| format!("no tunnel for host {host}"))?;
-    let conn = {
-        let guard = slot.conn.lock();
-        guard
-            .clone()
-            .with_context(|| format!("tunnel for {host} not connected"))?
+    let slot = match registry.get(&host) {
+        Some(s) => s,
+        None => {
+            metrics.forward_failure("no_tunnel");
+            bail!("no tunnel for host {host}");
+        }
+    };
+    let transport = {
+        let guard = slot.transport.lock();
+        match guard.clone() {
+            Some(t) => t,
+            None => {
+                metrics.forward_failure("not_connected");
+                bail!("tunnel for {host} not connected");
+            }
+        }
     };
 
     let tunnel_auth = auth.get(&slot.subdomain);
@@ -77,12 +95,18 @@ async fn handle_https_client(
         .as_ref()
         .and_then(|t| t.basic_auth_password_hash.as_deref());
 
-    let (send, recv) = conn.open_bi().await.context("open bi to agent")?;
+    let stream = match transport.open_raw().await {
+        Ok(s) => s,
+        Err(e) => {
+            metrics.forward_failure("open_stream");
+            return Err(e).context("open bi to agent");
+        }
+    };
     tracing::debug!(%host, %peer, "proxying to agent");
 
     let tunnel_id = slot.tunnel_id.clone();
     let source_ip = peer.ip().to_string();
-    let meta = splice_tls_to_quic(tls, send, recv, basic_user, basic_hash).await?;
+    let meta = splice_tls_to_agent(tls, stream, basic_user, basic_hash, &metrics).await?;
 
     if let Some(client) = control
         && let Some((method, path)) = meta.request
@@ -100,6 +124,14 @@ async fn handle_https_client(
     Ok(())
 }
 
+struct ConnectionGuard(EdgeMetrics);
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.0.active_connections_dec();
+    }
+}
+
 struct SpliceMeta {
     request: Option<(String, String)>,
     status_code: Option<i32>,
@@ -112,14 +144,15 @@ fn extract_server_name(tls: &TlsStream<TcpStream>) -> Option<String> {
 
 /// Peek the first TLS application bytes for an HTTP request, enforce basic auth,
 /// then splice.
-async fn splice_tls_to_quic(
+async fn splice_tls_to_agent(
     tls: TlsStream<TcpStream>,
-    mut send: iroh::endpoint::SendStream,
-    mut recv: iroh::endpoint::RecvStream,
+    stream: AgentStream,
     basic_user: Option<&str>,
     basic_hash: Option<&str>,
+    metrics: &EdgeMetrics,
 ) -> anyhow::Result<SpliceMeta> {
     let (mut tls_read, mut tls_write) = tokio::io::split(tls);
+    let AgentStream { mut send, mut recv } = stream;
 
     // Peek enough to parse the request line + headers.
     let mut peek = vec![0u8; 16 * 1024];
@@ -150,31 +183,38 @@ async fn splice_tls_to_quic(
 
     if n > 0 {
         send.write_all(&peek).await?;
+        metrics.bytes_add("tx", n as u64);
     }
 
     let up = async {
         let mut buf = vec![0u8; 32 * 1024];
+        let mut total = 0u64;
         loop {
             let n = tls_read.read(&mut buf).await?;
             if n == 0 {
                 break;
             }
             send.write_all(&buf[..n]).await?;
+            total += n as u64;
         }
         send.finish().ok();
-        Ok::<_, anyhow::Error>(())
+        Ok::<_, anyhow::Error>(total)
     };
     let down = async {
         let mut buf = vec![0u8; 32 * 1024];
+        let mut total = 0u64;
         while let Some(n) = recv.read(&mut buf).await? {
             tls_write.write_all(&buf[..n]).await?;
+            total += n as u64;
         }
         tls_write.shutdown().await.ok();
-        Ok::<_, anyhow::Error>(())
+        Ok::<_, anyhow::Error>(total)
     };
     let (a, b) = tokio::join!(up, down);
-    a?;
-    b?;
+    let tx = a?;
+    let rx = b?;
+    metrics.bytes_add("tx", tx);
+    metrics.bytes_add("rx", rx);
     Ok(SpliceMeta {
         request,
         status_code: None,

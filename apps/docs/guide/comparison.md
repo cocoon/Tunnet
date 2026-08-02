@@ -28,7 +28,7 @@ battle-tested reliability. Tunnet is honest about this gap.
 ## vs ngrok
 
 ngrok provides public tunnels to local services. Tunnet's `tunnet tunnel` does
-the same thing - give a local port a public HTTPS URL through a relay.
+the same thing - give a local port a public HTTPS URL through an edge.
 
 ngrok also has a mature Kubernetes operator that provides ingress via standard
 Ingress resources and Gateway API, plus embeddable SDKs in Go, Rust, Python,
@@ -36,7 +36,7 @@ JavaScript, and Java.
 
 Tunnet's advantage is that tunnels are part of a broader mesh network. You get
 public endpoints AND private mesh connectivity AND file transfer AND SSH - all
-under one identity system. Plus, you can self-host the relay infrastructure.
+under one identity system. Plus, you can self-host the edge infrastructure.
 ngrok does not offer mesh networking, file transfer, or SSH with session recording.
 
 ## vs Cloudflare Tunnel / Access / Mesh
@@ -72,7 +72,7 @@ Raw WireGuard requires manual key exchange, manual IP allocation, and manual con
 | SSH (identity-based) | Yes | Yes | No | Yes (browser-rendered) |
 | Session recording | Yes | Yes | No | Yes (SSH sessions) |
 | Device posture | Yes | Yes | No | Yes (WARP / Zero Trust) |
-| Self-hosted relay | Yes | DERP (self-hostable) | No | No |
+| Self-hosted edge | Yes | DERP (self-hostable) | No | No |
 | Kubernetes operator | Yes | Yes | Yes | Community¹ |
 | Embeddable SDKs | JS, Rust | Go, C | Go, Rust, Python, JS, Java | No² |
 | SSO / OIDC | Yes | Yes | Yes | Yes |

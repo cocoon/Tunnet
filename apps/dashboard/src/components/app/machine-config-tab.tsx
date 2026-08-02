@@ -141,7 +141,7 @@ function EffectiveConfigView({ config }: { config: EffectiveAgentConfig }) {
         <ConfigRow label="mDNS" setting={config.mdns} />
         <ConfigRow label="LAN discovery" setting={config.lanDiscovery} />
         <ConfigRow label="Tunnel MTU" setting={config.tunnelMtu} />
-        <ConfigRow label="Prefer org relays" setting={config.preferOrgRelays} />
+        <ConfigRow label="Relay policy" setting={config.relayPolicy} />
       </ConfigSection>
 
       <ConfigSection title="Auto-update">

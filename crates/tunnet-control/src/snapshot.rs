@@ -1,12 +1,13 @@
 use sqlx::PgPool;
 use tunnet_common::{
     ActiveServe, DeviceProfile, DnsConfig, EndpointSnapshot, ExitNodeInfo, HostnameRoute,
-    Ipv6PeerEntry, NetworkMembershipSnapshot, PeerEntry, SplitTunnelMode, SubnetRoute,
+    Ipv6PeerEntry, NetworkMembershipSnapshot, PeerEntry, RelayPolicy, SplitTunnelMode, SubnetRoute,
     TunnelConfig,
 };
 use uuid::Uuid;
 
 use crate::pg_inet::{self, PgIp};
+use crate::relay_map::{self, RelayRow};
 
 type EndpointRow = (
     String,
@@ -15,6 +16,9 @@ type EndpointRow = (
     serde_json::Value,
     Option<chrono::DateTime<chrono::Utc>>,
 );
+
+/// url, region, auth_token, organization_id, status
+type RelayDbRow = (String, String, Option<String>, Option<String>, String);
 
 pub async fn build_endpoint_snapshot(
     pool: &PgPool,
@@ -149,6 +153,17 @@ pub async fn build_endpoint_snapshot(
         .await
         .unwrap_or_default();
 
+    let relay_policy = load_org_relay_policy(pool, &organization_id)
+        .await
+        .unwrap_or(RelayPolicy::Inherit);
+    let deployment_relays = load_deployment_relays(pool).await.unwrap_or_default();
+    let org_relays = load_org_relays(pool, &organization_id)
+        .await
+        .unwrap_or_default();
+    let connectivity_relays =
+        relay_map::build_effective_relays(relay_policy, &deployment_relays, &org_relays);
+    let connectivity_relay_fallback = relay_map::connectivity_relay_fallback(&connectivity_relays);
+
     Ok(EndpointSnapshot {
         ipv6_enabled,
         tenant_ipv6,
@@ -157,11 +172,78 @@ pub async fn build_endpoint_snapshot(
         org_policy,
         policy_verifying_key: Some(hex::encode(policy_key.verifying_key().to_bytes())),
         agent_policy: org_agent_policy,
+        connectivity_relays,
+        connectivity_relay_fallback,
         org_ca_pem,
         labels,
         expires_at: expires_at.map(|t| t.to_rfc3339()),
         version: org_version as u64,
     })
+}
+
+async fn load_org_relay_policy(
+    pool: &PgPool,
+    organization_id: &str,
+) -> anyhow::Result<RelayPolicy> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT policy FROM organization_relay_settings WHERE organization_id = $1")
+            .bind(organization_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(match row.as_ref().map(|(p,)| p.as_str()) {
+        Some("augment") => RelayPolicy::Augment,
+        Some("exclusive") => RelayPolicy::Exclusive,
+        _ => RelayPolicy::Inherit,
+    })
+}
+
+async fn load_deployment_relays(pool: &PgPool) -> anyhow::Result<Vec<RelayRow>> {
+    let rows: Vec<RelayDbRow> = sqlx::query_as(
+        "SELECT url, region, \
+            NULLIF(COALESCE(identity->>'authToken', identity->>'auth_token'), ''), \
+            organization_id, status \
+         FROM relays \
+         WHERE organization_id IS NULL AND status = 'healthy'",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(url, region, auth_token, organization_id, status)| RelayRow {
+                url,
+                region: Some(region).filter(|r| !r.is_empty()),
+                auth_token,
+                organization_id,
+                status,
+            },
+        )
+        .collect())
+}
+
+async fn load_org_relays(pool: &PgPool, organization_id: &str) -> anyhow::Result<Vec<RelayRow>> {
+    let rows: Vec<RelayDbRow> = sqlx::query_as(
+        "SELECT url, region, \
+            NULLIF(COALESCE(identity->>'authToken', identity->>'auth_token'), ''), \
+            organization_id, status \
+         FROM relays \
+         WHERE organization_id = $1 AND status = 'healthy'",
+    )
+    .bind(organization_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(url, region, auth_token, organization_id, status)| RelayRow {
+                url,
+                region: Some(region).filter(|r| !r.is_empty()),
+                auth_token,
+                organization_id,
+                status,
+            },
+        )
+        .collect())
 }
 
 async fn load_org_agent_policy(
@@ -263,9 +345,9 @@ async fn load_tunnel_config(
         String,
     )> = sqlx::query_as(
         "SELECT t.id, t.local_port, t.protocol, t.subdomain, t.public_hostname, \
-                r.public_key, r.domain, t.status \
+                e.public_key, e.domain, t.status \
          FROM tunnels t \
-         LEFT JOIN relays r ON r.id = t.relay_id \
+         LEFT JOIN edges e ON e.id = t.edge_id \
          WHERE t.endpoint_id = $1 AND t.network_id = $2 \
            AND t.status IN ('connecting', 'active')",
     )
@@ -283,8 +365,8 @@ async fn load_tunnel_config(
                 protocol,
                 subdomain,
                 public_hostname,
-                relay_endpoint,
-                _relay_domain,
+                edge_endpoint,
+                _edge_domain,
                 status,
             )| TunnelConfig {
                 id: id.to_string(),
@@ -292,12 +374,12 @@ async fn load_tunnel_config(
                 protocol,
                 subdomain,
                 public_hostname,
-                // iroh endpoint id of the relay (dial target). Domain is in public_hostname.
-                relay_addr: relay_endpoint.unwrap_or_default(),
+                // iroh endpoint id of the edge (dial target). Domain is in public_hostname.
+                edge_addr: edge_endpoint.unwrap_or_default(),
                 // Deliberately blank: TunnelManager starts only on OpenTunnel.
                 // On agent WS reconnect, control plane re-pushes OpenTunnel with
                 // Snapshot never carries secrets; reconnect loads from tunnel_secrets.
-                relay_auth_token: String::new(),
+                edge_auth_token: String::new(),
                 status,
             },
         )

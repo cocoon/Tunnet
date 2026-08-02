@@ -26,7 +26,7 @@ export const tunnelSchema = z.object({
   organizationId: z.string(),
   networkId: z.string().uuid(),
   endpointId: z.string().length(64),
-  relayId: z.string().uuid().nullable(),
+  edgeId: z.string().uuid().nullable(),
   localPort: z.number().int().min(1).max(65535),
   protocol: tunnelProtocolSchema,
   subdomain: z.string(),
@@ -40,7 +40,7 @@ export const tunnelSchema = z.object({
   basicAuth: tunnelBasicAuthSchema.nullable().default(null),
   /** Present on list responses. */
   hostname: z.string().optional(),
-  relayName: z.string().optional(),
+  edgeName: z.string().optional(),
 });
 
 export const createTunnelBody = z.object({
@@ -50,8 +50,8 @@ export const createTunnelBody = z.object({
     .regex(/^[0-9a-fA-F]+$/),
   localPort: z.number().int().min(1).max(65535),
   protocol: tunnelProtocolSchema.default("https"),
-  /** Omit / "auto" → CP picks closest healthy relay. */
-  relayId: z.string().uuid().optional(),
+  /** Omit / "auto" → CP picks closest healthy edge. */
+  edgeId: z.string().uuid().optional(),
   subdomain: z
     .string()
     .min(1)
@@ -70,7 +70,7 @@ export const tunnelListResponse = z.object({
 
 export const createTunnelResponse = z.object({
   tunnel: tunnelSchema,
-  relayAuthToken: z.string(),
+  edgeAuthToken: z.string(),
 });
 
 export const patchTunnelBody = z
@@ -83,7 +83,7 @@ export const patchTunnelBody = z
       .regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/)
       .optional(),
     ttlSeconds: z.number().int().positive().nullable().optional(),
-    relayId: z.string().uuid().nullable().optional(),
+    edgeId: z.string().uuid().nullable().optional(),
     /** Disable a tunnel (maps to status stopped). */
     status: z.enum(["stopped"]).optional(),
     /** Set credentials, or null to clear basic auth. */

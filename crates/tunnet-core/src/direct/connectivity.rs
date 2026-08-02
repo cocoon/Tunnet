@@ -2,11 +2,16 @@
 //!
 //! Selects iroh relay presets, optional Mainline DHT address lookup, and mDNS.
 
+use std::sync::Arc;
+
 use iroh::Endpoint;
+use iroh::RelayMode;
 use iroh::endpoint::Builder;
 use iroh::endpoint::presets;
+use iroh::{RelayConfig, RelayMap};
 #[cfg(feature = "direct")]
 use iroh_mainline_address_lookup::DhtAddressLookup;
+use tunnet_common::{ConnectivityRelayConfig, ConnectivityRelayFallback};
 
 #[cfg(feature = "direct")]
 use super::mdns::apply_mdns;
@@ -16,7 +21,7 @@ pub enum ConnectivityProfile {
     /// [`presets::N0`] + optional mDNS.
     #[default]
     N0Public,
-    /// [`presets::N0`] for Tunnet-managed agents (no DHT).
+    /// Tunnet-managed agents: custom RelayMap from control plane, or n0 / disabled fallback.
     TunnetManaged,
     /// [`presets::N0`] + DHT address lookup + optional mDNS.
     ServerlessDht,
@@ -24,10 +29,14 @@ pub enum ConnectivityProfile {
     LanOnly,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectivityOptions {
     pub profile: ConnectivityProfile,
     pub enable_mdns: bool,
+    /// Custom connectivity relays from the control-plane snapshot (managed).
+    pub custom_relays: Vec<ConnectivityRelayConfig>,
+    /// When `custom_relays` is empty: use n0 public relays or disable relays.
+    pub relay_fallback: ConnectivityRelayFallback,
 }
 
 impl Default for ConnectivityOptions {
@@ -35,6 +44,8 @@ impl Default for ConnectivityOptions {
         Self {
             profile: ConnectivityProfile::N0Public,
             enable_mdns: true,
+            custom_relays: Vec::new(),
+            relay_fallback: ConnectivityRelayFallback::N0,
         }
     }
 }
@@ -44,6 +55,8 @@ impl ConnectivityOptions {
         Self {
             profile: ConnectivityProfile::ServerlessDht,
             enable_mdns,
+            custom_relays: Vec::new(),
+            relay_fallback: ConnectivityRelayFallback::N0,
         }
     }
 
@@ -51,18 +64,81 @@ impl ConnectivityOptions {
         Self {
             profile: ConnectivityProfile::TunnetManaged,
             enable_mdns: false,
+            custom_relays: Vec::new(),
+            // Overridden from EndpointSnapshot at managed bind time.
+            relay_fallback: ConnectivityRelayFallback::N0,
         }
+    }
+
+    /// Apply snapshot relay list / fallback for managed agents (bind-time).
+    pub fn with_snapshot_relays(
+        mut self,
+        relays: Vec<ConnectivityRelayConfig>,
+        fallback: ConnectivityRelayFallback,
+    ) -> Self {
+        self.custom_relays = relays;
+        self.relay_fallback = fallback;
+        self
+    }
+}
+
+/// Build an iroh [`RelayMap`] from control-plane relay configs.
+pub fn relay_map_from_configs(
+    relays: &[ConnectivityRelayConfig],
+) -> Result<RelayMap, iroh::RelayUrlParseError> {
+    let map = RelayMap::empty();
+    for relay in relays {
+        let url: iroh::RelayUrl = relay.url.parse()?;
+        let mut config = RelayConfig::from(url.clone());
+        if let Some(token) = relay.auth_token.as_deref().filter(|t| !t.is_empty()) {
+            config = config.with_auth_token(token.to_string());
+        }
+        map.insert(url, Arc::new(config));
+    }
+    Ok(map)
+}
+
+fn apply_relay_mode(builder: Builder, opts: &ConnectivityOptions) -> Builder {
+    if !opts.custom_relays.is_empty() {
+        match relay_map_from_configs(&opts.custom_relays) {
+            Ok(map) => return builder.relay_mode(RelayMode::Custom(map)),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "invalid connectivity relay URL; applying fallback"
+                );
+            }
+        }
+    }
+
+    match (opts.profile, opts.relay_fallback) {
+        (ConnectivityProfile::TunnetManaged, ConnectivityRelayFallback::None) => {
+            builder.relay_mode(RelayMode::Disabled)
+        }
+        (ConnectivityProfile::LanOnly, _) => builder,
+        (_, ConnectivityRelayFallback::N0) => builder,
+        (_, ConnectivityRelayFallback::None) => builder.relay_mode(RelayMode::Disabled),
     }
 }
 
 /// Start an endpoint builder with the relay preset for this profile.
 pub fn endpoint_builder(opts: &ConnectivityOptions) -> Builder {
-    match opts.profile {
+    let builder = match opts.profile {
         ConnectivityProfile::LanOnly => Endpoint::builder(presets::Minimal),
+        ConnectivityProfile::TunnetManaged if !opts.custom_relays.is_empty() => {
+            // Minimal + Custom relay_mode (override below).
+            Endpoint::builder(presets::Minimal)
+        }
+        ConnectivityProfile::TunnetManaged
+            if opts.relay_fallback == ConnectivityRelayFallback::None =>
+        {
+            Endpoint::builder(presets::Minimal)
+        }
         ConnectivityProfile::N0Public
         | ConnectivityProfile::TunnetManaged
         | ConnectivityProfile::ServerlessDht => Endpoint::builder(presets::N0),
-    }
+    };
+    apply_relay_mode(builder, opts)
 }
 
 /// Attach address-lookup services to an endpoint builder.
@@ -93,6 +169,8 @@ mod tests {
         let opts = ConnectivityOptions::managed_default();
         assert_eq!(opts.profile, ConnectivityProfile::TunnetManaged);
         assert!(!opts.enable_mdns);
+        assert!(opts.custom_relays.is_empty());
+        assert_eq!(opts.relay_fallback, ConnectivityRelayFallback::N0);
     }
 
     #[cfg(feature = "direct")]
@@ -109,6 +187,8 @@ mod tests {
         let opts = ConnectivityOptions {
             profile: ConnectivityProfile::LanOnly,
             enable_mdns: false,
+            custom_relays: Vec::new(),
+            relay_fallback: ConnectivityRelayFallback::None,
         };
         let _builder = endpoint_builder(&opts);
     }
@@ -117,6 +197,52 @@ mod tests {
     #[test]
     fn serverless_builder_uses_n0() {
         let opts = ConnectivityOptions::direct_default(false);
+        let _builder = endpoint_builder(&opts);
+    }
+
+    #[cfg(any(feature = "direct", feature = "managed"))]
+    #[test]
+    fn custom_relays_builder_uses_custom_relay_map() {
+        // Non-empty custom_relays → Minimal preset + RelayMode::Custom(map)
+        // via apply_relay_mode (see endpoint_builder / apply_relay_mode).
+        let opts = ConnectivityOptions::managed_default().with_snapshot_relays(
+            vec![ConnectivityRelayConfig {
+                url: "https://relay.example.com".into(),
+                region: Some("us".into()),
+                auth_token: Some("tok".into()),
+            }],
+            ConnectivityRelayFallback::None,
+        );
+        assert!(!opts.custom_relays.is_empty());
+        assert_eq!(opts.profile, ConnectivityProfile::TunnetManaged);
+        let _builder = endpoint_builder(&opts);
+        let map = relay_map_from_configs(&opts.custom_relays).expect("parse");
+        assert_eq!(map.len(), 1);
+        let urls: Vec<iroh::RelayUrl> = map.urls();
+        assert!(urls[0].as_str().contains("relay.example.com"));
+    }
+
+    #[cfg(any(feature = "direct", feature = "managed"))]
+    #[test]
+    fn custom_relays_with_auth_token_builds_map() {
+        let relays = vec![ConnectivityRelayConfig {
+            url: "https://relay.example.com./".into(),
+            region: None,
+            auth_token: Some("shared-secret".into()),
+        }];
+        let map = relay_map_from_configs(&relays).expect("parse");
+        assert_eq!(map.len(), 1);
+    }
+
+    #[cfg(any(feature = "direct", feature = "managed"))]
+    #[test]
+    fn managed_empty_cloud_fallback_disables_relays() {
+        let opts = ConnectivityOptions {
+            profile: ConnectivityProfile::TunnetManaged,
+            enable_mdns: false,
+            custom_relays: Vec::new(),
+            relay_fallback: ConnectivityRelayFallback::None,
+        };
         let _builder = endpoint_builder(&opts);
     }
 }

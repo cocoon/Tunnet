@@ -25,8 +25,8 @@ bun run dash:preview
 |----------|-------------|
 | `DASHBOARD_URL` | Dashboard public URL (enrollment commands, OAuth) |
 | `MANAGEMENT_URL` | Management API URL (browser client + Nitro proxy target) |
-| `CONTROL_PLANE_URL` | Control plane URL (shown in enroll/relay commands) |
+| `CONTROL_PLANE_URL` | Control plane URL (shown in enroll/edge commands) |
 
 ## Pages
 
-The dashboard covers **Overview** (organization summary), **Networks** (mesh map, access policies, routes, enrollment), **Kubernetes** (operator-managed connectors and proxies), **Machines** (list, detail, tags, serves, tunnels, posture), **Relays** (registration, status), **Tunnels** (create, manage, redirects, port mappings), **Serves** (create, manage, ACLs), **Transfers** (file transfer monitoring), **SSH** (sessions, recordings), **Security** (device posture definitions, compliance, integrations, and org Access policies), **Users** (organization members), **Logs** ([audit trail](/guide/concepts/audit-logs)), and **Settings** (organization, internal CA, tunnel defaults, SSO, API keys, account).
+The dashboard covers **Overview** (organization summary), **Networks** (mesh map, access policies, routes, enrollment), **Kubernetes** (operator-managed connectors and proxies), **Machines** (list, detail, tags, serves, tunnels, posture), **Edges** (registration, status), **Tunnels** (create, manage, redirects, port mappings), **Serves** (create, manage, ACLs), **Transfers** (file transfer monitoring), **SSH** (sessions, recordings), **Security** (device posture definitions, compliance, integrations, and org Access policies), **Users** (organization members), **Logs** ([audit trail](/guide/concepts/audit-logs)), and **Settings** (organization, internal CA, tunnel defaults, SSO, API keys, account).

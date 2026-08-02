@@ -8,7 +8,7 @@ import {
 
 import { getManagementApiUrl } from "@/lib/env";
 
-async function fetchEntitlements(): Promise<Entitlements> {
+export async function fetchEntitlements(): Promise<Entitlements> {
   const response = await fetch(`${getManagementApiUrl()}/api/v1/entitlements`, {
     credentials: "include",
   });

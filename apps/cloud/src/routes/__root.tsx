@@ -20,7 +20,7 @@ export const Route = createRootRoute({
       {
         name: "description",
         content:
-          "Open-source zero-trust mesh networking. Mesh, serve, tunnel, send, SSH and relay - six primitives, one identity, fully self-hostable.",
+          "Open-source zero-trust mesh networking. Mesh, serve, tunnel, send, SSH and edge - six primitives, one identity, fully self-hostable.",
       },
       {
         name: "theme-color",

@@ -333,7 +333,7 @@ async fn handle_challenge_conn(
     Ok(())
 }
 
-/// Default ACME cache directory under the relay state dir.
+/// Default ACME cache directory under the edge state dir.
 pub fn default_acme_dir(state_dir: &Path) -> PathBuf {
     state_dir.join("acme")
 }

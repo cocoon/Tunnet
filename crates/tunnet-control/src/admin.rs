@@ -274,7 +274,7 @@ async fn register_device_handler(
 struct OpenTunnelPush {
     endpoint_id: String,
     tunnel_id: String,
-    relay_addr: String,
+    edge_addr: String,
     subdomain: String,
     public_hostname: String,
     local_port: u16,
@@ -321,7 +321,7 @@ async fn open_tunnel_handler(
             &parsed.endpoint_id,
             tunnet_common::ws::ServerMsg::OpenTunnel {
                 tunnel_id: parsed.tunnel_id,
-                relay_addr: parsed.relay_addr,
+                edge_addr: parsed.edge_addr,
                 subdomain: parsed.subdomain,
                 public_hostname: parsed.public_hostname,
                 local_port: parsed.local_port,

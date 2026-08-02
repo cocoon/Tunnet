@@ -8,7 +8,7 @@ const COLUMNS = [
     links: [
       { label: "Mesh", href: "#mesh" },
       { label: "Modes", href: "#modes" },
-      { label: "Relays", href: "#relay" },
+      { label: "Edge", href: "#edge" },
       { label: "Security", href: "#security" },
       { label: "Pricing", href: "/pricing" },
       { label: "Download", href: "/download" },

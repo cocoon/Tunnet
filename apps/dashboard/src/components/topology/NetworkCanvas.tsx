@@ -336,7 +336,7 @@ function NetworkCanvasInner({ orgId, networkId }: NetworkCanvasInnerProps) {
         node.type === "peer" ||
         node.type === "gateway" ||
         node.type === "k8s" ||
-        node.type === "relay" ||
+        node.type === "edge" ||
         node.type === "subnet" ||
         node.type === "hostname" ||
         node.type === "exit"

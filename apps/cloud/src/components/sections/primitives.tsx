@@ -60,8 +60,8 @@ const PRIMITIVES: Primitive[] = [
     icon: <GlobeIcon className="size-4" />,
     cmd: `tunnet tunnel 3000
 # → https://demo-api.rl.acme.tunnet.io`,
-    copy: "Give any local port a public HTTPS URL through relays you can self-host. Webhooks, demos, permanent services.",
-    points: ["Public HTTPS via relays", "Self-hostable edge"],
+    copy: "Give any local port a public HTTPS URL through edges you can self-host. Webhooks, demos, permanent services.",
+    points: ["Public HTTPS via edges", "Self-hostable edge"],
   },
   {
     id: "ssh",
@@ -87,15 +87,15 @@ tunnet send ./build tag:ci`,
     points: ["Verified transfers", "Multicast by tag"],
   },
   {
-    id: "relay",
+    id: "edge",
     index: "06",
-    name: "Relay",
+    name: "Edge",
     tagline: "Your edge. Your certs. Your control.",
     icon: <KeyRoundIcon className="size-4" />,
-    cmd: `tunnet-relay register \\
+    cmd: `tunnet-edge register \\
   --control-url http://control:8080 \\
   --token $TOKEN
-tunnet-relay run`,
+tunnet-edge run`,
     copy: "Self-host public tunnel edges. ACME or BYO certs. Point DNS, and your team gets public HTTPS on your infrastructure.",
     points: ["ACME or BYO certs", "Regional pinning"],
   },

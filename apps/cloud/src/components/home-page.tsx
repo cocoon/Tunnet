@@ -5,13 +5,13 @@ import { initSmoothScroll } from "#/components/motion/smooth-scroll";
 import { MarketingNav } from "#/components/nav";
 import { AudienceQuotesSection } from "#/components/sections/audience-quotes";
 import { CommandsTimelineSection } from "#/components/sections/commands-timeline";
+import { EdgeGlobeSection } from "#/components/sections/edge-globe";
 import { FaqSection } from "#/components/sections/faq";
 import { FinalCtaSection } from "#/components/sections/final-cta";
 import { HeroSection } from "#/components/sections/hero";
 import { OpenSourceSection } from "#/components/sections/open-source";
 import { PricingTeaserSection } from "#/components/sections/pricing-teaser";
 import { PrimitivesSection } from "#/components/sections/primitives";
-import { RelayGlobeSection } from "#/components/sections/relay-globe";
 import { SecuritySection } from "#/components/sections/security";
 import { TrustMarquee } from "#/components/sections/trust-marquee";
 import { TwoModesSection } from "#/components/sections/two-modes";
@@ -30,7 +30,7 @@ export function HomePage(): ReactNode {
         <TrustMarquee />
         <PrimitivesSection />
         <TwoModesSection />
-        <RelayGlobeSection />
+        <EdgeGlobeSection />
         <SecuritySection />
         <CommandsTimelineSection />
         <OpenSourceSection />

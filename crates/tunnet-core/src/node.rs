@@ -387,11 +387,22 @@ impl CoreNode {
         );
 
         let secret = SecretKey::from_bytes(&identity.secret_bytes);
-        let builder = endpoint_builder(&cfg.connectivity)
+        let connectivity = if matches!(
+            cfg.connectivity.profile,
+            crate::direct::ConnectivityProfile::TunnetManaged
+        ) {
+            cfg.connectivity.clone().with_snapshot_relays(
+                snapshot.connectivity_relays.clone(),
+                snapshot.connectivity_relay_fallback,
+            )
+        } else {
+            cfg.connectivity.clone()
+        };
+        let builder = endpoint_builder(&connectivity)
             .secret_key(secret)
             .alpns(alpns)
             .hooks(AclHook::new(acl.clone()));
-        let endpoint = apply_connectivity(builder, &cfg.connectivity)
+        let endpoint = apply_connectivity(builder, &connectivity)
             .bind()
             .await
             .context("bind iroh endpoint")?;

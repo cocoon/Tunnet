@@ -1,4 +1,10 @@
 export {
+  ac as adminPluginAc,
+  admin as adminPluginAdminRole,
+  statement as adminPluginStatement,
+  user as adminPluginUserRole,
+} from "./admin-permissions";
+export {
   ac,
   admin,
   DEFAULT_DYNAMIC_ROLE_POSITION,

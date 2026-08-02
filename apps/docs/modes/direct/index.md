@@ -88,4 +88,4 @@ After editing `tunnet.toml`, run `tunnet reload` (or restart the agent).
 
 ## Limitations
 
-Direct mode does not include a web dashboard, SSO/OIDC, centralized access policies, public tunnels, relay infrastructure, or API key management. For these features, upgrade to Managed mode (requires a single Direct network on the machine).
+Direct mode does not include a web dashboard, SSO/OIDC, centralized access policies, public tunnels, edge infrastructure, or API key management. For these features, upgrade to Managed mode (requires a single Direct network on the machine).

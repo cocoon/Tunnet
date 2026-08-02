@@ -95,8 +95,8 @@ struct IngressArgs {
 struct TunnelArgs {
     #[arg(long, env = "TUNNET_TUNNEL_ID")]
     tunnel_id: String,
-    #[arg(long, env = "TUNNET_RELAY_ENDPOINT")]
-    relay_endpoint: String,
+    #[arg(long, env = "TUNNET_EDGE_ENDPOINT")]
+    edge_endpoint: String,
     #[arg(long, env = "TUNNET_SUBDOMAIN")]
     subdomain: String,
     #[arg(long, env = "TUNNET_PUBLIC_HOSTNAME")]
@@ -266,7 +266,7 @@ fn resolve_mode(cli: &Cli) -> anyhow::Result<Mode> {
         }),
         "tunnel" | "tunnel-proxy" => Mode::TunnelProxy(TunnelArgs {
             tunnel_id: require_env("TUNNET_TUNNEL_ID")?,
-            relay_endpoint: require_env("TUNNET_RELAY_ENDPOINT")?,
+            edge_endpoint: require_env("TUNNET_EDGE_ENDPOINT")?,
             subdomain: require_env("TUNNET_SUBDOMAIN")?,
             public_hostname: require_env("TUNNET_PUBLIC_HOSTNAME")?,
             local_port: env_u16("TUNNET_LOCAL_PORT")?,
@@ -521,7 +521,7 @@ async fn setup_tunnel(node: &CoreNode, args: &TunnelArgs) -> anyhow::Result<()> 
         .tunnels
         .start(
             args.tunnel_id.clone(),
-            &args.relay_endpoint,
+            &args.edge_endpoint,
             &args.subdomain,
             &args.public_hostname,
             args.local_port,

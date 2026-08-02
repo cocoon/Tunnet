@@ -77,6 +77,8 @@ function invalidateEntityQueries(
       queryKey: [...queryKeys.serves(orgId), "peers"],
       exact: false,
     });
+  } else if (kind === "edge") {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.edges(orgId) });
   } else if (kind === "relay") {
     void queryClient.invalidateQueries({ queryKey: queryKeys.relays(orgId) });
   }

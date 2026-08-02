@@ -50,11 +50,11 @@ pub enum ServerMsg {
         serve_id: String,
     },
 
-    /// Dashboard / CP tells agent to open a reverse tunnel to a relay.
+    /// Dashboard / CP tells agent to open a reverse tunnel to a public edge.
     OpenTunnel {
         tunnel_id: String,
-        /// iroh endpoint id hex of the relay.
-        relay_addr: String,
+        /// iroh endpoint id hex of the edge.
+        edge_addr: String,
         subdomain: String,
         public_hostname: String,
         local_port: u16,

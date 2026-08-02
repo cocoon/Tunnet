@@ -1,6 +1,14 @@
 import { oauthProviderClient } from "@better-auth/oauth-provider/client";
 import { ssoClient } from "@better-auth/sso/client";
-import { ac, admin, member, owner } from "@tunnet/api/auth";
+import {
+  ac,
+  admin,
+  adminPluginAc,
+  adminPluginAdminRole,
+  adminPluginUserRole,
+  member,
+  owner,
+} from "@tunnet/api/auth";
 import {
   adminClient,
   deviceAuthorizationClient,
@@ -17,7 +25,13 @@ export const authClient = createAuthClient({
     credentials: "include",
   },
   plugins: [
-    adminClient(),
+    adminClient({
+      ac: adminPluginAc,
+      roles: {
+        admin: adminPluginAdminRole,
+        user: adminPluginUserRole,
+      },
+    }),
     organizationClient({
       ac,
       roles: {

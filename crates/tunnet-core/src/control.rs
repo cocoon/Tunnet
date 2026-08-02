@@ -369,13 +369,13 @@ impl SignedClient {
         local_port: u16,
         protocol: &str,
         subdomain: Option<&str>,
-        relay: Option<&str>,
+        edge: Option<&str>,
     ) -> anyhow::Result<CreateTunnelResponse> {
         let body = serde_json::json!({
             "localPort": local_port,
             "protocol": protocol,
             "subdomain": subdomain,
-            "relay": relay,
+            "edge": edge,
         });
         self.do_post("/v1/tunnels", &body).await
     }
@@ -549,8 +549,8 @@ pub struct CreateTunnelResponse {
     pub public_hostname: String,
     pub protocol: String,
     pub local_port: u16,
-    pub relay_endpoint_id: String,
-    pub relay_domain: String,
+    pub edge_endpoint_id: String,
+    pub edge_domain: String,
     pub auth_token: String,
     #[serde(default)]
     pub redirect_rules: Vec<tunnet_common::RedirectRule>,

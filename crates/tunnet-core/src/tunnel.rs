@@ -1,5 +1,5 @@
-//! Agent-side reverse tunnel manager - dials a public relay over iroh and
-//! forwards relay-opened streams to a configurable upstream (default localhost).
+//! Agent-side reverse tunnel manager - dials a public edge over iroh and
+//! forwards edge-opened streams to a configurable upstream (default localhost).
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -13,10 +13,10 @@ use parking_lot::Mutex;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
-use tunnet_common::RELAY_ALPN;
+use tunnet_common::EDGE_ALPN;
 use tunnet_common::RedirectRule;
+use tunnet_common::edge::EdgeCtrl;
 use tunnet_common::match_redirect;
-use tunnet_common::relay::RelayCtrl;
 
 use crate::inspect::{InspectorHub, inspect_bidirectional, start_local_inspect_session};
 use crate::iroh_pool::ConnPool;
@@ -150,12 +150,12 @@ impl TunnelManager {
 
         let conn = self
             .pool
-            .get_alpn(peer, RELAY_ALPN)
+            .get_alpn(peer, EDGE_ALPN)
             .await
             .context("connect to relay")?;
 
         let (mut send, recv) = conn.open_bi().await.context("open control stream")?;
-        let register = RelayCtrl::Register {
+        let register = EdgeCtrl::Register {
             tunnel_id: tunnel_id.clone(),
             subdomain: subdomain.to_string(),
             auth_token: auth_token.to_string(),
@@ -169,9 +169,9 @@ impl TunnelManager {
         tokio::time::timeout(Duration::from_secs(10), reader.read_line(&mut line))
             .await
             .context("relay auth timeout")??;
-        match RelayCtrl::from_line(&line)? {
-            RelayCtrl::Ok => {}
-            RelayCtrl::Error { message } => bail!("relay rejected tunnel: {message}"),
+        match EdgeCtrl::from_line(&line)? {
+            EdgeCtrl::Ok => {}
+            EdgeCtrl::Error { message } => bail!("edge rejected tunnel: {message}"),
             other => bail!("unexpected relay response: {other:?}"),
         }
 
@@ -299,18 +299,18 @@ async fn run_tunnel_session(
                 break;
             }
             _ = ping.tick() => {
-                let _ = control_send.write_all(&RelayCtrl::Ping.to_line()?).await;
+                let _ = control_send.write_all(&EdgeCtrl::Ping.to_line()?).await;
             }
             ctrl = read_ctrl(&mut control_recv) => {
                 match ctrl? {
-                    Some(RelayCtrl::Ping) => {
-                        let _ = control_send.write_all(&RelayCtrl::Pong.to_line()?).await;
+                    Some(EdgeCtrl::Ping) => {
+                        let _ = control_send.write_all(&EdgeCtrl::Pong.to_line()?).await;
                     }
-                    Some(RelayCtrl::Pong) | Some(RelayCtrl::Ok) => {}
-                    Some(RelayCtrl::Error { message }) => {
+                    Some(EdgeCtrl::Pong) | Some(EdgeCtrl::Ok) => {}
+                    Some(EdgeCtrl::Error { message }) => {
                         bail!("relay error on control: {message}");
                     }
-                    Some(RelayCtrl::Register { .. }) | Some(RelayCtrl::Forward { .. }) => {}
+                    Some(EdgeCtrl::Register { .. }) | Some(EdgeCtrl::Forward { .. }) => {}
                     None => {
                         tracing::info!(local_port, "relay control stream closed");
                         break;
@@ -351,13 +351,13 @@ async fn run_tunnel_session(
     Ok(())
 }
 
-async fn read_ctrl(reader: &mut BufReader<RecvStream>) -> anyhow::Result<Option<RelayCtrl>> {
+async fn read_ctrl(reader: &mut BufReader<RecvStream>) -> anyhow::Result<Option<EdgeCtrl>> {
     let mut line = String::new();
     let n = reader.read_line(&mut line).await?;
     if n == 0 {
         return Ok(None);
     }
-    Ok(Some(RelayCtrl::from_line(&line)?))
+    Ok(Some(EdgeCtrl::from_line(&line)?))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -436,8 +436,8 @@ async fn read_forward_target(recv: &mut RecvStream) -> anyhow::Result<(u16, Opti
         line.push(byte[0]);
     }
     let text = std::str::from_utf8(&line).context("Forward header utf8")?;
-    match RelayCtrl::from_line(text)? {
-        RelayCtrl::Forward {
+    match EdgeCtrl::from_line(text)? {
+        EdgeCtrl::Forward {
             target_port,
             target_ip,
         } => {

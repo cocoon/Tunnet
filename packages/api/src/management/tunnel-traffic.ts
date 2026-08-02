@@ -18,7 +18,7 @@ export const tunnelTrafficListResponse = z.object({
   logs: z.array(tunnelTrafficLogSchema),
 });
 
-export const relayTrafficLogLine = z.object({
+export const edgeTrafficLogLine = z.object({
   tunnelId: z.string().uuid(),
   method: z.string().min(1).max(16),
   path: z.string().min(1).max(2048),
@@ -30,9 +30,9 @@ export const relayTrafficLogLine = z.object({
   createdAt: z.string().datetime().optional(),
 });
 
-export const relayTrafficIngestBody = z.object({
-  logs: z.array(relayTrafficLogLine).min(1).max(500),
+export const edgeTrafficIngestBody = z.object({
+  logs: z.array(edgeTrafficLogLine).min(1).max(500),
 });
 
 export type TunnelTrafficLog = z.infer<typeof tunnelTrafficLogSchema>;
-export type RelayTrafficIngestBody = z.infer<typeof relayTrafficIngestBody>;
+export type EdgeTrafficIngestBody = z.infer<typeof edgeTrafficIngestBody>;

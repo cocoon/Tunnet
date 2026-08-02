@@ -12,6 +12,15 @@ import type {
   TopologyFlowNode,
 } from "@/components/topology/types";
 
+/** Normalize public-ingress kind; accept legacy API "relay" as "edge". */
+function nodeKind(node: TopologyNode): TopologyNode["kind"] | "relay" {
+  return node.kind as TopologyNode["kind"] | "relay";
+}
+
+function isEdgeKind(kind: string): boolean {
+  return kind === "edge" || kind === "relay";
+}
+
 function matchesKind(node: TopologyNode, kind: MeshKindFilter): boolean {
   if (kind === "all") return true;
   if (kind === "k8s") {
@@ -21,6 +30,7 @@ function matchesKind(node: TopologyNode, kind: MeshKindFilter): boolean {
   if (kind === "machine") {
     return node.kind === "machine" && node.deviceType !== "k8s";
   }
+  if (kind === "edge") return isEdgeKind(nodeKind(node));
   return node.kind === kind;
 }
 
@@ -40,9 +50,9 @@ function peerType(node: TopologyNode): "peer" | "gateway" | "k8s" {
 }
 
 function resourceType(
-  kind: TopologyNode["kind"],
-): "relay" | "subnet" | "hostname" | "exit" {
-  if (kind === "relay") return "relay";
+  kind: TopologyNode["kind"] | "relay",
+): "edge" | "subnet" | "hostname" | "exit" {
+  if (isEdgeKind(kind)) return "edge";
   if (kind === "subnet") return "subnet";
   if (kind === "hostname") return "hostname";
   return "exit";
@@ -78,7 +88,7 @@ export function topologyToFlowNodes(
     }
     return {
       id: node.id,
-      type: resourceType(node.kind),
+      type: resourceType(nodeKind(node)),
       position,
       data: { topology: node },
     };

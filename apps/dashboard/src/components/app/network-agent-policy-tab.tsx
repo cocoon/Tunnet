@@ -3,12 +3,21 @@ import { inheritRemoteAgentPolicy } from "@tunnet/api/management";
 import { Button } from "@tunnet/ui/components/button";
 import { Input } from "@tunnet/ui/components/input";
 import { Label } from "@tunnet/ui/components/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@tunnet/ui/components/select";
 import { Skeleton } from "@tunnet/ui/components/skeleton";
 import { Switch } from "@tunnet/ui/components/switch";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useCan } from "@/hooks/use-permission";
 import { useNetworkMutations, useOrgSettings } from "@/lib/queries/management";
+
+type RelayPolicyValue = "inherit" | "augment" | "exclusive";
 
 function InheritedHint({ label, value }: { label: string; value: string }) {
   return (
@@ -21,6 +30,11 @@ function InheritedHint({ label, value }: { label: string; value: string }) {
 function formatBool(value: boolean | undefined) {
   if (value === undefined) return "inherit";
   return value ? "ON" : "OFF";
+}
+
+function formatRelayPolicy(value: RelayPolicyValue | undefined) {
+  if (value === undefined) return "inherit";
+  return value;
 }
 
 function PolicyToggle({
@@ -96,7 +110,7 @@ export function NetworkAgentPolicyTab({
   const [autoUpdateOverride, setAutoUpdateOverride] = useState(false);
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(false);
   const [relayOverride, setRelayOverride] = useState(false);
-  const [preferOrgRelays, setPreferOrgRelays] = useState(false);
+  const [relayPolicy, setRelayPolicy] = useState<RelayPolicyValue>("inherit");
 
   useEffect(() => {
     const policy = networkOverrides;
@@ -112,11 +126,9 @@ export function NetworkAgentPolicyTab({
     setAutoUpdateEnabled(
       policy.autoUpdate?.enabled ?? orgPolicy.autoUpdate?.enabled ?? false,
     );
-    setRelayOverride(policy.relay?.preferOrgRelays !== undefined);
-    setPreferOrgRelays(
-      policy.relay?.preferOrgRelays ??
-        orgPolicy.relay?.preferOrgRelays ??
-        false,
+    setRelayOverride(policy.relay?.policy !== undefined);
+    setRelayPolicy(
+      policy.relay?.policy ?? orgPolicy.relay?.policy ?? "inherit",
     );
   }, [networkOverrides, orgPolicy]);
 
@@ -155,7 +167,7 @@ export function NetworkAgentPolicyTab({
       delete nextOverrides.autoUpdate;
     }
     if (relayOverride) {
-      nextOverrides.relay = { preferOrgRelays };
+      nextOverrides.relay = { policy: relayPolicy };
     } else {
       delete nextOverrides.relay;
     }
@@ -193,8 +205,8 @@ export function NetworkAgentPolicyTab({
             <dd>{effective.tunnelMtu ?? "default"}</dd>
           </div>
           <div>
-            <dt className="text-muted-foreground">Prefer org relays</dt>
-            <dd>{formatBool(effective.relay?.preferOrgRelays)}</dd>
+            <dt className="text-muted-foreground">Relay policy</dt>
+            <dd>{formatRelayPolicy(effective.relay?.policy)}</dd>
           </div>
         </dl>
       </div>
@@ -268,17 +280,50 @@ export function NetworkAgentPolicyTab({
           disabled={!canUpdate}
         />
 
-        <PolicyToggle
-          id="network-relays"
-          label="Prefer org relays"
-          description="Override org relay preference for this network."
-          inherited={orgPolicy.relay?.preferOrgRelays}
-          checked={preferOrgRelays}
-          override={relayOverride}
-          onOverrideChange={setRelayOverride}
-          onCheckedChange={setPreferOrgRelays}
-          disabled={!canUpdate}
-        />
+        <div className="space-y-2 border-b border-border/50 py-3">
+          <Label htmlFor="network-relay-policy">
+            Connectivity relay policy
+          </Label>
+          <p className="text-muted-foreground text-xs">
+            Override how agents use Cloud vs organization connectivity relays.
+          </p>
+          <InheritedHint
+            label="Relay policy"
+            value={formatRelayPolicy(orgPolicy.relay?.policy)}
+          />
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={relayOverride}
+              onChange={(e) => setRelayOverride(e.target.checked)}
+              disabled={!canUpdate}
+              className="size-3.5 rounded border-border"
+            />
+            Override org default
+          </label>
+          <Select
+            value={relayPolicy}
+            onValueChange={(v) =>
+              setRelayPolicy((v as RelayPolicyValue) ?? "inherit")
+            }
+            disabled={!canUpdate || !relayOverride}
+          >
+            <SelectTrigger id="network-relay-policy" className="max-w-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="inherit">
+                Inherit (Cloud relays only)
+              </SelectItem>
+              <SelectItem value="augment">
+                Augment (org first, then Cloud)
+              </SelectItem>
+              <SelectItem value="exclusive">
+                Exclusive (org relays only)
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
 
         {canUpdate ? (
           <Button type="submit" size="sm" disabled={mutations.update.isPending}>

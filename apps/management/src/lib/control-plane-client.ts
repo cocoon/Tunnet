@@ -167,7 +167,7 @@ export async function registerDevice(
 export async function pushOpenTunnel(body: {
   endpointId: string;
   tunnelId: string;
-  relayAddr: string;
+  edgeAddr: string;
   subdomain: string;
   publicHostname: string;
   localPort: number;
@@ -184,7 +184,7 @@ export async function pushOpenTunnel(body: {
       json: {
         endpoint_id: body.endpointId,
         tunnel_id: body.tunnelId,
-        relay_addr: body.relayAddr,
+        edge_addr: body.edgeAddr,
         subdomain: body.subdomain,
         public_hostname: body.publicHostname,
         local_port: body.localPort,

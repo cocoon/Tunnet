@@ -384,7 +384,7 @@ function TunnelDetailPage() {
 
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Machine → Relay</CardTitle>
+                <CardTitle className="text-base">Machine → Edge</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex flex-wrap items-center justify-center gap-2 rounded-lg border border-border/60 bg-secondary/20 px-4 py-6">
@@ -400,16 +400,16 @@ function TunnelDetailPage() {
                     :{tunnel.localPort}
                   </span>
                   <span className="text-muted-foreground text-xs">→</span>
-                  {tunnel.relayId ? (
+                  {tunnel.edgeId ? (
                     <Link
-                      to="/relays/$relayId"
-                      params={{ relayId: tunnel.relayId }}
+                      to="/edges/$edgeId"
+                      params={{ edgeId: tunnel.edgeId }}
                       className="rounded-md border border-border/60 bg-background px-3 py-1.5 text-sm font-medium hover:underline"
                     >
-                      {tunnel.relayName ?? "Relay"}
+                      {tunnel.edgeName ?? "Edge"}
                     </Link>
                   ) : (
-                    <span className="text-sm">No relay</span>
+                    <span className="text-sm">No edge</span>
                   )}
                 </div>
                 <DetailRow label="Network">

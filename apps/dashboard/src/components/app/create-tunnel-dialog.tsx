@@ -22,8 +22,8 @@ import { toast } from "sonner";
 import { CopyField } from "@/components/app/copy-field";
 import { getMachinePresence } from "@/lib/machine-utils";
 import {
+  useEdges,
   useMachines,
-  useRelays,
   useTunnelMutations,
 } from "@/lib/queries/management";
 
@@ -53,12 +53,12 @@ export function CreateTunnelDialog({
 }: CreateTunnelDialogProps) {
   const { create } = useTunnelMutations(orgId);
   const { data: machines } = useMachines(orgId);
-  const { data: relays } = useRelays(orgId);
+  const { data: edges } = useEdges(orgId);
   const locked = Boolean(defaultEndpointId);
   const [endpointId, setEndpointId] = useState(defaultEndpointId ?? "");
   const [port, setPort] = useState("3000");
   const [protocol, setProtocol] = useState<"https" | "tcp">("https");
-  const [relayId, setRelayId] = useState("auto");
+  const [edgeId, setEdgeId] = useState("auto");
   const [subdomain, setSubdomain] = useState("");
   const [ttl, setTtl] = useState("never");
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -109,18 +109,18 @@ export function CreateTunnelDialog({
     selectedMachine?.name ??
     defaultEndpointId?.slice(0, 12);
 
-  const healthyRelays = useMemo(
-    () => (relays ?? []).filter((r) => r.status === "healthy"),
-    [relays],
+  const healthyEdges = useMemo(
+    () => (edges ?? []).filter((r) => r.status === "healthy"),
+    [edges],
   );
 
-  const selectedRelay =
-    relayId === "auto"
+  const selectedEdge =
+    edgeId === "auto"
       ? null
-      : (healthyRelays.find((r) => r.id === relayId) ?? null);
+      : (healthyEdges.find((r) => r.id === edgeId) ?? null);
 
   const domainPreview =
-    selectedRelay?.domain ?? healthyRelays[0]?.domain ?? "*.tunnet.pub";
+    selectedEdge?.domain ?? healthyEdges[0]?.domain ?? "*.tunnet.pub";
 
   const hostnameForPreview =
     machineLabel ?? selectedMachine?.name ?? lockedMachine?.name;
@@ -153,7 +153,7 @@ export function CreateTunnelDialog({
     setEndpointId(defaultEndpointId ?? "");
     setPort("3000");
     setProtocol("https");
-    setRelayId("auto");
+    setEdgeId("auto");
     setSubdomain("");
     setTtl("never");
     setShowAdvanced(false);
@@ -201,7 +201,7 @@ export function CreateTunnelDialog({
           endpointId: submitEndpointId,
           localPort: Number(port),
           protocol,
-          relayId: relayId === "auto" ? undefined : relayId,
+          edgeId: edgeId === "auto" ? undefined : edgeId,
           subdomain: subdomain.trim() || undefined,
           ttlSeconds: ttlOpt?.seconds,
           basicAuth:
@@ -274,8 +274,8 @@ export function CreateTunnelDialog({
               <DialogTitle>Create tunnel</DialogTitle>
               <DialogDescription>
                 {locked
-                  ? `Expose a local port on ${machineLabel} through a public relay URL.`
-                  : "Expose a local port on a machine through a public relay URL."}
+                  ? `Expose a local port on ${machineLabel} through a public edge URL.`
+                  : "Expose a local port on a machine through a public edge URL."}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
@@ -350,19 +350,19 @@ export function CreateTunnelDialog({
                 </div>
               </div>
               <div className="space-y-2">
-                <Label>Relay</Label>
+                <Label>Edge</Label>
                 <Select
-                  value={relayId}
-                  onValueChange={(value) => setRelayId(value ?? "auto")}
+                  value={edgeId}
+                  onValueChange={(value) => setEdgeId(value ?? "auto")}
                 >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="auto">Auto (closest healthy)</SelectItem>
-                    {healthyRelays.map((relay) => (
-                      <SelectItem key={relay.id} value={relay.id}>
-                        {relay.name} ({relay.region})
+                    {healthyEdges.map((edge) => (
+                      <SelectItem key={edge.id} value={edge.id}>
+                        {edge.name} ({edge.region})
                       </SelectItem>
                     ))}
                   </SelectContent>

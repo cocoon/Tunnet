@@ -574,7 +574,7 @@ pub struct TunnelStartRequest {
     #[serde(default = "default_https")]
     pub protocol: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub relay: Option<String>,
+    pub edge: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subdomain: Option<String>,
     #[serde(default)]

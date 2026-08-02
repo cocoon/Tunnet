@@ -30,6 +30,7 @@ import {
   HiOutlineServerStack,
   HiOutlineShare,
   HiOutlineShieldCheck,
+  HiOutlineSignal,
   HiOutlineTag,
   HiOutlineUsers,
 } from "react-icons/hi2";
@@ -78,7 +79,8 @@ const navSections: NavSection[] = [
     defaultOpen: true,
     items: [
       { to: "/machines", label: "Machines", icon: HiOutlineServer },
-      { to: "/relays", label: "Relays", icon: HiOutlineServerStack },
+      { to: "/edges", label: "Edges", icon: HiOutlineServerStack },
+      { to: "/relays", label: "Relays", icon: HiOutlineSignal },
     ],
   },
   {

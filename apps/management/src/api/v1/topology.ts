@@ -97,7 +97,7 @@ export const topologyRoutes = new Elysia()
 
       const nodes: Array<{
         id: string;
-        kind: "machine" | "subnet" | "hostname" | "exit" | "relay";
+        kind: "machine" | "subnet" | "hostname" | "exit" | "edge";
         label: string;
         secondary?: string | null;
         endpointId?: string | null;
@@ -136,10 +136,10 @@ export const topologyRoutes = new Elysia()
           inArray(schema.tunnels.status, ["active", "connecting"]),
         ),
       });
-      const orgRelays = await db.query.relays.findMany({
+      const orgEdges = await db.query.edges.findMany({
         where: and(
-          eq(schema.relays.organizationId, auth.organizationId),
-          inArray(schema.relays.status, ["healthy", "pending", "degraded"]),
+          eq(schema.edges.organizationId, auth.organizationId),
+          inArray(schema.edges.status, ["healthy", "pending", "degraded"]),
         ),
       });
 
@@ -276,34 +276,34 @@ export const topologyRoutes = new Elysia()
         });
       }
 
-      const tunnelCountByRelay = new Map<string, number>();
+      const tunnelCountByEdge = new Map<string, number>();
       for (const t of activeTunnels) {
-        if (!t.relayId) continue;
-        tunnelCountByRelay.set(
-          t.relayId,
-          (tunnelCountByRelay.get(t.relayId) ?? 0) + 1,
+        if (!t.edgeId) continue;
+        tunnelCountByEdge.set(
+          t.edgeId,
+          (tunnelCountByEdge.get(t.edgeId) ?? 0) + 1,
         );
       }
 
-      for (const relay of orgRelays) {
+      for (const edge of orgEdges) {
         nodes.push({
-          id: `relay:${relay.id}`,
-          kind: "relay",
-          label: relay.name,
-          secondary: relay.domain,
-          online: relay.status === "healthy",
-          tunnelCount: tunnelCountByRelay.get(relay.id) ?? relay.activeTunnels,
+          id: `edge:${edge.id}`,
+          kind: "edge",
+          label: edge.name,
+          secondary: edge.domain,
+          online: edge.status === "healthy",
+          tunnelCount: tunnelCountByEdge.get(edge.id) ?? edge.activeTunnels,
         });
       }
 
       for (const tunnel of activeTunnels) {
-        if (!tunnel.relayId) continue;
+        if (!tunnel.edgeId) continue;
         const machineId = `machine:${tunnel.endpointId}`;
-        const relayId = `relay:${tunnel.relayId}`;
+        const edgeNodeId = `edge:${tunnel.edgeId}`;
         if (!machineIds.has(machineId)) continue;
         edges.push({
           id: `tunnel:${tunnel.id}`,
-          source: relayId,
+          source: edgeNodeId,
           target: machineId,
           kind: "tunnel",
           intensity: tunnel.status === "active" ? 0.7 : 0.35,

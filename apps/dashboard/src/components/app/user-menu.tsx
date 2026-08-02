@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
   Avatar,
@@ -15,9 +16,10 @@ import {
 } from "@tunnet/ui/components/dropdown-menu";
 import { SidebarMenuButton } from "@tunnet/ui/components/sidebar";
 import { cn } from "@tunnet/ui/lib/utils";
-import { LogOutIcon, UserIcon } from "lucide-react";
+import { CloudIcon, LogOutIcon, UserIcon } from "lucide-react";
 import { toast } from "sonner";
-import { signOut, useSession } from "@/lib/auth-client";
+import { useFeature } from "@/hooks/use-entitlements";
+import { authClient, signOut, useSession } from "@/lib/auth-client";
 
 function initials(name: string | undefined, email: string) {
   if (name?.trim()) {
@@ -34,6 +36,18 @@ function initials(name: string | undefined, email: string) {
 export function UserMenu({ className }: { className?: string }) {
   const { data: session } = useSession();
   const user = session?.user;
+  const cloudInfra = useFeature("cloudInfrastructure");
+  const { data: hasCloudAccess = false } = useQuery({
+    queryKey: ["admin", "hasPermission", "cloud"],
+    enabled: Boolean(user),
+    queryFn: async () => {
+      const { data } = await authClient.admin.hasPermission({
+        permissions: { cloud: ["access"] },
+      });
+      return Boolean(data?.success);
+    },
+  });
+  const showCloudAdmin = Boolean(cloudInfra && hasCloudAccess);
 
   if (!user) return null;
 
@@ -99,6 +113,12 @@ export function UserMenu({ className }: { className?: string }) {
             <UserIcon className="mr-2 size-4" />
             Settings
           </DropdownMenuItem>
+          {showCloudAdmin ? (
+            <DropdownMenuItem render={<Link to="/cloud" />}>
+              <CloudIcon className="mr-2 size-4" />
+              Cloud administration
+            </DropdownMenuItem>
+          ) : null}
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
         <DropdownMenuGroup>

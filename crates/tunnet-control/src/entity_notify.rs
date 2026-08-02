@@ -1,4 +1,4 @@
-//! Dashboard live updates for tunnels, serves, and relays via Postgres NOTIFY.
+//! Dashboard live updates for tunnels, serves, and edges via Postgres NOTIFY.
 
 use sqlx::PgPool;
 
@@ -43,6 +43,14 @@ pub async fn emit_serve_changed(
     serve_id: &str,
 ) -> anyhow::Result<()> {
     emit_entity_changed(pool, organization_id, "serve", serve_id, Some(network_id)).await
+}
+
+pub async fn emit_edge_changed(
+    pool: &PgPool,
+    organization_id: &str,
+    edge_id: &str,
+) -> anyhow::Result<()> {
+    emit_entity_changed(pool, organization_id, "edge", edge_id, None).await
 }
 
 pub async fn emit_relay_changed(

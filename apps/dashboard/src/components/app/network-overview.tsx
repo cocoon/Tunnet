@@ -16,8 +16,8 @@ function NetworkMeshBody({
   orgId: string;
   networkId: string;
 }) {
-  const search = useSearch({ from: "/networks/$networkId/" });
-  const navigate = useNavigate({ from: "/networks/$networkId/" });
+  const search = useSearch({ from: "/_app/networks/$networkId/" });
+  const navigate = useNavigate({ from: "/_app/networks/$networkId/" });
   const { kindFilter, setKindFilter } = useTopologyUi();
 
   useEffect(() => {
@@ -44,8 +44,8 @@ function NetworkMeshBody({
 }
 
 export function NetworkOverviewPage() {
-  const { networkId } = useParams({ from: "/networks/$networkId/" });
-  const search = useSearch({ from: "/networks/$networkId/" });
+  const { networkId } = useParams({ from: "/_app/networks/$networkId/" });
+  const search = useSearch({ from: "/_app/networks/$networkId/" });
   const { data: activeOrg } = useActiveOrganization();
   const orgId = activeOrg?.id;
   const initialKind = (search.kind ?? "all") as MeshKindFilter;

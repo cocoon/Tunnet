@@ -39,7 +39,7 @@ const PILLARS = [
   {
     icon: EyeIcon,
     title: "You can read every line",
-    body: "Agent, control plane, dashboard, relay - AGPL, MPL and Apache by component. Self-host the entire stack.",
+    body: "Agent, control plane, dashboard, edge - AGPL, MPL and Apache by component. Self-host the entire stack.",
   },
   {
     icon: RadioIcon,

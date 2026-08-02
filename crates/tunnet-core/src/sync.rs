@@ -389,7 +389,7 @@ pub fn spawn_ws_processor(
                         #[cfg(feature = "tunnel")]
                         ServerMsg::OpenTunnel {
                             tunnel_id,
-                            relay_addr,
+                            edge_addr,
                             subdomain,
                             public_hostname,
                             local_port,
@@ -407,7 +407,7 @@ pub fn spawn_ws_processor(
                             let result = if let Some(mgr) = &tunnels {
                                 mgr.start(
                                     tunnel_id.clone(),
-                                    &relay_addr,
+                                    &edge_addr,
                                     &subdomain,
                                     &public_hostname,
                                     local_port,

@@ -89,7 +89,7 @@ export const PLANS: Plan[] = [
     features: [
       "Self-hosted control plane",
       "SCIM & custom OIDC",
-      "Dedicated relays",
+      "Dedicated edges",
       "24/7 support & SLA",
       "Compliance reviews",
     ],

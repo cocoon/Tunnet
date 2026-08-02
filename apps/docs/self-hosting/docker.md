@@ -99,20 +99,20 @@ Uses `oven/bun:1` for building - copies all workspace `package.json` files for l
 
 Uses `oven/bun:1` for building - installs dependencies with the full workspace graph, then runs `bunx --bun vite build` in `apps/dashboard`. The build accepts `MANAGEMENT_URL`, `CONTROL_PLANE_URL`, and `DASHBOARD_URL` as build args. The runtime stage uses `oven/bun:1-slim` and serves the Nitro output. Exposes port 3000 (mapped to 5173 in compose).
 
-### Dockerfile.relay
+### Dockerfile.edge
 
-Uses `rust:1.97-bookworm` for building. Simpler than the control plane Dockerfile (no cargo-chef). Builds and strips `tunnet-relay`, copies into `debian:bookworm-slim`. Exposes ports 80 and 443. Entry point is `tunnet-relay run`.
+Simpler than the control plane Dockerfile (no cargo-chef). Builds and strips `tunnet-edge`, copies into `debian:bookworm-slim`. Exposes ports 80 and 443. Entry point is `tunnet-edge run`.
 
-## Adding the relay
+## Adding the edge
 
-The relay is not included in the default `docker-compose.yml` because it requires public DNS and TLS configuration. To add it:
+The edge is not included in the default `docker-compose.yml` because it requires public DNS and TLS configuration. To add it:
 
 ```yaml
 # Add to docker-compose.yml services:
-relay:
+edge:
   build:
     context: .
-    dockerfile: deploy/Dockerfile.relay
+    dockerfile: deploy/Dockerfile.edge
   restart: unless-stopped
   depends_on:
     control:
@@ -121,12 +121,12 @@ relay:
     - "443:443"
     - "80:80"
   environment:
-    TUNNET_RELAY_CONTROL_URL: "http://control:8080"
+    CONTROL_PLANE_URL: "http://control:8080"
   volumes:
-    - relay-certs:/etc/tunnet/certs
+    - edge-certs:/etc/tunnet/certs
 ```
 
-Then register and run the relay. See the [Relay self-hosted setup](/products/relay/self-hosted) for DNS and certificate configuration.
+Then register and run the edge. See the [Edge self-hosted setup](/products/edge/self-hosted) for DNS and certificate configuration.
 
 ## Rebuilding
 

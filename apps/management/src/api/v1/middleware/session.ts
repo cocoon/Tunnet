@@ -9,6 +9,16 @@ export type AuthContext = {
   memberRole: string;
 };
 
+/** Authenticated user without organization scope (Cloud / system routes). */
+export type SessionUserContext = {
+  user: {
+    id: string;
+    name: string;
+    email: string;
+  };
+  session: { id: string };
+};
+
 export async function resolveOrgContext(
   headers: Headers,
   orgIdParam: string,
@@ -73,6 +83,32 @@ export const sessionPlugin = new Elysia({ name: "session" }).derive(
 
     const authContext = await resolveOrgContext(request.headers, orgId);
     return { authContext };
+  },
+);
+
+export async function resolveSessionUser(
+  headers: Headers,
+): Promise<SessionUserContext | null> {
+  const sessionResult = await auth.api.getSession({ headers });
+  if (!sessionResult?.user || !sessionResult.session) {
+    return null;
+  }
+
+  return {
+    user: {
+      id: sessionResult.user.id,
+      name: sessionResult.user.name,
+      email: sessionResult.user.email,
+    },
+    session: { id: sessionResult.session.id },
+  };
+}
+
+export const sessionUserPlugin = new Elysia({ name: "session-user" }).derive(
+  { as: "scoped" },
+  async ({ request }) => {
+    const sessionUser = await resolveSessionUser(request.headers);
+    return { sessionUser };
   },
 );
 

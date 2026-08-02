@@ -9,7 +9,7 @@ export type MeshKindFilter =
   | "subnet"
   | "hostname"
   | "exit"
-  | "relay"
+  | "edge"
   | "serve"
   | "tunnel";
 
@@ -104,7 +104,7 @@ export type NetworkGroupFlowNode = Node<NetworkGroupNodeData, "networkGroup">;
 export type PeerFlowNode = Node<PeerNodeData, "peer">;
 export type GatewayFlowNode = Node<PeerNodeData, "gateway">;
 export type K8sFlowNode = Node<PeerNodeData, "k8s">;
-export type RelayFlowNode = Node<ResourceNodeData, "relay">;
+export type EdgeFlowNode = Node<ResourceNodeData, "edge">;
 export type SubnetFlowNode = Node<ResourceNodeData, "subnet">;
 export type HostnameFlowNode = Node<ResourceNodeData, "hostname">;
 export type ExitFlowNode = Node<ResourceNodeData, "exit">;
@@ -123,7 +123,7 @@ export type TopologyFlowNode =
   | PeerFlowNode
   | GatewayFlowNode
   | K8sFlowNode
-  | RelayFlowNode
+  | EdgeFlowNode
   | SubnetFlowNode
   | HostnameFlowNode
   | ExitFlowNode

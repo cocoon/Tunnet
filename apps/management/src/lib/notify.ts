@@ -54,7 +54,7 @@ export async function notifyEntityChanged(
   tx: Db,
   input: {
     organizationId: string;
-    kind: "tunnel" | "serve" | "relay";
+    kind: "tunnel" | "serve" | "edge" | "relay";
     entityId: string;
     networkId?: string | null;
   },

@@ -65,7 +65,7 @@ pub struct RemoteAgentPolicy {
     /// Remote: DNS defaults pushed to agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dns: Option<RemoteDnsPolicy>,
-    /// Remote: relay preference.
+    /// Remote: connectivity relay preference (mesh DERP / hybrid).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay: Option<RemoteRelayPolicy>,
     /// Remote: exit-node policy defaults.
@@ -106,12 +106,24 @@ pub struct RemoteDnsPolicy {
     pub upstream: Vec<String>,
 }
 
+/// How agents select deployment vs org-owned connectivity relays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RelayPolicy {
+    /// Use deployment (Cloud) relays only.
+    #[default]
+    Inherit,
+    /// Prefer org relays, then fall back to deployment relays.
+    Augment,
+    /// Use org-owned relays only.
+    Exclusive,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteRelayPolicy {
-    /// Prefer org relays over public DERP when available.
     #[serde(default)]
-    pub prefer_org_relays: bool,
+    pub policy: RelayPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -204,7 +216,7 @@ pub struct EffectiveAgentConfig {
     pub auto_update_check_interval_hours: ResolvedSetting<u64>,
     pub posture_interval_secs: ResolvedSetting<u64>,
     pub posture_enabled_collectors: ResolvedSetting<Vec<String>>,
-    pub prefer_org_relays: ResolvedSetting<bool>,
+    pub relay_policy: ResolvedSetting<RelayPolicy>,
     pub exit_nodes_allow_advertise: ResolvedSetting<bool>,
     pub exit_nodes_allow_use: ResolvedSetting<bool>,
     pub dns_suffix: ResolvedSetting<String>,
@@ -318,7 +330,7 @@ pub fn merge_agent_config(
         }
     });
 
-    let prefer_org_relays_remote = remote.relay.as_ref().map(|r| r.prefer_org_relays);
+    let relay_policy_remote = remote.relay.as_ref().map(|r| r.policy);
     let exit_advertise_remote = remote.exit_nodes.as_ref().map(|e| e.allow_advertise);
     let exit_use_remote = remote.exit_nodes.as_ref().map(|e| e.allow_use);
 
@@ -345,7 +357,7 @@ pub fn merge_agent_config(
             DEFAULT_POSTURE_INTERVAL,
         ),
         posture_enabled_collectors: resolve_remote_only(posture_collectors_remote, Vec::new()),
-        prefer_org_relays: resolve_remote_only(prefer_org_relays_remote, false),
+        relay_policy: resolve_remote_only(relay_policy_remote, RelayPolicy::Inherit),
         exit_nodes_allow_advertise: resolve_remote_only(exit_advertise_remote, false),
         exit_nodes_allow_use: resolve_remote_only(exit_use_remote, true),
         dns_suffix: resolve_remote_only(dns_suffix_remote, DEFAULT_DNS_SUFFIX.into()),
@@ -419,5 +431,24 @@ mod tests {
         );
         assert!(eff.mdns.value);
         assert_eq!(eff.mdns.source, ConfigSource::Default);
+        assert_eq!(eff.relay_policy.value, RelayPolicy::Inherit);
+        assert_eq!(eff.relay_policy.source, ConfigSource::Default);
+    }
+
+    #[test]
+    fn remote_relay_policy_resolved() {
+        let remote = RemoteAgentPolicy {
+            relay: Some(RemoteRelayPolicy {
+                policy: RelayPolicy::Exclusive,
+            }),
+            ..Default::default()
+        };
+        let eff = merge_agent_config(
+            &remote,
+            &LocalDualOverrides::default(),
+            LocalOnlySettings::default(),
+        );
+        assert_eq!(eff.relay_policy.value, RelayPolicy::Exclusive);
+        assert_eq!(eff.relay_policy.source, ConfigSource::Remote);
     }
 }

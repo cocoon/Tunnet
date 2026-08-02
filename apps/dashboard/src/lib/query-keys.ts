@@ -45,11 +45,21 @@ export const queryKeys = {
     [...queryKeys.org(orgId), "device-addresses", endpointId] as const,
   devicePresence: (orgId: string, endpointId: string) =>
     [...queryKeys.org(orgId), "device-presence", endpointId] as const,
+  edges: (orgId: string) => [...queryKeys.org(orgId), "edges"] as const,
+  edge: (orgId: string, edgeId: string) =>
+    [...queryKeys.edges(orgId), edgeId] as const,
+  edgeHealth: (orgId: string, edgeId: string) =>
+    [...queryKeys.edge(orgId, edgeId), "health"] as const,
   relays: (orgId: string) => [...queryKeys.org(orgId), "relays"] as const,
   relay: (orgId: string, relayId: string) =>
     [...queryKeys.relays(orgId), relayId] as const,
   relayHealth: (orgId: string, relayId: string) =>
     [...queryKeys.relay(orgId, relayId), "health"] as const,
+  cloudRelays: () => ["cloud", "relays"] as const,
+  cloudRelay: (relayId: string) =>
+    [...queryKeys.cloudRelays(), relayId] as const,
+  cloudRelayHealth: (relayId: string) =>
+    [...queryKeys.cloudRelay(relayId), "health"] as const,
   tunnels: (orgId: string) => [...queryKeys.org(orgId), "tunnels"] as const,
   tunnelsByNetwork: (orgId: string, networkId: string) =>
     [...queryKeys.tunnels(orgId), networkId] as const,

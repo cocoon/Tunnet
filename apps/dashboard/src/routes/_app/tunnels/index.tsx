@@ -50,7 +50,7 @@ function TunnelsPage() {
         t.publicHostname.toLowerCase().includes(q) ||
         t.subdomain.toLowerCase().includes(q) ||
         (t.hostname?.toLowerCase().includes(q) ?? false) ||
-        (t.relayName?.toLowerCase().includes(q) ?? false) ||
+        (t.edgeName?.toLowerCase().includes(q) ?? false) ||
         (t.networkName?.toLowerCase().includes(q) ?? false),
     );
   }, [tunnels, search, statusFilter]);
@@ -111,16 +111,16 @@ function TunnelsPage() {
           ),
       },
       {
-        id: "relay",
-        header: "Relay",
+        id: "edge",
+        header: "Edge",
         cell: ({ row }) =>
-          row.original.relayId ? (
+          row.original.edgeId ? (
             <Link
-              to="/relays/$relayId"
-              params={{ relayId: row.original.relayId }}
+              to="/edges/$edgeId"
+              params={{ edgeId: row.original.edgeId }}
               className="hover:underline"
             >
-              {row.original.relayName ?? "Relay"}
+              {row.original.edgeName ?? "Edge"}
             </Link>
           ) : (
             "-"
@@ -183,7 +183,7 @@ function TunnelsPage() {
       <PageToolbar
         search={search}
         onSearchChange={setSearch}
-        searchPlaceholder="Search by URL, machine, relay..."
+        searchPlaceholder="Search by URL, machine, edge..."
         count={filtered.length}
         countLabel={filtered.length === 1 ? "tunnel" : "tunnels"}
         filters={
@@ -211,10 +211,10 @@ function TunnelsPage() {
       ) : filtered.length === 0 ? (
         <EmptyState
           title="No tunnels yet"
-          description="Expose a local port with a public URL through a relay."
+          description="Expose a local port with a public URL through an edge."
           steps={[
             "Pick an online machine and the local port your app listens on.",
-            "Choose a relay (or Auto) and an optional subdomain.",
+            "Choose an edge (or Auto) and an optional subdomain.",
             "Share the https://… URL - or run tunnet tunnel <port> from the CLI.",
           ]}
           action={

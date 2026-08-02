@@ -70,7 +70,6 @@ function UsersPage() {
   const { data: activeOrg } = useActiveOrganization();
   const orgId = activeOrg?.id;
   const { data: canManage = false } = useCan(orgId, "member", "update");
-  /** Cloud license: invite + signup. Community/enterprise: admin createUser only. */
   const cloudInvites = useFeature("openSignUp");
   const canCreateUsers = !cloudInvites;
   const queryClient = useQueryClient();

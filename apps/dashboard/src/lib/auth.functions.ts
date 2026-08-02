@@ -35,3 +35,21 @@ async function fetchSession() {
 export const getSession = createServerFn({ method: "GET" }).handler(async () =>
   fetchSession(),
 );
+
+export const getEntitlements = createServerFn({ method: "GET" }).handler(
+  async () => {
+    try {
+      const response = await fetch(
+        `${getManagementApiUrl()}/api/v1/entitlements`,
+        { headers: authFetchOptions().headers },
+      );
+      if (!response.ok) return null;
+      return response.json() as Promise<{
+        tier: string;
+        cloudInfrastructure: boolean;
+      }>;
+    } catch {
+      return null;
+    }
+  },
+);

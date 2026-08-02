@@ -3,6 +3,7 @@ mod audit;
 mod auth;
 mod ca_crypto;
 mod config;
+mod connectivity_relay;
 mod db;
 mod device_expiry;
 mod device_expiry_sql;
@@ -23,6 +24,7 @@ mod posture;
 mod presence;
 mod reconnect;
 mod register;
+mod relay_map;
 mod service_auth;
 mod signing_key;
 mod snapshot;
@@ -144,9 +146,11 @@ async fn run_serve(args: Args) -> anyhow::Result<()> {
     tracing::info!(?args.bind, "starting tunnet control plane");
 
     let entitlements = resolve_entitlements_from_env().await;
+    crate::relay_map::set_license_tier(entitlements.tier);
     tracing::info!(
         tier = ?entitlements.tier,
         clickhouse_audit = entitlements.clickhouse_audit,
+        deployment_relay_mode = ?crate::relay_map::deployment_relay_mode(),
         "license entitlements loaded"
     );
 

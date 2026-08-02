@@ -48,6 +48,7 @@ pub use auth::{
 #[cfg(any(feature = "direct", feature = "managed"))]
 pub use connectivity::{
     ConnectivityOptions, ConnectivityProfile, apply_connectivity, endpoint_builder,
+    relay_map_from_configs,
 };
 pub use contact::{contact_id_from_endpoint, contact_id_from_hex, is_contact_id, parse_contact_id};
 #[cfg(feature = "direct")]

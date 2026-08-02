@@ -92,19 +92,19 @@ impl AppState {
         .await?
         .rows_affected();
 
-        let relay_tokens = sqlx::query(
-            "DELETE FROM relay_registration_tokens \
+        let edge_tokens = sqlx::query(
+            "DELETE FROM edge_registration_tokens \
              WHERE expires_at < now() OR used_at IS NOT NULL",
         )
         .execute(&self.pool)
         .await?
         .rows_affected();
 
-        if challenges + enrollment + relay_tokens > 0 {
+        if challenges + enrollment + edge_tokens > 0 {
             tracing::info!(
                 challenges,
                 enrollment,
-                relay_tokens,
+                edge_tokens,
                 "purged expired ephemeral tokens"
             );
         }

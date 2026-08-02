@@ -123,7 +123,7 @@ export function TopologyToolbar({
               <SelectItem value="subnet">Subnets</SelectItem>
               <SelectItem value="hostname">Hostnames</SelectItem>
               <SelectItem value="exit">Exit</SelectItem>
-              <SelectItem value="relay">Relays</SelectItem>
+              <SelectItem value="edge">Edges</SelectItem>
             </SelectContent>
           </Select>
           <Button

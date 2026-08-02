@@ -4,7 +4,7 @@ The control plane (`tunnet-control`) is the Rust server that coordinates managed
 
 ## What it does
 
-The control plane handles machine enrollment and IP allocation, network snapshot building and distribution, peer discovery (exchanging iroh endpoint IDs), WebSocket connections from agents, policy distribution, device posture reports and evaluation, tunnel routing (assigning tunnels to relays), relay registration, SSH session tracking, [audit logging](/guide/concepts/audit-logs), and the admin API used by the management server.
+The control plane handles machine enrollment and IP allocation, network snapshot building and distribution, peer discovery (exchanging iroh endpoint IDs), WebSocket connections from agents, policy distribution, device posture reports and evaluation, tunnel routing (assigning tunnels to edges), edge registration, SSH session tracking, [audit logging](/guide/concepts/audit-logs), and the admin API used by the management server.
 
 ## Ports
 
