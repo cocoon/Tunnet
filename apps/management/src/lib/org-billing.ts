@@ -19,7 +19,7 @@ import {
   resourceLimit,
 } from "@tunnet/api/billing";
 import { getDb, schema } from "@tunnet/db";
-import { and, count, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, count, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import { PlanLimitError, PlanRequiredError } from "./plan-errors";
 
 const db = getDb();
@@ -585,9 +585,14 @@ export async function pruneAuditEventsBeyondRetention(
   for (const org of orgs) {
     const cutoff = await auditRetentionCutoff(org.id, now);
     if (!cutoff) continue;
-    const result = await db.execute(
-      sql`DELETE FROM audit_events WHERE organization_id = ${org.id} AND time < ${cutoff}`,
-    );
+    const result = await db
+      .delete(schema.auditEvents)
+      .where(
+        and(
+          eq(schema.auditEvents.organizationId, org.id),
+          lt(schema.auditEvents.time, cutoff),
+        ),
+      );
     deleted += Number(result.rowCount ?? 0);
   }
   return deleted;
