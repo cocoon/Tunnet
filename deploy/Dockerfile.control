@@ -4,8 +4,8 @@ WORKDIR /src
 RUN cargo install cargo-chef
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
-COPY apps/desktop/src-tauri/Cargo.toml apps/desktop/src-tauri/Cargo.toml
-RUN cargo chef prepare --recipe-path recipe.json
+COPY apps/desktop/src-tauri/ apps/desktop/src-tauri/
+RUN cargo chef prepare --bin tunnet-control --recipe-path recipe.json
 
 FROM rust:1.97-bookworm AS builder
 WORKDIR /src
@@ -15,7 +15,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
-COPY apps/desktop/src-tauri/Cargo.toml apps/desktop/src-tauri/Cargo.toml
+COPY apps/desktop/src-tauri/ apps/desktop/src-tauri/
 RUN cargo build --release --package tunnet-control \
     && strip target/release/tunnet-control
 
