@@ -41,7 +41,4 @@ COPY --from=builder /src/package.json package.json
 
 EXPOSE 3000
 
-HEALTHCHECK --interval=10s --timeout=3s --start-period=10s \
-    CMD bun -e "fetch('http://localhost:3000/health').then(r=>{if(!r.ok)process.exit(1)})" || exit 1
-
 CMD ["bun", "run", "apps/management/src/index.ts"]

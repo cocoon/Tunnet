@@ -33,7 +33,4 @@ ENV TUNNET_ADMIN_BIND=0.0.0.0:9091
 
 EXPOSE 8080 9090 9091
 
-HEALTHCHECK --interval=10s --timeout=3s --start-period=15s \
-    CMD ["/usr/local/bin/tunnet-control", "--help"] || exit 1
-
 ENTRYPOINT ["tunnet-control"]
