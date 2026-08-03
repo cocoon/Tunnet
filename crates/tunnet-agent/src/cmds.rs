@@ -42,8 +42,13 @@ fn running_as_service() -> bool {
 
 pub async fn finish_after_config(
     state_dir: Option<&str>,
-    _needs_process_restart: bool,
+    needs_process_restart: bool,
 ) -> anyhow::Result<()> {
+    if !needs_process_restart {
+        tracing::info!("config written; daemon will load the new state");
+        return Ok(());
+    }
+
     if running_as_service() {
         let dir = state_dir.map(str::to_owned);
         tokio::spawn(async move {

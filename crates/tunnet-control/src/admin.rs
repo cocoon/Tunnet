@@ -260,6 +260,7 @@ async fn register_device_handler(
             expires_in: parsed.expires_in,
             public_ip: None,
             membership_status: "active".into(),
+            enrollment_token_hash: None,
         },
     )
     .await;

@@ -19,6 +19,7 @@ pub struct RegisterDeviceParams {
     pub public_ip: Option<std::net::IpAddr>,
     /// `"active"` (token/SDK) or `"pending"` (quick enroll).
     pub membership_status: String,
+    pub enrollment_token_hash: Option<String>,
 }
 
 pub async fn register_device(
@@ -52,6 +53,31 @@ pub async fn register_device(
             format!("db: {e}"),
         )
     })?;
+
+    if let Some(token_hash) = params.enrollment_token_hash.as_deref() {
+        let consumed = sqlx::query(
+            "UPDATE enrollment_tokens SET used_at = now() \
+             WHERE token_hash = $1 AND network_id = $2 \
+               AND used_at IS NULL AND expires_at > now()",
+        )
+        .bind(token_hash)
+        .bind(params.network_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db: {e}"),
+            )
+        })?;
+
+        if consumed.rows_affected() != 1 {
+            return Err((
+                axum::http::StatusCode::UNAUTHORIZED,
+                "invalid or expired enrollment token".into(),
+            ));
+        }
+    }
 
     let network_row: Option<(String,)> = sqlx::query_as(
         "SELECT organization_id FROM networks WHERE id = $1 AND organization_id = $2",

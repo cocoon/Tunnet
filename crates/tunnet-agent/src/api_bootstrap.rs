@@ -124,7 +124,7 @@ impl BootstrapOps for AgentBootstrapOps {
         };
         crate::cli::run_enroll(args, self.state_dir().as_deref())
             .await
-            .map_err(map_error)?;
+            .map_err(|e| map_error(format!("{e:#}")))?;
         Ok(ok("enrolled"))
     }
 

@@ -14,7 +14,7 @@ readme = "README.md"
 
 [features]
 default = ["managed", "direct", "send", "serve", "tunnel", "dns", "recording", "local_api"]
-managed = ["dep:tokio-tungstenite"]
+managed = ["dep:tokio-tungstenite", "dep:rustls"]
 direct = ["dep:iroh-docs", "dep:iroh-blobs", "dep:iroh-mainline-address-lookup", "dep:iroh-mdns-address-lookup", "dep:mdns-sd", "dep:bs58"]
 send = ["dep:iroh-blobs"]
 serve = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]

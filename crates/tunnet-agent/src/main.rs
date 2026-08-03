@@ -41,6 +41,8 @@ mod wintun_path;
 use clap::Parser;
 
 fn main() {
+    ensure_rustls_crypto_provider();
+
     #[cfg(windows)]
     if std::env::args().any(|a| a == "--service") {
         if let Err(e) = crate::win_service::run_as_service() {
@@ -65,6 +67,15 @@ fn main() {
         eprintln!("{e:#}");
         exit_with(1);
     }
+}
+
+fn ensure_rustls_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_some() {
+        return;
+    }
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install rustls CryptoProvider");
 }
 
 fn exit_with(code: i32) -> ! {

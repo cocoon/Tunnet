@@ -22,6 +22,8 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 const RESUME_OVERSHOOT: Duration = Duration::from_secs(5);
 /// Fast retry when the peer is not listening yet (common when co-located with CP).
 const REFUSED_RETRY: Duration = Duration::from_secs(1);
+/// Never let a stalled TLS/WebSocket handshake block reconnect state forever.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// How often to probe wall clock / send a WS ping while connected.
 const KEEP_ALIVE_SECS: u64 = 5;
 /// Wall-clock gap while connected that forces a reconnect (VM suspend/resume).
@@ -157,6 +159,7 @@ pub fn spawn(control_url: String, endpoint_id: String, signing_key: SigningKey) 
 
     let link_task = link.clone();
     tokio::spawn(async move {
+        ensure_rustls_crypto_provider();
         run(
             control_url,
             endpoint_id,
@@ -172,6 +175,18 @@ pub fn spawn(control_url: String, endpoint_id: String, signing_key: SigningKey) 
         rx: server_rx,
         tx: client_tx,
         link,
+    }
+}
+
+fn ensure_rustls_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_some() {
+        return;
+    }
+    if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
+        tracing::warn!(
+            ?err,
+            "rustls CryptoProvider already installed by another thread"
+        );
     }
 }
 
@@ -227,6 +242,7 @@ async fn run(
 ) {
     let mut backoff = MIN_BACKOFF;
     let mut outbound_closed = false;
+    tracing::info!(url = %control_url, "ws reconnect loop starting");
 
     loop {
         let mut connection_refused = false;
@@ -366,6 +382,8 @@ async fn connect_once(
         .insert(HDR_TIMESTAMP, ts.to_string().parse()?);
     req.headers_mut().insert(HDR_SIGNATURE, sig.parse()?);
 
-    let (ws, _resp) = tokio_tungstenite::connect_async(req).await?;
+    let (ws, _resp) = tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(req))
+        .await
+        .context("websocket connect timed out")??;
     Ok(ws)
 }

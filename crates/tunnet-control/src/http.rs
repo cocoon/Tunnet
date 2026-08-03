@@ -160,6 +160,7 @@ async fn enroll_handler(
         Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
         Err((code, msg)) => {
             state.metrics.http_request("enroll", code.as_str());
+            tracing::warn!(status = %code, error = %msg, "enrollment failed");
             err(code, &msg)
         }
     }
@@ -208,7 +209,7 @@ async fn enroll_inner(
 
     let (organization_id, network_id, membership_status, enroll_tags) = match (token, org_slug) {
         (Some(token), None) => {
-            let (org_id, net_id, tags) = consume_enrollment_token(state, token).await?;
+            let (org_id, net_id, tags) = lookup_enrollment_token(state, token).await?;
             (org_id, net_id, "active".to_string(), tags)
         }
         (None, Some(slug)) => {
@@ -261,6 +262,7 @@ async fn enroll_inner(
             expires_in,
             public_ip,
             membership_status,
+            enrollment_token_hash: token.map(crate::token_hash::hash_token),
         },
     )
     .await?;
@@ -302,27 +304,22 @@ async fn apply_enrollment_tags(
     Ok(())
 }
 
-async fn consume_enrollment_token(
+async fn lookup_enrollment_token(
     state: &SharedState,
     token: &str,
 ) -> Result<(String, uuid::Uuid, Vec<String>), (StatusCode, String)> {
     let token_hash = crate::token_hash::hash_token(token);
 
-    let mut tx = state
-        .pool
-        .begin()
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("db: {e}")))?;
-
     let row: Option<(String, uuid::Uuid, Option<Vec<String>>)> = sqlx::query_as(
-        "UPDATE enrollment_tokens et SET used_at = now() \
-         FROM networks n \
-         WHERE et.token_hash = $1 AND et.network_id = n.id \
+        "SELECT n.organization_id, et.network_id, et.tags \
+         FROM enrollment_tokens et \
+         JOIN networks n ON n.id = et.network_id \
+         WHERE et.token_hash = $1 \
            AND et.used_at IS NULL AND et.expires_at > now() \
-         RETURNING n.organization_id, et.network_id, et.tags",
+         ",
     )
     .bind(&token_hash)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&state.pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("db: {e}")))?;
 
@@ -333,10 +330,6 @@ async fn consume_enrollment_token(
             "invalid or expired enrollment token".into(),
         )
     })?;
-
-    tx.commit()
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("db: {e}")))?;
 
     Ok((organization_id, network_id, tags.unwrap_or_default()))
 }
