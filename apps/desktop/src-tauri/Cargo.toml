@@ -24,7 +24,7 @@ anyhow.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls", "stream"] }
 futures-util.workspace = true
 tokio-util = { workspace = true, features = ["io"] }
-zip = "2"
+zip.workspace = true
 winreg = "0.56.0"
 
 tunnet-client.workspace = true

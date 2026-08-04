@@ -1,10 +1,22 @@
 //! tnlic1 token decode (header / payload / signature).
 
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+use std::sync::LazyLock;
+
+use base64::Engine;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+use base64::engine::general_purpose::NO_PAD;
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64U_ENGINE;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+use base64::engine::simd::Simd;
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::LicenseError;
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+static B64U: LazyLock<Simd> = LazyLock::new(|| Simd::url_safe(NO_PAD));
 
 pub const TOKEN_PREFIX: &str = "tnlic1";
 pub const LICENSE_TYP: &str = "tunnet-license+2";
@@ -32,15 +44,36 @@ fn is_b64url_char(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'-' || c == b'_'
 }
 
+fn b64u_engine_encode(bytes: &[u8]) -> String {
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    {
+        B64U.encode(bytes)
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        B64U_ENGINE.encode(bytes)
+    }
+}
+
+fn b64u_engine_decode(value: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    {
+        B64U.decode(value)
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        B64U_ENGINE.decode(value)
+    }
+}
+
 /// Strict canonical base64url decode (no padding; round-trip must match).
 pub fn b64u_decode(value: &str) -> Result<Vec<u8>, LicenseError> {
     if value.as_bytes().iter().any(|b| !is_b64url_char(*b)) || value.len() % 4 == 1 {
         return Err(LicenseError::malformed("invalid base64url"));
     }
-    let bytes = URL_SAFE_NO_PAD
-        .decode(value)
-        .map_err(|_| LicenseError::malformed("invalid base64url"))?;
-    let re = URL_SAFE_NO_PAD.encode(&bytes);
+    let bytes =
+        b64u_engine_decode(value).map_err(|_| LicenseError::malformed("invalid base64url"))?;
+    let re = b64u_engine_encode(&bytes);
     if re != value {
         return Err(LicenseError::malformed("non-canonical base64url"));
     }
@@ -48,7 +81,7 @@ pub fn b64u_decode(value: &str) -> Result<Vec<u8>, LicenseError> {
 }
 
 pub fn b64u_encode(bytes: &[u8]) -> String {
-    URL_SAFE_NO_PAD.encode(bytes)
+    b64u_engine_encode(bytes)
 }
 
 fn parse_json_object(bytes: &[u8]) -> Result<Value, LicenseError> {

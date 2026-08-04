@@ -705,7 +705,9 @@ async fn install_daemon_from_github(app: AppHandle) -> Result<InstallResult, Str
 
     let file = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-    archive.extract(&temp_dir).map_err(|e| e.to_string())?;
+    archive
+        .extract_unwrapped_root_dir(&temp_dir, zip::read::root_dir_common_filter)
+        .map_err(|e| e.to_string())?;
 
     #[cfg(windows)]
     {

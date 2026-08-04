@@ -10,7 +10,9 @@ pub struct Metrics {
 
 impl Metrics {
     pub fn new() -> anyhow::Result<Self> {
-        let handle = PrometheusBuilder::new().install_recorder()?;
+        let handle = PrometheusBuilder::new()
+            .with_recommended_naming(true)
+            .install_recorder()?;
 
         describe_counter!("tunnet_http_requests_total", "HTTP requests processed");
         describe_counter!("tunnet_auth_failures_total", "Failed auth attempts");

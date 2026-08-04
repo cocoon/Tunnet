@@ -14,7 +14,9 @@ pub struct EdgeMetrics {
 
 impl EdgeMetrics {
     pub fn new() -> anyhow::Result<Self> {
-        let handle = PrometheusBuilder::new().install_recorder()?;
+        let handle = PrometheusBuilder::new()
+            .with_recommended_naming(true)
+            .install_recorder()?;
 
         describe_gauge!(
             "tunnet_edge_active_tunnels",

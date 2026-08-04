@@ -10,7 +10,9 @@ pub struct AgentMetrics {
 
 impl AgentMetrics {
     pub fn new() -> anyhow::Result<Self> {
-        let handle = PrometheusBuilder::new().install_recorder()?;
+        let handle = PrometheusBuilder::new()
+            .with_recommended_naming(true)
+            .install_recorder()?;
 
         describe_counter!("tunnet_packets_total", "Packets processed by the tunnel");
         describe_counter!("tunnet_bytes_total", "Bytes processed by the tunnel");

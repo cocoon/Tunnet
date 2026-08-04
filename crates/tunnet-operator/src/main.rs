@@ -114,6 +114,7 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
 
     if ctx.metrics_enabled {
         metrics_exporter_prometheus::PrometheusBuilder::new()
+            .with_recommended_naming(true)
             .install_recorder()
             .ok();
     }

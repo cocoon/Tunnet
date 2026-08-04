@@ -139,7 +139,9 @@ struct KubeMetrics {
 
 impl KubeMetrics {
     fn new() -> anyhow::Result<Self> {
-        let handle = PrometheusBuilder::new().install_recorder()?;
+        let handle = PrometheusBuilder::new()
+            .with_recommended_naming(true)
+            .install_recorder()?;
         describe_gauge!("tunnet_kube_ready", "1 when the node finished mode setup");
         describe_counter!(
             "tunnet_kube_egress_connections_total",

@@ -74,7 +74,7 @@ parking_lot = "0.12"
 arc-swap = "1"
 
 hex = "0.4"
-base64 = "0.22"
+base64 = "0.23"
 rand = "0.10"
 ed25519-dalek = { version = "=3.0.0-rc.0", features = ["rand_core"] }
 hmac = "0.13"
@@ -105,8 +105,8 @@ netdev = { version = "0.45", default-features = false, features = ["gateway"] }
 prefix-trie = "0.10"
 hickory-proto = "0.26"
 
-metrics = "0.24"
-metrics-exporter-prometheus = { version = "0.16", default-features = false }
+metrics = "0.24.5"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 
 # TLS (Serve / Tunnel)
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
@@ -127,10 +127,11 @@ russh-sftp = "2.3"
 async-trait = "0.1"
 regex = "1"
 semver = "1"
-sysinfo = "0.35"
+sysinfo = "0.39.6"
 os_info = "3"
 whoami = "2"
 rusqlite = { version = "0.39", features = ["bundled"] }
+zip = "8.6.0"
 
 # napi-rs
 napi = { version = "3", features = [
