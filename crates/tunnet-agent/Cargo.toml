@@ -54,7 +54,7 @@ russh.workspace = true
 russh-sftp.workspace = true
 async-trait.workspace = true
 rusqlite.workspace = true
-self_update = { version = "1.0.0-rc.5", default-features = false, features = ["github", "archive-tar", "compression-tar-gz", "archive-zip", "compression-zip-deflate", "rustls", "reqwest", "progress-bar", "checksums"] }
+self_update = { version = "1.0.0-rc.6", default-features = false, features = ["github", "archive-tar", "compression-tar-gz", "archive-zip", "compression-zip-deflate", "rustls", "reqwest", "progress-bar", "checksums"] }
 tokio-util = { workspace = true, features = ["rt"] }
 
 [target.'cfg(unix)'.dependencies]

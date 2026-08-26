@@ -39,4 +39,4 @@ schemars = { workspace = true }
 futures = { workspace = true }
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
 rustls-pemfile.workspace = true
-yaml_serde = "0.10.4"
+yaml_serde.workspace = true

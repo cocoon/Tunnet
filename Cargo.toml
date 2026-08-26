@@ -31,7 +31,7 @@ license = "MPL-2.0"
 [workspace.dependencies]
 anyhow = "1"
 thiserror = "2"
-tokio = { version = "1.52", features = ["full"] }
+tokio = { version = "1.53", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt", "codec"] }
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
@@ -105,7 +105,7 @@ netdev = { version = "0.45", default-features = false, features = ["gateway"] }
 prefix-trie = "0.10"
 hickory-proto = "0.26"
 
-metrics = "0.24.5"
+metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 
 # TLS (Serve / Tunnel)
@@ -115,15 +115,15 @@ rustls-pemfile = "2"
 rcgen = "0.14"
 
 # Networking
-iroh = { version = "1.0.3" }
-iroh-relay = { version = "1.0.3", default-features = false, features = ["server"] }
+iroh = { version = "1.1.0" }
+iroh-relay = { version = "1.1.0", default-features = false, features = ["server"] }
 iroh-gossip = "0.101"
 iroh-blobs = "0.103"
 iroh-docs = "0.101"
 tun-rs = { version = "2", features = ["async_tokio"] }
 portable-pty = "0.9"
 russh = { version = "0.61.2", default-features = false, features = ["ring"] }
-russh-sftp = "2.3"
+russh-sftp = "2.4"
 async-trait = "0.1"
 regex = "1"
 semver = "1"
@@ -153,18 +153,18 @@ tunnet-posture = { version = "0.8.0", path = "crates/tunnet-posture" }
 tunnet-policy-engine = { version = "0.8.0", path = "crates/tunnet-policy-engine" }
 tunnet-audit = { version = "0.8.0", path = "crates/tunnet-audit" }
 tunnet-license = { version = "0.8.0", path = "crates/tunnet-license" }
-yaml_serde = "0.10.4"
+yaml_serde = "0.10.7"
 hcl-rs = "0.19"
 
 # Kubernetes operator
-kube = { version = "4.0.0", default-features = false, features = [
+kube = { version = "4.2.0", default-features = false, features = [
   "client",
   "runtime",
   "derive",
   "rustls-tls",
 ] }
 k8s-openapi = { version = "0.28.0", features = ["v1_36"] }
-schemars = "1.2.1"
+schemars = "1.2.2"
 futures = "0.3"
 
 [profile.release]
