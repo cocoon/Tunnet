@@ -54,22 +54,18 @@ pub fn network_id_from_topic(topic_hash_hex: &str) -> Uuid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
-    #[test]
-    fn derives_within_cgnat() {
-        let ip = derive_ipv4(
-            "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
-            0,
-        );
+    #[rstest]
+    #[case::zero_key("0".repeat(64), 0)]
+    #[case::hex_key("aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899".into(), 0)]
+    #[case::collision_retry("fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210".into(), 7)]
+    fn derives_stable_usable_cgnat_address(#[case] endpoint_id: String, #[case] collision: u8) {
+        let ip = derive_ipv4(&endpoint_id, collision);
         assert!(direct_cgnat().contains(&ip));
         assert!(!ip.is_loopback());
         assert!(!ip.is_unspecified());
-    }
-
-    #[test]
-    fn stable_for_same_key() {
-        let hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        assert_eq!(derive_ipv4(hex, 0), derive_ipv4(hex, 0));
+        assert_eq!(ip, derive_ipv4(&endpoint_id, collision));
     }
 
     #[test]
@@ -78,19 +74,10 @@ mod tests {
         assert_ne!(derive_ipv4(hex, 0), derive_ipv4(hex, 1));
     }
 
-    #[test]
-    fn not_in_rfc1918_10() {
-        let ip = derive_ipv4(
-            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-            0,
-        );
-        let ten: ipnet::Ipv4Net = "10.0.0.0/8".parse().unwrap();
-        assert!(!ten.contains(&ip));
-    }
-
-    #[test]
-    fn network_id_stable() {
-        let t = "aa".repeat(32);
-        assert_eq!(network_id_from_topic(&t), network_id_from_topic(&t));
+    #[rstest]
+    #[case::canonical_hex("aa".repeat(32))]
+    #[case::raw_fallback("not-hex-topic".into())]
+    fn network_id_is_stable(#[case] topic: String) {
+        assert_eq!(network_id_from_topic(&topic), network_id_from_topic(&topic));
     }
 }

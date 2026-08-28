@@ -43,32 +43,35 @@ pub fn derive_tenant_ipv6(endpoint_id: &str) -> Result<Ipv6Addr, ProtocolError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
-    #[test]
-    fn stable_for_same_endpoint() {
-        let id = "a".repeat(64);
-        let a = derive_tenant_ipv6(&id).unwrap();
-        let b = derive_tenant_ipv6(&id).unwrap();
-        assert_eq!(a, b);
+    #[rstest]
+    #[case::all_zeroes('0')]
+    #[case::all_as('a')]
+    #[case::all_fs('f')]
+    fn derived_addresses_are_stable_tenant_ulas(#[case] digit: char) {
+        let id = digit.to_string().repeat(64);
+        let addr = derive_tenant_ipv6(&id).unwrap();
+        let octets = addr.octets();
+
+        assert_eq!(addr, derive_tenant_ipv6(&id).unwrap());
+        assert_eq!(&octets[0..6], &TENANT_IPV6_PREFIX);
+        assert_ne!(addr, Ipv6Addr::UNSPECIFIED);
+    }
+
+    #[rstest]
+    #[case::empty(String::new())]
+    #[case::short("abcd".into())]
+    #[case::non_hex("g".repeat(64))]
+    #[case::too_long("a".repeat(66))]
+    fn rejects_invalid_endpoint_ids(#[case] endpoint_id: String) {
+        assert!(derive_tenant_ipv6(&endpoint_id).is_err());
     }
 
     #[test]
-    fn different_endpoints_differ() {
+    fn different_endpoints_derive_different_addresses() {
         let a = derive_tenant_ipv6(&"a".repeat(64)).unwrap();
         let b = derive_tenant_ipv6(&"b".repeat(64)).unwrap();
         assert_ne!(a, b);
-    }
-
-    #[test]
-    fn under_ula_prefix() {
-        let id = "c".repeat(64);
-        let addr = derive_tenant_ipv6(&id).unwrap();
-        let octets = addr.octets();
-        assert_eq!(&octets[0..6], &TENANT_IPV6_PREFIX);
-    }
-
-    #[test]
-    fn rejects_bad_endpoint_id() {
-        assert!(derive_tenant_ipv6("short").is_err());
     }
 }

@@ -50,8 +50,8 @@ pub fn spawn_scanner(
                 Ok(other) => {
                     tracing::trace!(?other, "mdns meta event");
                 }
-                Err(_) => {
-                    tracing::debug!("mdns meta browse ended");
+                Err(e) => {
+                    tracing::debug!(error = %e, "mdns meta browse ended");
                     break;
                 }
             }
@@ -77,6 +77,7 @@ fn spawn_type_browser(
         while let Ok(ev) = rx.recv_async().await {
             handle_service_event(ev, mesh_ip, &advertised, &tx);
         }
+        tracing::debug!(%service_type, "mdns service-type browse ended");
     });
 }
 

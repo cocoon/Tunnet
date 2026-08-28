@@ -342,6 +342,7 @@ pub fn evaluate_named_postures(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
     fn attrs(pairs: &[(&str, PostureValue)]) -> HashMap<String, PostureValue> {
         pairs
@@ -350,34 +351,41 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn parse_eq_bool() {
-        let a = parse_assertion("device:diskEncryption == true").unwrap();
-        assert_eq!(a.attribute, "device:diskEncryption");
-        assert_eq!(a.operator, PostureOp::Eq);
-        assert_eq!(a.value, Some(PostureValue::Bool(true)));
-    }
-
-    #[test]
-    fn parse_in_list() {
-        let a = parse_assertion("node:os IN ['macos', 'windows']").unwrap();
-        assert_eq!(a.attribute, "node:os");
-        assert_eq!(a.operator, PostureOp::In);
-        assert_eq!(
-            a.value,
-            Some(PostureValue::StringList(vec![
-                "macos".into(),
-                "windows".into()
-            ]))
-        );
-    }
-
-    #[test]
-    fn parse_version_gte() {
-        let a = parse_assertion("node:tunnetVersion >= '0.7.0'").unwrap();
-        assert_eq!(a.attribute, "node:tunnetVersion");
-        assert_eq!(a.operator, PostureOp::Gte);
-        assert_eq!(a.value, Some(PostureValue::String("0.7.0".into())));
+    #[rstest]
+    #[case::boolean_equality(
+        "device:diskEncryption == true",
+        "device:diskEncryption",
+        PostureOp::Eq,
+        Some(PostureValue::Bool(true))
+    )]
+    #[case::membership(
+        "node:os IN ['macos', 'windows']",
+        "node:os",
+        PostureOp::In,
+        Some(PostureValue::StringList(vec!["macos".into(), "windows".into()]))
+    )]
+    #[case::version_comparison(
+        "node:tunnetVersion >= '0.7.0'",
+        "node:tunnetVersion",
+        PostureOp::Gte,
+        Some(PostureValue::String("0.7.0".into()))
+    )]
+    #[case::presence(
+        "device:antivirusName IS SET",
+        "device:antivirusName",
+        PostureOp::IsSet,
+        None
+    )]
+    fn parses_assertion_forms(
+        #[case] input: &str,
+        #[case] expected_attribute: &str,
+        #[case] expected_operator: PostureOp,
+        #[case] expected_value: Option<PostureValue>,
+    ) {
+        let assertion = parse_assertion(input).unwrap();
+        assert_eq!(assertion.attribute, expected_attribute);
+        assert_eq!(assertion.operator, expected_operator);
+        assert_eq!(assertion.value, expected_value);
     }
 
     #[test]
@@ -394,24 +402,21 @@ mod tests {
         assert_eq!(a.attribute, "device:appRunning:com.crowdstrike.falcon");
     }
 
-    #[test]
-    fn evaluate_in_operator() {
-        let assertion = parse_assertion("node:os IN ['macos', 'windows']").unwrap();
-        let mac_attrs = attrs(&[("node:os", PostureValue::String("macos".into()))]);
-        assert!(assertion.evaluate(&mac_attrs));
-
-        let linux_attrs = attrs(&[("node:os", PostureValue::String("linux".into()))]);
-        assert!(!assertion.evaluate(&linux_attrs));
-    }
-
-    #[test]
-    fn evaluate_semver_comparison() {
-        let assertion = parse_assertion("node:tunnetVersion >= '0.7.0'").unwrap();
-        let pass = attrs(&[("node:tunnetVersion", PostureValue::String("0.8.0".into()))]);
-        assert!(assertion.evaluate(&pass));
-
-        let fail = attrs(&[("node:tunnetVersion", PostureValue::String("0.6.9".into()))]);
-        assert!(!assertion.evaluate(&fail));
+    #[rstest]
+    #[case::member("node:os IN ['macos', 'windows']", "node:os", "macos", true)]
+    #[case::not_a_member("node:os IN ['macos', 'windows']", "node:os", "linux", false)]
+    #[case::newer_version("node:tunnetVersion >= '0.7.0'", "node:tunnetVersion", "0.8.0", true)]
+    #[case::equal_version("node:tunnetVersion >= '0.7.0'", "node:tunnetVersion", "0.7", true)]
+    #[case::older_version("node:tunnetVersion >= '0.7.0'", "node:tunnetVersion", "0.6.9", false)]
+    fn evaluates_string_and_version_comparisons(
+        #[case] expression: &str,
+        #[case] attribute: &str,
+        #[case] actual: &str,
+        #[case] expected: bool,
+    ) {
+        let assertion = parse_assertion(expression).unwrap();
+        let device_attrs = attrs(&[(attribute, PostureValue::String(actual.into()))]);
+        assert_eq!(assertion.evaluate(&device_attrs), expected);
     }
 
     #[test]

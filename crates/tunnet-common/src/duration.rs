@@ -42,11 +42,21 @@ pub fn seconds_to_pg_interval(seconds: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
-    #[test]
-    fn parses_common_units() {
-        assert_eq!(parse_human_duration_secs("30m"), Some(1_800));
-        assert_eq!(parse_human_duration_secs("3d"), Some(259_200));
-        assert_eq!(parse_human_duration_secs("1w"), Some(604_800));
+    #[rstest]
+    #[case::seconds("15 seconds", Some(15))]
+    #[case::minutes("30m", Some(1_800))]
+    #[case::hours_case_insensitive("2 HRS", Some(7_200))]
+    #[case::days("3d", Some(259_200))]
+    #[case::weeks("1w", Some(604_800))]
+    #[case::surrounding_whitespace(" 5 min ", Some(300))]
+    #[case::missing_unit("30", None)]
+    #[case::zero("0s", None)]
+    #[case::negative("-1h", None)]
+    #[case::unknown_unit("1month", None)]
+    #[case::overflow("9223372036854775807w", None)]
+    fn parses_human_duration(#[case] input: &str, #[case] expected: Option<i64>) {
+        assert_eq!(parse_human_duration_secs(input), expected);
     }
 }

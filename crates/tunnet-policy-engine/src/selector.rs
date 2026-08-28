@@ -86,31 +86,31 @@ fn is_endpoint_hex(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
-    #[test]
-    fn rejects_group_user_selector() {
-        let err = parse_selector("group:user:eng").unwrap_err();
-        assert!(err.to_string().contains("group:user:eng"));
+    #[rstest]
+    #[case::any("*", ParsedSelector::Any)]
+    #[case::tag("tag:prod", ParsedSelector::Tag("prod".into()))]
+    #[case::user("user:alice", ParsedSelector::User("alice".into()))]
+    #[case::host("host:db", ParsedSelector::HostAlias("db".into()))]
+    #[case::ip_set("ipset:office", ParsedSelector::IpSet("office".into()))]
+    #[case::ipv4_cidr("10.0.0.0/8", ParsedSelector::Cidr("10.0.0.0/8".parse().unwrap()))]
+    #[case::ipv6_cidr("fd00::/8", ParsedSelector::Cidr("fd00::/8".parse().unwrap()))]
+    #[case::endpoint("0123456789abcdef", ParsedSelector::Endpoint("0123456789abcdef".into()))]
+    fn parses_supported_selectors(#[case] raw: &str, #[case] expected: ParsedSelector) {
+        assert_eq!(parse_selector(raw).unwrap(), expected);
     }
 
-    #[test]
-    fn rejects_group_device_selector() {
-        let err = parse_selector("group:device:servers").unwrap_err();
-        assert!(err.to_string().contains("group:device:servers"));
-    }
-
-    #[test]
-    fn parses_cidr_as_ipnet() {
-        let p = parse_selector("10.0.0.0/8").unwrap();
-        assert!(matches!(p, ParsedSelector::Cidr(_)));
-        let Selector::Cidr(net) = to_policy_selector(&p) else {
-            panic!("expected Cidr");
-        };
-        assert!(net.contains(&"10.1.2.3".parse::<std::net::IpAddr>().unwrap()));
-    }
-
-    #[test]
-    fn invalid_cidr_fails_at_parse() {
-        assert!(parse_selector("10.0.0.0/99").is_err());
+    #[rstest]
+    #[case::empty("")]
+    #[case::whitespace("  ")]
+    #[case::legacy_user_group("group:user:eng")]
+    #[case::legacy_device_group("group:device:servers")]
+    #[case::invalid_cidr("10.0.0.0/99")]
+    #[case::short_endpoint("deadbeef")]
+    #[case::unknown_prefix("role:admin")]
+    fn rejects_invalid_or_legacy_selectors(#[case] raw: &str) {
+        let err = parse_selector(raw).unwrap_err();
+        assert!(err.to_string().contains(raw.trim()));
     }
 }

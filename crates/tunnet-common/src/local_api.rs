@@ -1146,10 +1146,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn format_daemon_not_running() {
+    fn daemon_not_running_error_names_supported_start_commands() {
         let msg = format_api_error(&ApiErrorCode::DaemonNotRunning, "ignored");
-        assert!(msg.contains("tunnetd is not running"));
-        assert!(msg.contains("tunnet up"));
+        assert_eq!(
+            msg,
+            "tunnetd is not running (start with `tunnet service start` or run `tunnetd`)"
+        );
     }
 
     #[test]

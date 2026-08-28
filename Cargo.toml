@@ -82,9 +82,9 @@ sha2 = "0.11"
 blake3 = "1"
 toml = { version = "1", features = ["preserve_order"] }
 bs58 = "0.5"
-iroh-mdns-address-lookup = "0.4"
-iroh-mainline-address-lookup = "0.4"
-argon2 = "0.5"
+iroh-mdns-address-lookup = "0.5"
+iroh-mainline-address-lookup = "0.5"
+argon2 = "0.6"
 secrecy = { version = "0.10", features = ["serde"] }
 aes-gcm = "0.11"
 
@@ -101,7 +101,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 ipnet = { version = "2", features = ["serde"] }
 ipnetwork = { version = "0.21", features = ["serde"] }
-netdev = { version = "0.45", default-features = false, features = ["gateway"] }
+netdev = { version = "0.46", default-features = false, features = ["gateway"] }
 prefix-trie = "0.10"
 hickory-proto = "0.26"
 
@@ -166,6 +166,7 @@ kube = { version = "4.2.0", default-features = false, features = [
 k8s-openapi = { version = "0.28.0", features = ["v1_36"] }
 schemars = "1.2.2"
 futures = "0.3"
+rstest = "0.26.1"
 
 [profile.release]
 opt-level = 3

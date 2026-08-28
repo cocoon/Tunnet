@@ -155,16 +155,17 @@ pub fn decode_token(token: &str) -> Result<DecodedToken, LicenseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
-    #[test]
-    fn rejects_empty() {
-        assert!(decode_token("").is_err());
-        assert!(decode_token("not-a-token").is_err());
-    }
-
-    #[test]
-    fn rejects_wrong_prefix() {
-        assert!(decode_token("tnlic0.a.b.c").is_err());
+    #[rstest]
+    #[case::empty("")]
+    #[case::not_a_token("not-a-token")]
+    #[case::wrong_prefix("tnlic0.a.b.c")]
+    #[case::missing_signature("tnlic1.a.b")]
+    #[case::extra_segment("tnlic1.a.b.c.d")]
+    #[case::padding_is_forbidden("tnlic1.YQ==.e30.AA")]
+    fn rejects_malformed_token_envelopes(#[case] token: &str) {
+        assert!(decode_token(token).is_err());
     }
 
     #[test]

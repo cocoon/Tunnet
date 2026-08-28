@@ -103,20 +103,21 @@ pub async fn _keep_unused_ref(_c: &mut PgConnection) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use std::str::FromStr;
 
-    #[test]
-    fn rejects_network_and_broadcast() {
-        let net = Ipv4Net::from_str("10.7.0.0/24").unwrap();
-        assert!(!is_usable_host(&net, Ipv4Addr::new(10, 7, 0, 0)));
-        assert!(!is_usable_host(&net, Ipv4Addr::new(10, 7, 0, 255)));
-        assert!(is_usable_host(&net, Ipv4Addr::new(10, 7, 0, 1)));
-    }
-
-    #[test]
-    fn slash32_single_host_ok() {
-        let net = Ipv4Net::from_str("10.7.0.5/32").unwrap();
-        assert!(is_usable_host(&net, Ipv4Addr::new(10, 7, 0, 5)));
-        assert!(!is_usable_host(&net, Ipv4Addr::new(10, 7, 0, 0)));
+    #[rstest]
+    #[case::network_address("10.7.0.0/24", "10.7.0.0", false)]
+    #[case::broadcast_address("10.7.0.0/24", "10.7.0.255", false)]
+    #[case::regular_host("10.7.0.0/24", "10.7.0.1", true)]
+    #[case::outside_network("10.7.0.0/24", "10.8.0.1", false)]
+    #[case::slash_31_first("10.7.0.4/31", "10.7.0.4", true)]
+    #[case::slash_31_second("10.7.0.4/31", "10.7.0.5", true)]
+    #[case::slash_32_exact("10.7.0.5/32", "10.7.0.5", true)]
+    #[case::slash_32_other("10.7.0.5/32", "10.7.0.0", false)]
+    fn identifies_usable_hosts(#[case] cidr: &str, #[case] ip: &str, #[case] expected: bool) {
+        let net = Ipv4Net::from_str(cidr).unwrap();
+        let ip = Ipv4Addr::from_str(ip).unwrap();
+        assert_eq!(is_usable_host(&net, ip), expected);
     }
 }

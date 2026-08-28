@@ -333,6 +333,8 @@ fn drr_round_drain(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
+    use tunnet_common::policy::Protocol;
 
     fn pkt(n: usize) -> Bytes {
         Bytes::from(vec![0u8; n])
@@ -379,42 +381,27 @@ mod tests {
         assert!(out.is_empty());
     }
 
-    #[test]
-    fn classify_icmp_and_dns_as_latency() {
-        let icmp = ParsedIpv4 {
+    #[rstest]
+    #[case::icmp(Protocol::Icmp, None, 0, 64, Class::Latency)]
+    #[case::dns(Protocol::Udp, Some(53), 32, 60, Class::Latency)]
+    #[case::large_udp(Protocol::Udp, Some(5201), 1_200, 1_228, Class::Bulk)]
+    #[case::ordinary_udp(Protocol::Udp, Some(443), 200, 228, Class::Normal)]
+    fn classifies_traffic(
+        #[case] protocol: Protocol,
+        #[case] dst_port: Option<u16>,
+        #[case] payload_len: usize,
+        #[case] packet_len: usize,
+        #[case] expected: Class,
+    ) {
+        let packet = ParsedIpv4 {
             src: "10.0.0.1".parse().unwrap(),
             dst: "10.0.0.2".parse().unwrap(),
-            protocol: tunnet_common::policy::Protocol::Icmp,
-            dst_port: None,
-            src_port: None,
+            protocol,
+            dst_port,
+            src_port: Some(40_000),
             tcp_flags: None,
-            l4_payload_len: 0,
+            l4_payload_len: payload_len,
         };
-        assert_eq!(classify(&icmp, 64), Class::Latency);
-
-        let dns = ParsedIpv4 {
-            src: "10.0.0.1".parse().unwrap(),
-            dst: "8.8.8.8".parse().unwrap(),
-            protocol: tunnet_common::policy::Protocol::Udp,
-            dst_port: Some(53),
-            src_port: Some(54321),
-            tcp_flags: None,
-            l4_payload_len: 32,
-        };
-        assert_eq!(classify(&dns, 60), Class::Latency);
-    }
-
-    #[test]
-    fn classify_large_udp_as_bulk() {
-        let p = ParsedIpv4 {
-            src: "10.0.0.1".parse().unwrap(),
-            dst: "10.0.0.2".parse().unwrap(),
-            protocol: tunnet_common::policy::Protocol::Udp,
-            dst_port: Some(5201),
-            src_port: Some(40000),
-            tcp_flags: None,
-            l4_payload_len: 1200,
-        };
-        assert_eq!(classify(&p, 1228), Class::Bulk);
+        assert_eq!(classify(&packet, packet_len), expected);
     }
 }

@@ -42,3 +42,6 @@ plist = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+rstest.workspace = true

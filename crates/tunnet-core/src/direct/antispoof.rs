@@ -82,18 +82,20 @@ impl SpoofTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
-    #[test]
-    fn match_ok() {
-        let ip = Ipv4Addr::new(100, 64, 0, 1);
-        assert!(source_matches_peer(ip, ip));
-    }
-
-    #[test]
-    fn mismatch_denied() {
-        assert!(!source_matches_peer(
-            Ipv4Addr::new(100, 64, 0, 1),
-            Ipv4Addr::new(100, 64, 0, 2),
-        ));
+    #[rstest]
+    #[case::assigned_address("100.64.0.1", "100.64.0.1", true)]
+    #[case::different_host("100.64.0.1", "100.64.0.2", false)]
+    #[case::different_subnet("100.64.0.1", "100.65.0.1", false)]
+    #[case::unspecified_is_not_peer("0.0.0.0", "100.64.0.1", false)]
+    fn source_must_match_assigned_peer(
+        #[case] packet_source: &str,
+        #[case] assigned_peer: &str,
+        #[case] expected: bool,
+    ) {
+        let packet_source = packet_source.parse().unwrap();
+        let assigned_peer = assigned_peer.parse().unwrap();
+        assert_eq!(source_matches_peer(packet_source, assigned_peer), expected);
     }
 }
