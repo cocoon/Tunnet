@@ -143,7 +143,7 @@ pub async fn enroll(cfg: EnrollConfig) -> Result<EnrollResult> {
         network_name: resp.network_name.clone(),
         network_id: resp.network_id,
         organization_id: resp.organization_id.clone(),
-        enrolled_at: chrono::Utc::now(),
+        enrolled_at: jiff::Timestamp::now(),
         management_url: None,
         dashboard_url: None,
         local_ui: Default::default(),

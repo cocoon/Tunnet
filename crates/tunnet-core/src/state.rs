@@ -2,7 +2,7 @@ use std::net::Ipv4Addr;
 use std::path::PathBuf;
 
 use anyhow::Context;
-use chrono::{DateTime, Utc};
+use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -140,7 +140,7 @@ pub struct ManagedState {
     pub network_name: String,
     pub network_id: Uuid,
     pub organization_id: String,
-    pub enrolled_at: DateTime<Utc>,
+    pub enrolled_at: Timestamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub management_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -195,7 +195,7 @@ pub struct DirectState {
     /// Auto-accept coordinator firewall policy suggestions.
     #[serde(default)]
     pub auto_accept_firewall: bool,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -373,8 +373,8 @@ pub struct CliAuthTokens {
     pub refresh_token: Option<String>,
     pub token_type: String,
     pub scope: Option<String>,
-    pub expires_at: Option<DateTime<Utc>>,
-    pub obtained_at: DateTime<Utc>,
+    pub expires_at: Option<Timestamp>,
+    pub obtained_at: Timestamp,
 }
 
 impl CliAuthTokens {
@@ -393,7 +393,7 @@ impl CliAuthTokens {
 
     pub fn access_token_valid(&self) -> bool {
         match self.expires_at {
-            Some(exp) => exp > Utc::now() + chrono::Duration::seconds(30),
+            Some(exp) => exp > Timestamp::now() + SignedDuration::from_secs(30),
             None => true,
         }
     }
@@ -440,7 +440,7 @@ mod tests {
                 network_grant: None,
                 content_key: None,
                 auto_accept_firewall: false,
-                created_at: Utc::now(),
+                created_at: Timestamp::now(),
             }],
         };
         let bytes = serde_json::to_vec(&s).unwrap();
@@ -461,7 +461,7 @@ mod tests {
             network_name: "default".into(),
             network_id: Uuid::nil(),
             organization_id: "org".into(),
-            enrolled_at: Utc::now(),
+            enrolled_at: Timestamp::now(),
             management_url: None,
             dashboard_url: None,
             local_ui: tunnet_common::local_api::LocalUiPolicy::default(),
@@ -495,7 +495,7 @@ mod tests {
                     network_grant: None,
                     content_key: None,
                     auto_accept_firewall: false,
-                    created_at: Utc::now(),
+                    created_at: Timestamp::now(),
                 },
                 DirectState {
                     network_name: "homelab".into(),
@@ -516,7 +516,7 @@ mod tests {
                     network_grant: None,
                     content_key: None,
                     auto_accept_firewall: false,
-                    created_at: Utc::now(),
+                    created_at: Timestamp::now(),
                 },
             ],
         };

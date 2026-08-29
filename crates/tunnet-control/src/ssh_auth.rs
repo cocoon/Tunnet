@@ -5,6 +5,7 @@ use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use jiff::{SignedDuration, Timestamp};
 use rand::Rng;
 use serde::Deserialize;
 use serde_json::json;
@@ -23,20 +24,9 @@ fn random_token() -> String {
     hex::encode(bytes)
 }
 
-type ChallengePollRow = (
-    String,
-    Option<String>,
-    Option<chrono::DateTime<chrono::Utc>>,
-    chrono::DateTime<chrono::Utc>,
-    String,
-);
+type ChallengePollRow = (String, Option<String>, Option<i64>, i64, String);
 
-type ProofVerifyRow = (
-    String,
-    String,
-    Option<chrono::DateTime<chrono::Utc>>,
-    Option<chrono::DateTime<chrono::Utc>>,
-);
+type ProofVerifyRow = (String, String, Option<i64>, bool);
 
 fn management_base(_state: &SharedState) -> String {
     std::env::var("DASHBOARD_URL")
@@ -97,24 +87,30 @@ pub async fn evaluate_ssh_auth_handler(
         return err(StatusCode::FORBIDDEN, "no shared active network");
     };
 
-    let last_auth: Option<(chrono::DateTime<chrono::Utc>,)> =
-        match sqlx::query_as("SELECT authenticated_at FROM ssh_auth_checks WHERE endpoint_id = $1")
-            .bind(&body.peer_endpoint_id)
-            .fetch_optional(&state.pool)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
-        };
+    let last_auth: Option<(i64,)> = match sqlx::query_as(
+        "SELECT (extract(epoch FROM authenticated_at) * 1000000)::bigint \
+             FROM ssh_auth_checks WHERE endpoint_id = $1",
+    )
+    .bind(&body.peer_endpoint_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
+    };
 
     if let Some((authenticated_at,)) = last_auth {
-        let age = chrono::Utc::now() - authenticated_at;
-        if age.num_seconds() >= 0 && (age.num_seconds() as u64) < body.check_period_secs {
+        let authenticated_at = match Timestamp::from_microsecond(authenticated_at) {
+            Ok(timestamp) => timestamp,
+            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db time: {e}")),
+        };
+        let age = Timestamp::now().duration_since(authenticated_at).as_secs();
+        if age >= 0 && (age as u64) < body.check_period_secs {
             return (
                 StatusCode::OK,
                 Json(json!({
                     "status": "ok",
-                    "authenticatedAt": authenticated_at.to_rfc3339(),
+                    "authenticatedAt": authenticated_at.to_string(),
                 })),
             )
                 .into_response();
@@ -122,18 +118,19 @@ pub async fn evaluate_ssh_auth_handler(
     }
 
     let challenge = random_token();
-    let expires = chrono::Utc::now() + chrono::Duration::minutes(10);
+    let expires = Timestamp::now() + SignedDuration::from_mins(10);
     if let Err(e) = sqlx::query(
         "INSERT INTO ssh_auth_challenges \
            (token, organization_id, network_id, endpoint_id, dst_endpoint_id, status, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, 'pending', $6)",
+         VALUES ($1, $2, $3, $4, $5, 'pending', \
+                 to_timestamp($6::double precision / 1000000.0))",
     )
     .bind(&challenge)
     .bind(&org_id)
     .bind(network_id)
     .bind(&body.peer_endpoint_id)
     .bind(&auth.endpoint_id)
-    .bind(expires)
+    .bind(expires.as_microsecond())
     .execute(&state.pool)
     .await
     {
@@ -147,7 +144,7 @@ pub async fn evaluate_ssh_auth_handler(
             "status": "reauth_required",
             "reauthUrl": reauth_url,
             "challengeToken": challenge,
-            "expiresAt": expires.to_rfc3339(),
+            "expiresAt": expires.to_string(),
         })),
     )
         .into_response()
@@ -176,7 +173,9 @@ pub async fn poll_ssh_auth_handler(
     };
 
     let row: Option<ChallengePollRow> = match sqlx::query_as(
-        "SELECT status, proof_token, proof_expires_at, expires_at, endpoint_id \
+        "SELECT status, proof_token, \
+                (extract(epoch FROM proof_expires_at) * 1000000)::bigint, \
+                (extract(epoch FROM expires_at) * 1000000)::bigint, endpoint_id \
              FROM ssh_auth_challenges WHERE token = $1",
     )
     .bind(&body.challenge_token)
@@ -198,7 +197,11 @@ pub async fn poll_ssh_auth_handler(
         );
     }
 
-    if status == "pending" && chrono::Utc::now() > expires_at {
+    let expires_at = match Timestamp::from_microsecond(expires_at) {
+        Ok(timestamp) => timestamp,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db time: {e}")),
+    };
+    if status == "pending" && Timestamp::now() > expires_at {
         let _ = sqlx::query(
             "UPDATE ssh_auth_challenges SET status = 'expired' WHERE token = $1 AND status = 'pending'",
         )
@@ -218,8 +221,9 @@ pub async fn poll_ssh_auth_handler(
                 )
                     .into_response();
             };
-            if let Some(exp) = proof_expires_at
-                && chrono::Utc::now() > exp
+            if let Some(exp) =
+                proof_expires_at.and_then(|micros| Timestamp::from_microsecond(micros).ok())
+                && Timestamp::now() > exp
             {
                 return (StatusCode::OK, Json(json!({ "status": "expired" }))).into_response();
             }
@@ -289,7 +293,9 @@ pub async fn verify_ssh_auth_handler(
 
     if let Some(token) = body.auth_token.as_deref().filter(|t| !t.is_empty()) {
         let row: Option<ProofVerifyRow> = match sqlx::query_as(
-            "SELECT status, endpoint_id, proof_expires_at, proof_consumed_at \
+            "SELECT status, endpoint_id, \
+                    (extract(epoch FROM proof_expires_at) * 1000000)::bigint, \
+                    proof_consumed_at IS NOT NULL \
              FROM ssh_auth_challenges WHERE proof_token = $1",
         )
         .bind(token)
@@ -302,9 +308,10 @@ pub async fn verify_ssh_auth_handler(
         if let Some((status, endpoint_id, proof_expires_at, proof_consumed_at)) = row
             && status == "completed"
             && endpoint_id.eq_ignore_ascii_case(&body.peer_endpoint_id)
-            && proof_consumed_at.is_none()
+            && !proof_consumed_at
             && proof_expires_at
-                .map(|exp| chrono::Utc::now() <= exp)
+                .and_then(|micros| Timestamp::from_microsecond(micros).ok())
+                .map(|expiry| Timestamp::now() <= expiry)
                 .unwrap_or(true)
         {
             let _ = sqlx::query(
@@ -323,25 +330,31 @@ pub async fn verify_ssh_auth_handler(
         // Fall through to last-auth check if proof invalid.
     }
 
-    let last_auth: Option<(chrono::DateTime<chrono::Utc>,)> =
-        match sqlx::query_as("SELECT authenticated_at FROM ssh_auth_checks WHERE endpoint_id = $1")
-            .bind(&body.peer_endpoint_id)
-            .fetch_optional(&state.pool)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
-        };
+    let last_auth: Option<(i64,)> = match sqlx::query_as(
+        "SELECT (extract(epoch FROM authenticated_at) * 1000000)::bigint \
+             FROM ssh_auth_checks WHERE endpoint_id = $1",
+    )
+    .bind(&body.peer_endpoint_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
+    };
 
     if let Some((authenticated_at,)) = last_auth {
-        let age = chrono::Utc::now() - authenticated_at;
-        if age.num_seconds() >= 0 && (age.num_seconds() as u64) < body.check_period_secs {
+        let authenticated_at = match Timestamp::from_microsecond(authenticated_at) {
+            Ok(timestamp) => timestamp,
+            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db time: {e}")),
+        };
+        let age = Timestamp::now().duration_since(authenticated_at).as_secs();
+        if age >= 0 && (age as u64) < body.check_period_secs {
             return (
                 StatusCode::OK,
                 Json(json!({
                     "status": "ok",
                     "method": "last_auth",
-                    "authenticatedAt": authenticated_at.to_rfc3339(),
+                    "authenticatedAt": authenticated_at.to_string(),
                 })),
             )
                 .into_response();

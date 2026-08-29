@@ -70,8 +70,8 @@ pub struct TransferRecord {
     pub message: Option<String>,
     pub error: Option<String>,
     pub inbox_path: Option<String>,
-    pub started_at_ms: u64,
-    pub completed_at_ms: Option<u64>,
+    pub started_at: jiff::Timestamp,
+    pub completed_at: Option<jiff::Timestamp>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,13 +102,6 @@ fn default_inbox_path() -> PathBuf {
         return PathBuf::from(home).join("Tunnet").join("inbox");
     }
     PathBuf::from("./Tunnet/inbox")
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[derive(Clone)]
@@ -254,7 +247,7 @@ impl SendManager {
             })
             .cloned()
             .collect();
-        v.sort_by_key(|t| std::cmp::Reverse(t.started_at_ms));
+        v.sort_by_key(|transfer| std::cmp::Reverse(transfer.started_at));
         v
     }
 
@@ -306,7 +299,7 @@ impl SendManager {
                 status,
                 TransferStatus::Completed | TransferStatus::Failed | TransferStatus::Rejected
             ) {
-                t.completed_at_ms = Some(now_ms());
+                t.completed_at = Some(jiff::Timestamp::now());
                 if status == TransferStatus::Completed {
                     t.percent = 100.0;
                 }
@@ -406,8 +399,8 @@ impl SendManager {
                 message: message.clone(),
                 error: None,
                 inbox_path: None,
-                started_at_ms: now_ms(),
-                completed_at_ms: None,
+                started_at: jiff::Timestamp::now(),
+                completed_at: None,
             };
             self.upsert(record.clone());
             self.emit_local(LocalEvent::TransferCreated {
@@ -621,8 +614,8 @@ impl SendManager {
             message: offer.message.clone(),
             error: None,
             inbox_path: None,
-            started_at_ms: now_ms(),
-            completed_at_ms: None,
+            started_at: jiff::Timestamp::now(),
+            completed_at: None,
         };
         self.upsert(record);
         self.emit_local(LocalEvent::TransferCreated {

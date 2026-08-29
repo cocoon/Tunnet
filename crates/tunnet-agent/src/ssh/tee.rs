@@ -166,7 +166,7 @@ impl RecordingTee {
             } => {
                 let mut batch = String::new();
                 if !*header_sent {
-                    let ts = chrono::Utc::now().timestamp();
+                    let ts = jiff::Timestamp::now().as_second();
                     batch.push_str(&asciinema_header_line(meta, ts));
                     batch.push('\n');
                     *header_sent = true;
@@ -195,7 +195,7 @@ impl RecordingTee {
             } => {
                 let mut batch = String::new();
                 if !*header_sent {
-                    let ts = chrono::Utc::now().timestamp();
+                    let ts = jiff::Timestamp::now().as_second();
                     batch.push_str(&asciinema_header_line(meta, ts));
                     batch.push('\n');
                     *header_sent = true;

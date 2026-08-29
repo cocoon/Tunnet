@@ -219,7 +219,7 @@ pub fn spawn_ws_processor(
                                         .tx
                                         .send(ClientMsg::EffectiveConfigReport {
                                             config,
-                                            reported_at: chrono::Utc::now(),
+                                            reported_at: jiff::Timestamp::now(),
                                         })
                                         .await;
                                 }
@@ -231,7 +231,7 @@ pub fn spawn_ws_processor(
                                     .tx
                                     .send(ClientMsg::EffectiveConfigReport {
                                         config,
-                                        reported_at: chrono::Utc::now(),
+                                        reported_at: jiff::Timestamp::now(),
                                     })
                                     .await;
                             }
@@ -610,7 +610,7 @@ pub fn spawn_ws_processor(
                                     .tx
                                     .send(ClientMsg::EffectiveConfigReport {
                                         config,
-                                        reported_at: chrono::Utc::now(),
+                                        reported_at: jiff::Timestamp::now(),
                                     })
                                     .await;
                                 tracing::info!("AgentConfigUpdate applied");

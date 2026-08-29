@@ -67,24 +67,6 @@ pub fn save_invite_ids(
     Ok(())
 }
 
-pub fn parse_expires(s: &str) -> anyhow::Result<chrono::Duration> {
-    let s = s.trim();
-    if let Some(h) = s.strip_suffix('h') {
-        let n: i64 = h.parse()?;
-        return Ok(chrono::Duration::hours(n));
-    }
-    if let Some(d) = s.strip_suffix('d') {
-        let n: i64 = d.parse()?;
-        return Ok(chrono::Duration::days(n));
-    }
-    if let Some(m) = s.strip_suffix('m') {
-        let n: i64 = m.parse()?;
-        return Ok(chrono::Duration::minutes(n));
-    }
-    let secs: i64 = s.parse()?;
-    Ok(chrono::Duration::seconds(secs))
-}
-
 pub fn queue_kick(paths: &StatePaths, network_id: Uuid, peer_id: &str) -> anyhow::Result<()> {
     paths.ensure_network_dirs(network_id)?;
     let kick_path = paths

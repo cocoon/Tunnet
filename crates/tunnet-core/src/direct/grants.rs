@@ -5,8 +5,8 @@ use std::net::Ipv4Addr;
 use aes_gcm::aead::{Aead, Generate};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use anyhow::{Context, bail};
-use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -23,8 +23,8 @@ pub struct NetworkGrant {
     pub endpoint_id: String,
     pub role: MemberRole,
     pub network_epoch: u64,
-    pub issued_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
+    pub issued_at: Timestamp,
+    pub expires_at: Timestamp,
     pub content_key: String,
     pub sig: String,
 }
@@ -41,7 +41,7 @@ pub struct SignedMemberRecord {
     pub status: String,
     pub ssh_host_key: Option<String>,
     pub sequence: u64,
-    pub joined_at: DateTime<Utc>,
+    pub joined_at: Timestamp,
     pub grant: NetworkGrant,
     pub endpoint_sig: String,
     pub coordinator: bool,
@@ -53,7 +53,7 @@ pub struct Genesis {
     pub network_name: String,
     pub coordinator_endpoint_id: String,
     pub coordinator_verifying_key: String,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     pub sig: String,
 }
 
@@ -116,8 +116,8 @@ struct GrantSignPayload<'a> {
     endpoint_id: &'a str,
     role: MemberRole,
     network_epoch: u64,
-    issued_at: DateTime<Utc>,
-    expires_at: DateTime<Utc>,
+    issued_at: Timestamp,
+    expires_at: Timestamp,
     content_key: &'a str,
 }
 
@@ -147,7 +147,7 @@ pub fn verify_grant(vk: &VerifyingKey, grant: &NetworkGrant, min_epoch: u64) -> 
             min_epoch
         );
     }
-    if grant.expires_at <= Utc::now() {
+    if grant.expires_at <= Timestamp::now() {
         bail!("grant expired at {}", grant.expires_at);
     }
     let payload = grant_sign_payload(grant)?;
@@ -166,7 +166,7 @@ struct MemberRecordSignPayload<'a> {
     status: &'a str,
     ssh_host_key: &'a Option<String>,
     sequence: u64,
-    joined_at: DateTime<Utc>,
+    joined_at: Timestamp,
     grant: &'a NetworkGrant,
     coordinator: bool,
 }
@@ -218,7 +218,7 @@ struct GenesisSignPayload<'a> {
     network_name: &'a str,
     coordinator_endpoint_id: &'a str,
     coordinator_verifying_key: &'a str,
-    created_at: DateTime<Utc>,
+    created_at: Timestamp,
 }
 
 fn genesis_sign_payload(genesis: &Genesis) -> anyhow::Result<Vec<u8>> {
@@ -329,17 +329,17 @@ pub fn decrypt_content(content_key_hex: &str, ciphertext: &[u8]) -> anyhow::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration;
+    use jiff::Span;
 
     fn sample_grant(network_id: Uuid, endpoint_id: &str, role: MemberRole) -> NetworkGrant {
-        let now = Utc::now();
+        let now = Timestamp::now();
         NetworkGrant {
             network_id,
             endpoint_id: endpoint_id.into(),
             role,
             network_epoch: 1,
             issued_at: now,
-            expires_at: now + Duration::hours(24),
+            expires_at: now.checked_add(Span::new().hours(24)).unwrap(),
             content_key: hex::encode([0xAB; 32]),
             sig: String::new(),
         }
@@ -418,7 +418,7 @@ mod tests {
             status: "active".into(),
             ssh_host_key: None,
             sequence: 1,
-            joined_at: Utc::now(),
+            joined_at: Timestamp::now(),
             grant,
             endpoint_sig: String::new(),
             coordinator: false,
@@ -452,7 +452,7 @@ mod tests {
             status: "active".into(),
             ssh_host_key: None,
             sequence: 1,
-            joined_at: Utc::now(),
+            joined_at: Timestamp::now(),
             grant,
             endpoint_sig: String::new(),
             coordinator: false,
@@ -471,7 +471,7 @@ mod tests {
             network_name: "home".into(),
             coordinator_endpoint_id: "dd".repeat(32),
             coordinator_verifying_key: hex::encode(vk.to_bytes()),
-            created_at: Utc::now(),
+            created_at: Timestamp::now(),
             sig: String::new(),
         };
         let signed = sign_genesis(&sk, genesis).unwrap();

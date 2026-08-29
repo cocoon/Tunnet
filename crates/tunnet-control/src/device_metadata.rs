@@ -38,7 +38,7 @@ pub fn initial_enroll_metadata(
 ) -> serde_json::Value {
     let base = metadata.unwrap_or_else(|| {
         serde_json::json!({
-            "reportedAt": chrono::Utc::now().to_rfc3339(),
+            "reportedAt": jiff::Timestamp::now().to_string(),
         })
     });
     enrich_metadata(hostname, agent_version, os, base)

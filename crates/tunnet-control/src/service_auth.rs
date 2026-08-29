@@ -1,26 +1,25 @@
 //! HMAC authentication for management → control-plane internal API.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use dashmap::DashMap;
 use hmac::{Hmac, KeyInit, Mac};
+use jiff::{SignedDuration, Timestamp};
 use sha2::{Digest, Sha256};
 
 const HDR_TIMESTAMP: &str = "x-tunnet-timestamp";
 const HDR_NONCE: &str = "x-tunnet-nonce";
 const HDR_SIGNATURE: &str = "x-tunnet-signature";
-const MAX_SKEW_SECS: i64 = 60;
-const NONCE_TTL_SECS: i64 = 300;
+const MAX_SKEW: SignedDuration = SignedDuration::from_secs(60);
+const NONCE_TTL: SignedDuration = SignedDuration::from_mins(5);
 
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Clone)]
 pub struct ServiceAuth {
     secret: Vec<u8>,
-    seen_nonces: DashMap<String, i64>,
+    seen_nonces: DashMap<String, Timestamp>,
 }
 
 impl ServiceAuth {
@@ -54,14 +53,13 @@ impl ServiceAuth {
             .and_then(|v| v.to_str().ok())
             .ok_or(ServiceAuthError::MissingHeader)?;
 
-        let ts: i64 = timestamp
+        let ts = timestamp
             .parse()
-            .map_err(|_| ServiceAuthError::InvalidTimestamp)?;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        if (now - ts).abs() > MAX_SKEW_SECS {
+            .ok()
+            .and_then(|seconds| Timestamp::from_second(seconds).ok())
+            .ok_or(ServiceAuthError::InvalidTimestamp)?;
+        let now = Timestamp::now();
+        if now.duration_since(ts).abs() > MAX_SKEW {
             return Err(ServiceAuthError::StaleTimestamp);
         }
 
@@ -88,9 +86,9 @@ impl ServiceAuth {
         Ok(())
     }
 
-    fn prune_nonces(&self, now: i64) {
+    fn prune_nonces(&self, now: Timestamp) {
         self.seen_nonces
-            .retain(|_, ts| now.saturating_sub(*ts) <= NONCE_TTL_SECS);
+            .retain(|_, timestamp| now.duration_since(*timestamp) <= NONCE_TTL);
     }
 }
 

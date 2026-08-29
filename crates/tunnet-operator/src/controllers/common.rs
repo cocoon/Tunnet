@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
+use jiff::Timestamp;
 use kube::api::{Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event, finalizer};
@@ -60,7 +60,7 @@ pub fn ready_condition(condition_type: &str, ready: bool, message: Option<String
         status: if ready { "True" } else { "False" }.into(),
         reason: None,
         message,
-        last_transition_time: Some(Utc::now().to_rfc3339()),
+        last_transition_time: Some(Timestamp::now().to_string()),
     }
 }
 
@@ -233,7 +233,7 @@ pub async fn reconcile_node_workload(
                     network_name: existing.network_name.clone(),
                     network_id: existing.network_id,
                     organization_id: existing.organization_id.clone(),
-                    enrolled_at: Utc::now(),
+                    enrolled_at: Timestamp::now(),
                     management_url: None,
                     dashboard_url: None,
                     local_ui: Default::default(),

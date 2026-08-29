@@ -138,7 +138,23 @@ fn default_limit() -> i64 {
     50
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, sqlx::FromRow)]
+struct SessionDbRow {
+    id: Uuid,
+    network_id: Uuid,
+    src_endpoint_id: String,
+    dst_endpoint_id: String,
+    src_hostname: Option<String>,
+    dst_hostname: Option<String>,
+    target_user: String,
+    status: String,
+    recorded: bool,
+    started_at_micros: i64,
+    ended_at_micros: Option<i64>,
+    duration_ms: Option<i32>,
+}
+
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionRow {
     id: Uuid,
@@ -150,8 +166,8 @@ struct SessionRow {
     target_user: String,
     status: String,
     recorded: bool,
-    started_at: chrono::DateTime<chrono::Utc>,
-    ended_at: Option<chrono::DateTime<chrono::Utc>>,
+    started_at: jiff::Timestamp,
+    ended_at: Option<jiff::Timestamp>,
     duration_ms: Option<i32>,
 }
 
@@ -168,11 +184,13 @@ pub async fn list_ssh_sessions_handler(
     };
 
     let limit = query.limit.clamp(1, 200);
-    let rows: Vec<SessionRow> = if let Some(status) = query.status.as_deref() {
+    let rows: Vec<SessionDbRow> = if let Some(status) = query.status.as_deref() {
         match sqlx::query_as(
             "SELECT s.id, s.network_id, s.src_endpoint_id, s.dst_endpoint_id, \
                     s.src_hostname, s.dst_hostname, s.target_user, s.status, s.recorded, \
-                    s.started_at, s.ended_at, s.duration_ms \
+                    (extract(epoch FROM s.started_at) * 1000000)::bigint AS started_at_micros, \
+                    (extract(epoch FROM s.ended_at) * 1000000)::bigint AS ended_at_micros, \
+                    s.duration_ms \
              FROM ssh_sessions s \
              JOIN network_memberships nm ON nm.network_id = s.network_id \
                AND nm.endpoint_id = $1 AND nm.status = 'active' \
@@ -192,7 +210,9 @@ pub async fn list_ssh_sessions_handler(
         match sqlx::query_as(
             "SELECT s.id, s.network_id, s.src_endpoint_id, s.dst_endpoint_id, \
                     s.src_hostname, s.dst_hostname, s.target_user, s.status, s.recorded, \
-                    s.started_at, s.ended_at, s.duration_ms \
+                    (extract(epoch FROM s.started_at) * 1000000)::bigint AS started_at_micros, \
+                    (extract(epoch FROM s.ended_at) * 1000000)::bigint AS ended_at_micros, \
+                    s.duration_ms \
              FROM ssh_sessions s \
              JOIN network_memberships nm ON nm.network_id = s.network_id \
                AND nm.endpoint_id = $1 AND nm.status = 'active' \
@@ -208,10 +228,50 @@ pub async fn list_ssh_sessions_handler(
         }
     };
 
-    (StatusCode::OK, Json(json!({ "sessions": rows }))).into_response()
+    let rows = rows
+        .into_iter()
+        .map(|row| {
+            Ok::<_, jiff::Error>(SessionRow {
+                id: row.id,
+                network_id: row.network_id,
+                src_endpoint_id: row.src_endpoint_id,
+                dst_endpoint_id: row.dst_endpoint_id,
+                src_hostname: row.src_hostname,
+                dst_hostname: row.dst_hostname,
+                target_user: row.target_user,
+                status: row.status,
+                recorded: row.recorded,
+                started_at: jiff::Timestamp::from_microsecond(row.started_at_micros)?,
+                ended_at: row
+                    .ended_at_micros
+                    .map(jiff::Timestamp::from_microsecond)
+                    .transpose()?,
+                duration_ms: row.duration_ms,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>();
+    match rows {
+        Ok(rows) => (StatusCode::OK, Json(json!({ "sessions": rows }))).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db time: {e}")),
+    }
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, sqlx::FromRow)]
+struct RecordingDbRow {
+    id: Uuid,
+    session_id: Uuid,
+    network_id: Uuid,
+    recorder_endpoint_id: String,
+    content_sha256: String,
+    byte_size: i32,
+    duration_ms: Option<i32>,
+    created_at_micros: i64,
+    src_hostname: Option<String>,
+    dst_hostname: Option<String>,
+    target_user: String,
+}
+
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RecordingRow {
     id: Uuid,
@@ -221,7 +281,7 @@ struct RecordingRow {
     content_sha256: String,
     byte_size: i32,
     duration_ms: Option<i32>,
-    created_at: chrono::DateTime<chrono::Utc>,
+    created_at: jiff::Timestamp,
     src_hostname: Option<String>,
     dst_hostname: Option<String>,
     target_user: String,
@@ -239,9 +299,10 @@ pub async fn list_ssh_recordings_handler(
         Err(AuthError(c, m)) => return err(c, m),
     };
     let limit = query.limit.clamp(1, 200);
-    let rows: Vec<RecordingRow> = match sqlx::query_as(
+    let rows: Vec<RecordingDbRow> = match sqlx::query_as(
         "SELECT r.id, r.session_id, r.network_id, r.recorder_endpoint_id, \
-                r.content_sha256, r.byte_size, r.duration_ms, r.created_at, \
+                r.content_sha256, r.byte_size, r.duration_ms, \
+                (extract(epoch FROM r.created_at) * 1000000)::bigint AS created_at_micros, \
                 s.src_hostname, s.dst_hostname, s.target_user \
          FROM ssh_recordings r \
          JOIN ssh_sessions s ON s.id = r.session_id \
@@ -258,7 +319,28 @@ pub async fn list_ssh_recordings_handler(
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
     };
 
-    (StatusCode::OK, Json(json!({ "recordings": rows }))).into_response()
+    let rows = rows
+        .into_iter()
+        .map(|row| {
+            Ok::<_, jiff::Error>(RecordingRow {
+                id: row.id,
+                session_id: row.session_id,
+                network_id: row.network_id,
+                recorder_endpoint_id: row.recorder_endpoint_id,
+                content_sha256: row.content_sha256,
+                byte_size: row.byte_size,
+                duration_ms: row.duration_ms,
+                created_at: jiff::Timestamp::from_microsecond(row.created_at_micros)?,
+                src_hostname: row.src_hostname,
+                dst_hostname: row.dst_hostname,
+                target_user: row.target_user,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>();
+    match rows {
+        Ok(rows) => (StatusCode::OK, Json(json!({ "recordings": rows }))).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db time: {e}")),
+    }
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]

@@ -108,7 +108,7 @@ pub async fn resolve_entitlements_from_env() -> Entitlements {
 
 fn verify_loaded_token(token: &str) -> Entitlements {
     let keyring = Keyring::default_tunnet();
-    let now = chrono::Utc::now().timestamp();
+    let now = jiff::Timestamp::now();
 
     let deployment_id = std::env::var("TUNNET_DEPLOYMENT_ID").ok();
     let fp;

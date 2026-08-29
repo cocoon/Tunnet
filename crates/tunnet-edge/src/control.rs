@@ -238,7 +238,7 @@ impl ControlClient {
                     status_code,
                     latency_ms,
                     source_ip,
-                    created_at: Some(chrono::Utc::now().to_rfc3339()),
+                    created_at: Some(jiff::Timestamp::now().to_string()),
                     bytes: bytes.map(|b| b as i64),
                 }])
                 .await

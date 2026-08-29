@@ -475,7 +475,7 @@ impl AclEngine {
             reason: reason.to_string(),
             rule_slug: verdict.rule_slug.clone(),
             scope,
-            at_unix: chrono::Utc::now().timestamp(),
+            at_unix: jiff::Timestamp::now().as_second(),
         };
         let mut log = self.deny_log.lock();
         if log.len() >= DENY_LOG_CAP {

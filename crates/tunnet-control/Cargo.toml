@@ -47,7 +47,7 @@ sha2.workspace = true
 
 sqlx.workspace = true
 uuid.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 ipnet.workspace = true
 ipnetwork.workspace = true
 

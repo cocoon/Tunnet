@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -12,7 +12,7 @@ pub struct AuditEvent {
     pub type_uid: u32,
     pub severity_id: u8,
     pub status_id: u8,
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub message: String,
 
     pub actor: Actor,
@@ -92,7 +92,7 @@ pub struct AuditIngestEvent {
     #[serde(default)]
     pub trace_id: Option<String>,
     #[serde(default)]
-    pub time: Option<DateTime<Utc>>,
+    pub time: Option<Timestamp>,
 }
 
 fn default_severity() -> u8 {
@@ -120,7 +120,7 @@ impl From<AuditIngestEvent> for AuditEvent {
             type_uid: type_uid(class_uid, activity_id),
             severity_id: e.severity_id,
             status_id: e.status_id,
-            time: e.time.unwrap_or_else(Utc::now),
+            time: e.time.unwrap_or_else(Timestamp::now),
             message: e.message,
             actor: e.actor,
             target: e.target,
@@ -154,7 +154,7 @@ impl AuditEvent {
             type_uid: type_uid(class_uid, activity_id),
             severity_id: SEVERITY_INFO,
             status_id: STATUS_SUCCESS,
-            time: Utc::now(),
+            time: Timestamp::now(),
             message: message.into(),
             actor,
             target,

@@ -2,7 +2,7 @@ use crate::error::PostureError;
 use crate::platform::Platform;
 use crate::value::PostureValue;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -10,7 +10,7 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct PostureAttributes {
     pub attributes: HashMap<String, PostureValue>,
-    pub collected_at: DateTime<Utc>,
+    pub collected_at: Timestamp,
     pub collector_name: String,
     pub error: Option<String>,
 }
@@ -19,7 +19,7 @@ impl PostureAttributes {
     pub fn new(collector_name: impl Into<String>) -> Self {
         Self {
             attributes: HashMap::new(),
-            collected_at: Utc::now(),
+            collected_at: Timestamp::now(),
             collector_name: collector_name.into(),
             error: None,
         }

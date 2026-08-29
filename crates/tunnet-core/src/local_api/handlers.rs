@@ -372,9 +372,9 @@ fn control_plane_status(state: &LocalApiState) -> Option<ControlPlaneStatusInfo>
 fn expiry_fields(state: &LocalApiState) -> (Option<String>, Option<u64>) {
     if let Some(snap) = crate::state::load_snapshot_cache(&state.node.paths)
         && let Some(at) = snap.expires_at
-        && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&at)
+        && let Ok(expiry) = at.parse::<jiff::Timestamp>()
     {
-        let remaining = (dt.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds();
+        let remaining = expiry.duration_since(jiff::Timestamp::now()).as_secs();
         return (Some(at), Some(remaining.max(0) as u64));
     }
     (None, None)
@@ -1171,7 +1171,12 @@ pub(crate) fn direct_invite(
     expires: &str,
 ) -> anyhow::Result<String> {
     let direct = require_direct_coord(state, network)?;
-    let expires = crate::direct::admin::parse_expires(expires)?;
+    let expires = jiff::fmt::friendly::SpanParser::new()
+        .parse_span(expires)
+        .context("invalid invite expiry")?;
+    if !expires.is_positive() {
+        anyhow::bail!("invite expiry must be positive");
+    }
     let invite = crate::direct::InviteCode::new(
         direct.topic_hash.clone(),
         direct.join_secret.clone(),

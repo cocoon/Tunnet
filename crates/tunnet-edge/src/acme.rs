@@ -120,11 +120,11 @@ fn needs_renewal(cert_pem: &str) -> bool {
     let Some(until) = crate::https::cert_valid_until(cert_pem) else {
         return true;
     };
-    let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&until) else {
+    let Ok(expiry) = until.parse::<jiff::Timestamp>() else {
         return true;
     };
-    let remaining = dt.signed_duration_since(chrono::Utc::now());
-    remaining.num_days() < RENEW_WITHIN_DAYS
+    let remaining = expiry.duration_since(jiff::Timestamp::now());
+    remaining.as_hours() < RENEW_WITHIN_DAYS * 24
 }
 
 fn save_cached(cfg: &AcmeConfig, cert: &str, key: &str) -> anyhow::Result<()> {

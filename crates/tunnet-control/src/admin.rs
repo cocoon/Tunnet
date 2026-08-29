@@ -135,7 +135,7 @@ async fn health_handler(
     req: Request<axum::body::Body>,
 ) -> Response {
     if let Err(resp) = verify_service(&state, req).await {
-        return resp;
+        return *resp;
     }
 
     Json(HealthResponse {
@@ -152,7 +152,7 @@ async fn ready_handler(
     req: Request<axum::body::Body>,
 ) -> Response {
     if let Err(resp) = verify_service(&state, req).await {
-        return resp;
+        return *resp;
     }
 
     let db_ok = sqlx::query("SELECT 1").execute(&state.pool).await.is_ok();
@@ -171,7 +171,7 @@ async fn validate_network_handler(
     req: Request<axum::body::Body>,
 ) -> Response {
     if let Err(resp) = verify_service(&state, req).await {
-        return resp;
+        return *resp;
     }
 
     let row: Option<(String, i64)> =
@@ -242,6 +242,11 @@ async fn register_device_handler(
         Ok(v) => v,
         Err(_) => return (StatusCode::BAD_REQUEST, "invalid json").into_response(),
     };
+    let expires_in =
+        match crate::device_handlers::resolve_expires_in_input(parsed.expires_in.as_deref()) {
+            Ok(value) => value,
+            Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
+        };
 
     let outcome = crate::register::register_device(
         &state.pool,
@@ -257,7 +262,7 @@ async fn register_device_handler(
             device_type: parsed.device_type,
             metadata: parsed.metadata,
             labels: parsed.labels,
-            expires_in: parsed.expires_in,
+            expires_in,
             public_ip: None,
             membership_status: "active".into(),
             enrollment_token_hash: None,
@@ -540,7 +545,7 @@ async fn send_file_handler(
 ) -> Response {
     let (parsed, state) = match parse_admin_json::<SendFilePush>(state, req).await {
         Ok(v) => v,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     state
         .ws_hub
@@ -571,7 +576,7 @@ async fn accept_transfer_handler(
 ) -> Response {
     let (parsed, state) = match parse_admin_json::<TransferIdPush>(state, req).await {
         Ok(v) => v,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     state
         .ws_hub
@@ -591,7 +596,7 @@ async fn reject_transfer_handler(
 ) -> Response {
     let (parsed, state) = match parse_admin_json::<TransferIdPush>(state, req).await {
         Ok(v) => v,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     state
         .ws_hub
@@ -622,7 +627,7 @@ async fn set_send_consent_handler(
 ) -> Response {
     let (parsed, state) = match parse_admin_json::<SetSendConsentPush>(state, req).await {
         Ok(v) => v,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     state
         .ws_hub
@@ -641,20 +646,20 @@ async fn set_send_consent_handler(
 async fn parse_admin_json<T: serde::de::DeserializeOwned>(
     state: Arc<AdminState>,
     req: Request<axum::body::Body>,
-) -> Result<(T, Arc<AdminState>), Response> {
+) -> Result<(T, Arc<AdminState>), Box<Response>> {
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
     let headers = req.headers().clone();
     let body = axum::body::to_bytes(req.into_body(), 1024 * 1024)
         .await
-        .map_err(|_| StatusCode::BAD_REQUEST.into_response())?;
+        .map_err(|_| Box::new(StatusCode::BAD_REQUEST.into_response()))?;
     state
         .service_auth
         .verify(&method, &path, &headers, &body)
         .await
-        .map_err(|e: ServiceAuthError| e.into_response())?;
+        .map_err(|e: ServiceAuthError| Box::new(e.into_response()))?;
     let parsed: T = serde_json::from_slice(&body)
-        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid json").into_response())?;
+        .map_err(|_| Box::new((StatusCode::BAD_REQUEST, "invalid json").into_response()))?;
     Ok((parsed, state))
 }
 
@@ -669,7 +674,7 @@ async fn posture_recheck_handler(
 ) -> Response {
     let (parsed, state) = match parse_admin_json::<PostureRecheckPush>(state, req).await {
         Ok(v) => v,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     crate::posture::request_posture_recheck(&state.ws_hub, &parsed.endpoint_id).await;
     (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
@@ -690,7 +695,7 @@ async fn posture_attributes_handler(
         })
         .unwrap_or_default();
     if let Err(resp) = verify_service(&state, req).await {
-        return resp;
+        return *resp;
     }
     if endpoint_id.is_empty() {
         return (StatusCode::BAD_REQUEST, "endpoint_id query param required").into_response();
@@ -749,17 +754,17 @@ async fn audit_ingest_handler(
 async fn verify_service(
     state: &AdminState,
     req: Request<axum::body::Body>,
-) -> Result<(), Response> {
+) -> Result<(), Box<Response>> {
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
     let headers = req.headers().clone();
     let body = axum::body::to_bytes(req.into_body(), 1024 * 1024)
         .await
-        .map_err(|_| StatusCode::BAD_REQUEST.into_response())?;
+        .map_err(|_| Box::new(StatusCode::BAD_REQUEST.into_response()))?;
 
     state
         .service_auth
         .verify(&method, &path, &headers, &body)
         .await
-        .map_err(|e: ServiceAuthError| e.into_response())
+        .map_err(|e: ServiceAuthError| Box::new(e.into_response()))
 }

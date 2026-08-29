@@ -11,11 +11,12 @@ use futures_util::StreamExt;
 use iroh::EndpointId;
 use iroh_gossip::net::Gossip;
 use iroh_gossip::{TopicId, api::Event};
+use jiff::{SignedDuration, Timestamp};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const PRESENCE_TTL_SECS: i64 = 90;
+pub const PRESENCE_TTL: SignedDuration = SignedDuration::from_secs(90);
 pub const PRESENCE_PUBLISH_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -28,8 +29,10 @@ pub struct PresenceBeacon {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_host_key: Option<String>,
     pub agent_version: String,
-    pub issued_at: i64,
-    pub expires_at: i64,
+    #[serde(with = "jiff::fmt::serde::timestamp::second::required")]
+    pub issued_at: Timestamp,
+    #[serde(with = "jiff::fmt::serde::timestamp::second::required")]
+    pub expires_at: Timestamp,
     pub sig: String,
 }
 
@@ -47,11 +50,11 @@ impl PresenceTable {
         self.peers.lock().insert(beacon.endpoint_id.clone(), beacon);
     }
 
-    pub fn remove_expired(&self, now: i64) {
+    pub fn remove_expired(&self, now: Timestamp) {
         self.peers.lock().retain(|_, b| b.expires_at > now);
     }
 
-    pub fn is_online(&self, endpoint_id: &str, now: i64) -> bool {
+    pub fn is_online(&self, endpoint_id: &str, now: Timestamp) -> bool {
         self.peers
             .lock()
             .get(endpoint_id)
@@ -59,19 +62,18 @@ impl PresenceTable {
     }
 
     /// `None` = never seen (unknown), `Some(true)` = live beacon, `Some(false)` = expired.
-    pub fn presence_status(&self, endpoint_id: &str, now: i64) -> Option<bool> {
+    pub fn presence_status(&self, endpoint_id: &str, now: Timestamp) -> Option<bool> {
         let peers = self.peers.lock();
         let beacon = peers.get(endpoint_id)?;
         Some(beacon.expires_at > now)
     }
 
-    pub fn last_seen_secs_ago(&self, endpoint_id: &str, now: i64) -> Option<u64> {
+    pub fn last_seen(&self, endpoint_id: &str, now: Timestamp) -> Option<SignedDuration> {
         let beacon = self.peers.lock().get(endpoint_id).cloned()?;
         if beacon.expires_at <= now {
             return None;
         }
-        let ago = now.saturating_sub(beacon.issued_at);
-        Some(ago.max(0) as u64)
+        Some(now.duration_since(beacon.issued_at))
     }
 
     pub fn snapshot(&self) -> HashMap<String, PresenceBeacon> {
@@ -120,8 +122,10 @@ struct BeaconSignPayload<'a> {
     mesh_ip: Option<&'a str>,
     ssh_host_key: Option<&'a str>,
     agent_version: &'a str,
-    issued_at: i64,
-    expires_at: i64,
+    #[serde(with = "jiff::fmt::serde::timestamp::second::required")]
+    issued_at: Timestamp,
+    #[serde(with = "jiff::fmt::serde::timestamp::second::required")]
+    expires_at: Timestamp,
 }
 
 fn beacon_sign_payload(beacon: &PresenceBeacon) -> anyhow::Result<Vec<u8>> {
@@ -144,7 +148,7 @@ pub fn sign_beacon(sk: &SigningKey, mut beacon: PresenceBeacon) -> anyhow::Resul
     Ok(beacon)
 }
 
-pub fn verify_beacon(beacon: &PresenceBeacon, now: i64) -> anyhow::Result<VerifyingKey> {
+pub fn verify_beacon(beacon: &PresenceBeacon, now: Timestamp) -> anyhow::Result<VerifyingKey> {
     if beacon.expires_at < now {
         bail!("presence beacon expired");
     }
@@ -162,7 +166,7 @@ pub fn build_beacon(
     mesh_ip: Option<String>,
     ssh_host_key: Option<String>,
     agent_version: &str,
-    now: i64,
+    now: Timestamp,
 ) -> anyhow::Result<PresenceBeacon> {
     let endpoint_id = hex::encode(signing_key.verifying_key().to_bytes());
     let beacon = PresenceBeacon {
@@ -173,7 +177,7 @@ pub fn build_beacon(
         ssh_host_key,
         agent_version: agent_version.to_string(),
         issued_at: now,
-        expires_at: now + PRESENCE_TTL_SECS,
+        expires_at: now + PRESENCE_TTL,
         sig: String::new(),
     };
     sign_beacon(signing_key, beacon)
@@ -201,7 +205,7 @@ pub async fn spawn_presence(cfg: PresenceConfig) -> anyhow::Result<PresenceHandl
                     let Ok(beacon) = serde_json::from_slice::<PresenceBeacon>(&msg.content) else {
                         continue;
                     };
-                    let now = chrono::Utc::now().timestamp();
+                    let now = Timestamp::now();
                     if verify_beacon(&beacon, now).is_err() {
                         tracing::debug!(peer = %beacon.endpoint_id, "ignored invalid presence beacon");
                         continue;
@@ -250,7 +254,7 @@ pub async fn spawn_presence(cfg: PresenceConfig) -> anyhow::Result<PresenceHandl
         let mut ticker = tokio::time::interval(PRESENCE_PUBLISH_INTERVAL);
         loop {
             ticker.tick().await;
-            let now = chrono::Utc::now().timestamp();
+            let now = Timestamp::now();
             publish_table.remove_expired(now);
             let Ok(beacon) = build_beacon(
                 network_id,
@@ -288,7 +292,7 @@ mod tests {
     #[test]
     fn presence_sign_verify_roundtrip() {
         let sk = sample_key();
-        let now = 1_700_000_000i64;
+        let now = Timestamp::from_second(1_700_000_000).unwrap();
         let beacon = build_beacon(
             Uuid::new_v4(),
             &sk,
@@ -305,8 +309,8 @@ mod tests {
     #[test]
     fn presence_expiry_rejected() {
         let sk = sample_key();
-        let now = 1_700_000_000i64;
+        let now = Timestamp::from_second(1_700_000_000).unwrap();
         let beacon = build_beacon(Uuid::new_v4(), &sk, "host-a", None, None, "0.1.0", now).unwrap();
-        assert!(verify_beacon(&beacon, now + PRESENCE_TTL_SECS + 1).is_err());
+        assert!(verify_beacon(&beacon, now + PRESENCE_TTL + SignedDuration::from_secs(1)).is_err());
     }
 }

@@ -1,11 +1,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use anyhow::Context;
-use chrono::Utc;
 use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt, StreamExt};
+use jiff::Timestamp;
 use parking_lot::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -28,13 +28,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const KEEP_ALIVE_SECS: u64 = 5;
 /// Wall-clock gap while connected that forces a reconnect (VM suspend/resume).
 const CONNECTED_RESUME_GAP: Duration = Duration::from_secs(15);
-
-fn now_unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
 
 /// Live WebSocket link to the control plane (Managed mode).
 #[derive(Clone)]
@@ -97,7 +90,7 @@ impl ControlPlaneLink {
     }
 
     pub fn mark_connected(&self) {
-        let now = now_unix_ms();
+        let now = u64::try_from(Timestamp::now().as_millisecond()).unwrap_or_default();
         let had_prior = self.inner.last_change_ms.swap(now, Ordering::SeqCst) != 0;
         self.inner.connected.store(true, Ordering::SeqCst);
         self.inner.connected_since_ms.store(now, Ordering::SeqCst);
@@ -109,7 +102,7 @@ impl ControlPlaneLink {
     }
 
     pub fn mark_disconnected(&self, error: Option<String>) {
-        let now = now_unix_ms();
+        let now = u64::try_from(Timestamp::now().as_millisecond()).unwrap_or_default();
         let was_connected = self.inner.connected.load(Ordering::SeqCst);
         self.inner.connected.store(false, Ordering::SeqCst);
         self.inner.connected_since_ms.store(0, Ordering::SeqCst);
@@ -123,7 +116,7 @@ impl ControlPlaneLink {
     }
 
     pub fn snapshot(&self) -> ControlPlaneLinkSnapshot {
-        let now = now_unix_ms();
+        let now = u64::try_from(Timestamp::now().as_millisecond()).unwrap_or_default();
         let connected = self.inner.connected.load(Ordering::SeqCst);
         let since = self.inner.connected_since_ms.load(Ordering::SeqCst);
         let change = self.inner.last_change_ms.load(Ordering::SeqCst);
@@ -254,7 +247,7 @@ async fn run(
                 let mut keep_alive = tokio::time::interval(Duration::from_secs(KEEP_ALIVE_SECS));
                 keep_alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 keep_alive.tick().await;
-                let mut last_wall = SystemTime::now();
+                let mut last_wall = Timestamp::now();
 
                 let disconnect_reason = loop {
                     tokio::select! {
@@ -291,10 +284,9 @@ async fn run(
                             }
                         }
                         _ = keep_alive.tick() => {
-                            let now = SystemTime::now();
-                            if now
-                                .duration_since(last_wall)
-                                .is_ok_and(|d| d > CONNECTED_RESUME_GAP)
+                            let now = Timestamp::now();
+                            if std::time::Duration::try_from(now.duration_since(last_wall))
+                                .is_ok_and(|duration| duration > CONNECTED_RESUME_GAP)
                             {
                                 tracing::warn!(
                                     "ws: wall clock jumped while connected (likely suspend/resume), reconnecting"
@@ -334,11 +326,10 @@ async fn run(
             backoff + Duration::from_millis(rand::random_range(0..500))
         };
 
-        let wall_before = SystemTime::now();
+        let wall_before = Timestamp::now();
         tokio::time::sleep(wait).await;
 
-        if SystemTime::now()
-            .duration_since(wall_before)
+        if std::time::Duration::try_from(Timestamp::now().duration_since(wall_before))
             .is_ok_and(|elapsed| elapsed > wait + RESUME_OVERSHOOT)
         {
             tracing::info!(
@@ -372,7 +363,7 @@ async fn connect_once(
         anyhow::bail!("control url must start with http:// or https://");
     };
 
-    let ts = Utc::now().timestamp();
+    let ts = Timestamp::now().as_second();
     let sig = signing::sign(signing_key, "GET", "/v1/ws", ts, &[]);
 
     let mut req = ws_url.into_client_request().context("build ws request")?;

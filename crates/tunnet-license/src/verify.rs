@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use ed25519_dalek::{Signature, VerifyingKey};
+use jiff::{SignedDuration, Timestamp};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -25,10 +26,10 @@ pub struct License {
     pub tier: LicenseTier,
     pub features: FeatureMap,
     pub limits: LimitMap,
-    pub iat: i64,
-    pub nbf: i64,
-    pub exp: i64,
-    pub grace: i64,
+    pub iat: Timestamp,
+    pub nbf: Timestamp,
+    pub exp: Timestamp,
+    pub grace: SignedDuration,
     pub meta: HashMap<String, String>,
     pub kid: String,
 }
@@ -42,8 +43,8 @@ pub enum RuntimeStatus {
 #[derive(Debug, Clone)]
 pub struct VerifyOptions<'a> {
     pub keyring: &'a Keyring,
-    pub now: i64,
-    pub clock_skew_sec: i64,
+    pub now: Timestamp,
+    pub clock_skew: SignedDuration,
     /// Deployment fingerprint; `None` skips aud check when license has empty aud.
     pub audience: Option<&'a str>,
     pub expected_issuer: Option<&'a str>,
@@ -51,11 +52,11 @@ pub struct VerifyOptions<'a> {
 }
 
 impl<'a> VerifyOptions<'a> {
-    pub fn new(keyring: &'a Keyring, now: i64) -> Self {
+    pub fn new(keyring: &'a Keyring, now: Timestamp) -> Self {
         Self {
             keyring,
             now,
-            clock_skew_sec: DEFAULT_CLOCK_SKEW_SEC,
+            clock_skew: SignedDuration::from_secs(DEFAULT_CLOCK_SKEW_SEC),
             audience: None,
             expected_issuer: None,
             revoked_ids: None,
@@ -169,7 +170,7 @@ fn parse_paid_tier(v: &Value) -> Option<LicenseTier> {
 }
 
 pub fn verify_license_token(token: &str, options: VerifyOptions<'_>) -> VerifyResult {
-    let skew = options.clock_skew_sec;
+    let skew = options.clock_skew;
     let now = options.now;
 
     let decoded = decode_token(token)?;
@@ -290,6 +291,26 @@ pub fn verify_license_token(token: &str, options: VerifyOptions<'_>) -> VerifyRe
         ));
     }
 
+    let iat = Timestamp::from_second(iat).map_err(|_| {
+        fail(
+            LicenseFailureCode::InvalidClaims,
+            "iat is outside the supported range",
+        )
+    })?;
+    let nbf = Timestamp::from_second(nbf).map_err(|_| {
+        fail(
+            LicenseFailureCode::InvalidClaims,
+            "nbf is outside the supported range",
+        )
+    })?;
+    let exp = Timestamp::from_second(exp).map_err(|_| {
+        fail(
+            LicenseFailureCode::InvalidClaims,
+            "exp is outside the supported range",
+        )
+    })?;
+    let grace = SignedDuration::from_secs(grace);
+
     if key.valid_from > iat {
         return Err(fail(
             LicenseFailureCode::KeyRevoked,
@@ -369,12 +390,7 @@ pub fn verify_license_token(token: &str, options: VerifyOptions<'_>) -> VerifyRe
     }
     Err(fail(
         LicenseFailureCode::Expired,
-        format!(
-            "license expired at {}",
-            chrono::DateTime::from_timestamp(exp, 0)
-                .map(|d| d.to_rfc3339())
-                .unwrap_or_else(|| exp.to_string())
-        ),
+        format!("license expired at {}", exp),
     ))
 }
 
@@ -415,8 +431,11 @@ mod tests {
             b64u_encode(&[0u8; 64]),
         );
         let keyring = Keyring::default_tunnet();
-        let err =
-            verify_license_token(&token, VerifyOptions::new(&keyring, 1_700_000_000)).unwrap_err();
+        let err = verify_license_token(
+            &token,
+            VerifyOptions::new(&keyring, Timestamp::from_second(1_700_000_000).unwrap()),
+        )
+        .unwrap_err();
         assert_eq!(err.code, LicenseFailureCode::BadSignature);
     }
 }

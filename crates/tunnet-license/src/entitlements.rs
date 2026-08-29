@@ -18,7 +18,7 @@ pub fn entitlements_from(license: &License, status: RuntimeStatus, stale: bool) 
         subject: Some(license.sub.clone()),
         issued_at: Some(license.iat),
         not_after: Some(license.exp),
-        grace_until: if license.grace > 0 {
+        grace_until: if license.grace.is_positive() {
             Some(license.exp + license.grace)
         } else {
             None

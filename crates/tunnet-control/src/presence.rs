@@ -233,21 +233,22 @@ pub async fn mark_agent_connected(
 pub async fn mark_agent_disconnected(
     pool: &PgPool,
     endpoint_id: &str,
-    session_connected_at: Option<chrono::DateTime<chrono::Utc>>,
+    session_connected_at_micros: Option<i64>,
 ) -> anyhow::Result<()> {
     let Some(device) = load_device(pool, endpoint_id).await? else {
         return Ok(());
     };
 
-    let updated = if let Some(connected_at) = session_connected_at {
+    let updated = if let Some(connected_at_micros) = session_connected_at_micros {
         sqlx::query(
             "UPDATE devices \
              SET agent_connected = false, disconnected_at = now() \
              WHERE endpoint_id = $1 AND agent_connected \
-               AND connected_at IS NOT DISTINCT FROM $2",
+               AND connected_at IS NOT DISTINCT FROM \
+                   to_timestamp($2::double precision / 1000000.0)",
         )
         .bind(endpoint_id)
-        .bind(connected_at)
+        .bind(connected_at_micros)
         .execute(pool)
         .await?
     } else {

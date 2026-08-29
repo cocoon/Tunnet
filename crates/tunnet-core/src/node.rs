@@ -221,7 +221,7 @@ impl CoreNode {
 
     #[cfg(feature = "direct")]
     pub fn peer_presence_online(&self, endpoint_hex: &str) -> Option<bool> {
-        let now = chrono::Utc::now().timestamp();
+        let now = jiff::Timestamp::now();
         let tables = self.presence_tables.lock().ok()?;
         if tables.is_empty() {
             return None;
@@ -247,12 +247,13 @@ impl CoreNode {
 
     #[cfg(feature = "direct")]
     pub fn peer_presence_last_seen(&self, endpoint_hex: &str) -> Option<u64> {
-        let now = chrono::Utc::now().timestamp();
+        let now = jiff::Timestamp::now();
         self.presence_tables
             .lock()
             .ok()?
             .values()
-            .filter_map(|t| t.last_seen_secs_ago(endpoint_hex, now))
+            .filter_map(|table| table.last_seen(endpoint_hex, now))
+            .filter_map(|duration| u64::try_from(duration.as_secs()).ok())
             .min()
     }
 
@@ -883,7 +884,7 @@ async fn bootstrap_one_direct_network(
         ipv4: net_ipv4,
         collision_index: direct.collision_index,
         tags: vec![],
-        joined_at: chrono::Utc::now(),
+        joined_at: jiff::Timestamp::now(),
         coordinator: direct.coordinator,
         status: "active".into(),
         ssh_host_key: None,

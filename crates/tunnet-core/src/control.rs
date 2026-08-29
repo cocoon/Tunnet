@@ -1,6 +1,6 @@
 use anyhow::Context;
-use chrono::Utc;
 use ed25519_dalek::SigningKey;
+use jiff::Timestamp;
 use reqwest::{Method, header::HeaderValue};
 use tunnet_common::{
     EndpointSnapshot, EnrollRequest, EnrollResponse, HDR_ENDPOINT_ID, HDR_SIGNATURE, HDR_TIMESTAMP,
@@ -217,7 +217,7 @@ impl SignedClient {
     }
 
     fn sign(&self, method: &str, path: &str, body: &[u8]) -> (i64, String) {
-        let ts = Utc::now().timestamp();
+        let ts = Timestamp::now().as_second();
         let sig = signing::sign(&self.signing_key, method, path, ts, body);
         (ts, sig)
     }
@@ -564,6 +564,6 @@ pub fn basic_metadata(hostname: &str, agent_version: &str, kind: &str) -> serde_
         "arch": std::env::consts::ARCH,
         "family": std::env::consts::FAMILY,
         "kind": kind, // "agent" | "sdk"
-        "reportedAt": chrono::Utc::now().to_rfc3339(),
+        "reportedAt": Timestamp::now().to_string(),
     })
 }

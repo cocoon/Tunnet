@@ -20,7 +20,7 @@ hex.workspace = true
 tracing.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

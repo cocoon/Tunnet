@@ -97,18 +97,18 @@ pub async fn patch_device_expiry_handler(
         Err(_) => return (StatusCode::BAD_REQUEST, "invalid json").into_response(),
     };
 
-    let pg_interval = match resolve_expires_in_input(patch.expires_in.as_deref()) {
+    let ttl_seconds = match resolve_expires_in_input(patch.expires_in.as_deref()) {
         Ok(v) => v,
         Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
     };
 
     let result = sqlx::query(
         "UPDATE devices \
-         SET inactivity_ttl = $1::interval, \
+         SET inactivity_ttl = $1::bigint * interval '1 second', \
              expired_at = NULL \
          WHERE endpoint_id = $2 AND organization_id = $3",
     )
-    .bind(pg_interval)
+    .bind(ttl_seconds)
     .bind(&auth.endpoint_id)
     .bind(&auth.organization_id)
     .execute(&state.pool)
@@ -384,23 +384,33 @@ async fn apply_device_tag_changes(
     list_device_tags(pool, endpoint_id).await
 }
 
-pub fn resolve_expires_in_input(raw: Option<&str>) -> Result<Option<String>, &'static str> {
+pub fn resolve_expires_in_input(raw: Option<&str>) -> Result<Option<i64>, &'static str> {
     let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
     if raw.eq_ignore_ascii_case("never") {
         return Ok(None);
     }
-    let secs = tunnet_common::duration::parse_human_duration_secs(raw)
-        .ok_or("invalid expires_in duration")?;
-    Ok(Some(tunnet_common::duration::seconds_to_pg_interval(secs)))
+    let span = jiff::fmt::friendly::SpanParser::new()
+        .parse_span(raw)
+        .map_err(|_| "invalid expires_in duration")?;
+    if !span.is_positive() || span.get_years() != 0 || span.get_months() != 0 {
+        return Err("expires_in must be a positive fixed duration without months or years");
+    }
+    let duration = span
+        .to_duration(jiff::SpanRelativeTo::days_are_24_hours())
+        .map_err(|_| "invalid expires_in duration")?;
+    if duration.subsec_nanos() != 0 {
+        return Err("expires_in must use whole seconds");
+    }
+    Ok(Some(duration.as_secs()))
 }
 
 pub async fn resolve_enroll_expires_in(
     pool: &sqlx::PgPool,
     organization_id: &str,
     requested: Option<&str>,
-) -> Result<Option<String>, (StatusCode, String)> {
+) -> Result<Option<i64>, (StatusCode, String)> {
     if let Some(raw) = requested {
         return resolve_expires_in_input(Some(raw))
             .map_err(|msg| (StatusCode::BAD_REQUEST, msg.into()));
@@ -427,4 +437,28 @@ pub async fn resolve_enroll_expires_in(
         return Ok(None);
     };
     resolve_expires_in_input(Some(&raw)).map_err(|msg| (StatusCode::BAD_REQUEST, msg.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_expires_in_input;
+
+    #[test]
+    fn device_ttl_accepts_positive_fixed_whole_seconds() {
+        assert_eq!(
+            resolve_expires_in_input(Some("2 weeks 3 days")),
+            Ok(Some(1_468_800))
+        );
+        assert_eq!(resolve_expires_in_input(Some("never")), Ok(None));
+    }
+
+    #[test]
+    fn device_ttl_rejects_calendar_fractional_and_non_positive_values() {
+        for invalid in ["1 month", "1.5 seconds", "0 seconds", "-2 hours"] {
+            assert!(
+                resolve_expires_in_input(Some(invalid)).is_err(),
+                "{invalid}"
+            );
+        }
+    }
 }

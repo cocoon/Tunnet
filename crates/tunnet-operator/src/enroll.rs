@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use chrono::Utc;
+use jiff::Timestamp;
 use tunnet_core::control::ManagementClient;
 use tunnet_core::{AgentIdentity, ManagedState, PersistedState};
 use uuid::Uuid;
@@ -36,7 +36,7 @@ pub async fn enroll_node(
         "hostname": hostname,
         "kind": kind,
         "operatorManaged": true,
-        "reportedAt": Utc::now().to_rfc3339(),
+        "reportedAt": Timestamp::now().to_string(),
     });
 
     let client = ManagementClient::new(creds.management_url.clone())?;
@@ -68,7 +68,7 @@ pub async fn enroll_node(
         network_name: response.network_name.clone(),
         network_id: response.network_id,
         organization_id: response.organization_id.clone(),
-        enrolled_at: Utc::now(),
+        enrolled_at: Timestamp::now(),
         management_url: None,
         dashboard_url: None,
         local_ui: Default::default(),

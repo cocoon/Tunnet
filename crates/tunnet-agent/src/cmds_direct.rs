@@ -261,8 +261,8 @@ pub async fn run_create(args: CreateArgs, state_dir: Option<&str>) -> anyhow::Re
             endpoint_id: my_id.clone(),
             role: MemberRole::Coordinator,
             network_epoch: 0,
-            issued_at: chrono::Utc::now(),
-            expires_at: chrono::Utc::now() + chrono::Duration::days(3650),
+            issued_at: jiff::Timestamp::now(),
+            expires_at: jiff::Timestamp::now().checked_add(jiff::Span::new().days(3650))?,
             content_key: content_key.clone(),
             sig: String::new(),
         },
@@ -288,7 +288,7 @@ pub async fn run_create(args: CreateArgs, state_dir: Option<&str>) -> anyhow::Re
         network_grant: Some(grant_json),
         content_key: Some(content_key),
         auto_accept_firewall: false,
-        created_at: chrono::Utc::now(),
+        created_at: jiff::Timestamp::now(),
     });
     let persisted = PersistedState::Direct { networks };
     let tier = persist_agent(&paths, &identity, persisted, policy)?;
@@ -475,7 +475,7 @@ pub async fn run_join(args: JoinArgs, state_dir: Option<&str>) -> anyhow::Result
         network_grant,
         content_key,
         auto_accept_firewall: args.auto_accept_firewall,
-        created_at: chrono::Utc::now(),
+        created_at: jiff::Timestamp::now(),
     });
     let persisted = PersistedState::Direct { networks };
     let tier = persist_agent(&paths, &identity, persisted, policy)?;
@@ -595,7 +595,7 @@ pub async fn handle_join_request_bytes(
         ipv4: ip,
         collision_index: ci,
         tags: vec![],
-        joined_at: chrono::Utc::now(),
+        joined_at: jiff::Timestamp::now(),
         coordinator: false,
         status: "active".into(),
         ssh_host_key: None,
@@ -691,7 +691,7 @@ pub async fn run_upgrade(args: UpgradeArgs, state_dir: Option<&str>) -> anyhow::
         network_name: resp.network_name.clone(),
         network_id: resp.network_id,
         organization_id: resp.organization_id,
-        enrolled_at: chrono::Utc::now(),
+        enrolled_at: jiff::Timestamp::now(),
         management_url: None,
         dashboard_url: None,
         local_ui: tunnet_common::local_api::LocalUiPolicy::default(),

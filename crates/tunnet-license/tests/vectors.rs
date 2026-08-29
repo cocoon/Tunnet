@@ -75,8 +75,8 @@ fn build_keyring(keys: &[VectorKey]) -> Keyring {
             TrustedKey::from_hex(
                 &k.kid,
                 &k.public_key_hex,
-                k.valid_from.unwrap_or(0),
-                until,
+                jiff::Timestamp::from_second(k.valid_from.unwrap_or(0)).unwrap(),
+                until.map(|seconds| jiff::Timestamp::from_second(seconds).unwrap()),
                 key_status(k.status.as_deref()),
             )
             .unwrap_or_else(|e| panic!("bad vector key {}: {e}", k.kid))
@@ -140,9 +140,12 @@ fn golden_vectors() {
         };
 
         let now = case.now.unwrap_or(default_now);
-        let mut opts = VerifyOptions::new(&keyring, now);
+        let mut opts = VerifyOptions::new(
+            &keyring,
+            jiff::Timestamp::from_second(now).expect("test timestamp is in range"),
+        );
         if let Some(skew) = case.skew {
-            opts.clock_skew_sec = skew;
+            opts.clock_skew = jiff::SignedDuration::from_secs(skew);
         }
         opts.audience = case.audience.as_deref();
         opts.expected_issuer = case.expected_issuer.as_deref();

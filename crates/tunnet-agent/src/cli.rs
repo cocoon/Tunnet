@@ -172,7 +172,7 @@ pub async fn run_enroll(args: EnrollArgs, state_dir: Option<&str>) -> anyhow::Re
         network_name: resp.network_name.clone(),
         network_id: resp.network_id,
         organization_id: resp.organization_id,
-        enrolled_at: chrono::Utc::now(),
+        enrolled_at: jiff::Timestamp::now(),
         management_url,
         dashboard_url,
         local_ui: tunnet_common::local_api::LocalUiPolicy::default(),

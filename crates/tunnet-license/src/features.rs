@@ -1,5 +1,6 @@
 //! License tiers, features, limits, and entitlement snapshots.
 
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::error::LicenseFailureCode;
@@ -184,9 +185,12 @@ pub struct Entitlements {
     pub limits: LimitMap,
     pub license_id: Option<String>,
     pub subject: Option<String>,
-    pub issued_at: Option<i64>,
-    pub not_after: Option<i64>,
-    pub grace_until: Option<i64>,
+    #[serde(with = "jiff::fmt::serde::timestamp::second::optional")]
+    pub issued_at: Option<Timestamp>,
+    #[serde(with = "jiff::fmt::serde::timestamp::second::optional")]
+    pub not_after: Option<Timestamp>,
+    #[serde(with = "jiff::fmt::serde::timestamp::second::optional")]
+    pub grace_until: Option<Timestamp>,
     pub stale: bool,
     pub reason: Option<LicenseFailureCode>,
 }

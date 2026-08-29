@@ -144,10 +144,11 @@ pub async fn run_login(args: LoginArgs) -> anyhow::Result<()> {
         .access_token
         .context("token response missing access_token")?;
 
-    let now = chrono::Utc::now();
-    let expires_at = tokens
-        .expires_in
-        .map(|secs| now + chrono::Duration::seconds(secs as i64));
+    let now = jiff::Timestamp::now();
+    let expires_at = tokens.expires_in.and_then(|secs| {
+        now.checked_add(jiff::SignedDuration::from_secs(secs as i64))
+            .ok()
+    });
 
     let stored = CliAuthTokens {
         management_url: management_url.clone(),

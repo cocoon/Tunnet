@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,8 +17,8 @@ pub enum KeyStatus {
 pub struct TrustedKey {
     pub kid: String,
     pub public_key: [u8; 32],
-    pub valid_from: i64,
-    pub valid_until: Option<i64>,
+    pub valid_from: Timestamp,
+    pub valid_until: Option<Timestamp>,
     pub status: KeyStatus,
 }
 
@@ -27,8 +28,8 @@ impl TrustedKey {
     pub fn from_hex(
         kid: impl Into<String>,
         hex: &str,
-        valid_from: i64,
-        valid_until: Option<i64>,
+        valid_from: Timestamp,
+        valid_until: Option<Timestamp>,
         status: KeyStatus,
     ) -> Result<Self, String> {
         let bytes = hex::decode(hex).map_err(|e| e.to_string())?;
@@ -53,7 +54,7 @@ pub fn tunnet_trusted_keys() -> Vec<TrustedKey> {
         TrustedKey::from_hex(
             "tnk-2025-01",
             "54544bc6251b8076e7cdceff6b741d258b37a6a93020a03a251fe209b325ebbd",
-            0,
+            Timestamp::UNIX_EPOCH,
             None,
             KeyStatus::Active,
         )

@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,8 @@ const DEFAULT_HEALTH_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PendingUpdate {
-    installed_at_unix: u64,
+    #[serde(with = "jiff::fmt::serde::timestamp::second::required")]
+    installed_at_unix: jiff::Timestamp,
     from_version: String,
     to_version: String,
     health_window_secs: u64,
@@ -28,8 +29,10 @@ pub fn on_agent_start(paths: &StatePaths) -> Result<()> {
         serde_json::from_slice(&std::fs::read(&pending_path).context("read update pending")?)
             .context("parse update pending")?;
 
-    let now = unix_now();
-    let elapsed = now.saturating_sub(pending.installed_at_unix);
+    let elapsed = jiff::Timestamp::now()
+        .duration_since(pending.installed_at_unix)
+        .as_secs()
+        .max(0) as u64;
     let window = pending.health_window_secs.max(1);
 
     pending.boots = pending.boots.saturating_add(1);
@@ -145,7 +148,7 @@ async fn check_once(paths: &StatePaths, health_window_secs: u64) -> Result<()> {
 fn stage_pending(paths: &StatePaths, from: &str, to: &str, health_window_secs: u64) -> Result<()> {
     std::fs::create_dir_all(paths.update_dir())?;
     let pending = PendingUpdate {
-        installed_at_unix: unix_now(),
+        installed_at_unix: jiff::Timestamp::now(),
         from_version: from.to_string(),
         to_version: to.to_string(),
         health_window_secs: if health_window_secs == 0 {
@@ -234,11 +237,4 @@ fn write_pending(paths: &StatePaths, pending: &PendingUpdate) -> Result<()> {
     let json = serde_json::to_vec_pretty(pending)?;
     std::fs::write(paths.update_pending_file(), json)?;
     Ok(())
-}
-
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }

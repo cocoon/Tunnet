@@ -1,7 +1,7 @@
 //! Invite codes for Direct mode admission.
 
 use anyhow::Context;
-use chrono::{DateTime, Duration, Utc};
+use jiff::{Span, Timestamp};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,7 +16,7 @@ pub struct InviteCode {
     pub coordinator: String,
     /// Coordinator ed25519 verifying key (hex).
     pub coordinator_verifying_key: String,
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
     #[serde(default)]
     pub reusable: bool,
     /// Opaque invite id for one-time tracking.
@@ -40,7 +40,7 @@ pub fn decode_invite(code: &str) -> anyhow::Result<InviteCode> {
     .or_else(|_| base64::Engine::decode(&base64::engine::general_purpose::STANDARD, code.trim()))
     .context("invalid invite code encoding")?;
     let invite: InviteCode = serde_json::from_slice(&raw).context("invalid invite payload")?;
-    if invite.expires_at < Utc::now() {
+    if invite.expires_at < Timestamp::now() {
         anyhow::bail!("invite code expired at {}", invite.expires_at);
     }
     Ok(invite)
@@ -53,7 +53,7 @@ impl InviteCode {
         network_name: String,
         coordinator: String,
         coordinator_verifying_key: String,
-        expires: Duration,
+        expires: Span,
         reusable: bool,
     ) -> Self {
         Self {
@@ -62,7 +62,9 @@ impl InviteCode {
             network_name,
             coordinator,
             coordinator_verifying_key,
-            expires_at: Utc::now() + expires,
+            expires_at: Timestamp::now()
+                .checked_add(expires)
+                .expect("valid invite expiry"),
             reusable,
             invite_id: hex::encode(rand::random::<[u8; 16]>()),
         }
@@ -81,7 +83,7 @@ mod tests {
             "home".into(),
             "cc".repeat(32),
             "dd".repeat(32),
-            Duration::hours(24),
+            Span::new().hours(24),
             false,
         );
         let code = encode_invite(&inv).unwrap();

@@ -131,9 +131,19 @@ async fn hard_delete_due_devices(
         let Some(grace_raw) = grace_raw.as_deref() else {
             continue;
         };
-        let Some(secs) = tunnet_common::duration::parse_human_duration_secs(grace_raw) else {
+        let Ok(span) = jiff::fmt::friendly::SpanParser::new().parse_span(grace_raw) else {
             continue;
         };
+        if !span.is_positive() || span.get_years() != 0 || span.get_months() != 0 {
+            continue;
+        }
+        let Ok(duration) = span.to_duration(jiff::SpanRelativeTo::days_are_24_hours()) else {
+            continue;
+        };
+        if duration.subsec_nanos() != 0 {
+            continue;
+        }
+        let secs = duration.as_secs();
         let due: Option<(bool,)> = sqlx::query_as(
             "SELECT expired_at + ($2::bigint * interval '1 second') < now() \
              FROM devices WHERE endpoint_id = $1 AND expired_at IS NOT NULL",

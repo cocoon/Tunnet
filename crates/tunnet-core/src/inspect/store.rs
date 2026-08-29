@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use jiff::Timestamp;
 use parking_lot::Mutex;
 use serde::Serialize;
 use uuid::Uuid;
@@ -17,7 +18,7 @@ pub const RING_CAP: usize = 100;
 pub struct CapturedExchange {
     pub id: String,
     pub tunnel_id: String,
-    pub started_at: String,
+    pub started_at: Timestamp,
     pub method: String,
     pub path: String,
     pub request_headers: Vec<(String, String)>,
@@ -85,7 +86,7 @@ impl ExchangeStore {
 pub struct ExchangeSummary {
     pub id: String,
     pub tunnel_id: String,
-    pub started_at: String,
+    pub started_at: Timestamp,
     pub method: String,
     pub path: String,
     pub status: u16,
@@ -101,7 +102,7 @@ impl From<&CapturedExchange> for ExchangeSummary {
         Self {
             id: e.id.clone(),
             tunnel_id: e.tunnel_id.clone(),
-            started_at: e.started_at.clone(),
+            started_at: e.started_at,
             method: e.method.clone(),
             path: e.path.clone(),
             status: e.status,

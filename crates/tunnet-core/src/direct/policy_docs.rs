@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use anyhow::Context;
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use super::firewall::FirewallRule;
@@ -15,7 +16,7 @@ pub const POLICY_BUNDLE_KEY: &str = "policy/v1/bundle";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyBundleDoc {
     pub version: u64,
-    pub timestamp: String,
+    pub timestamp: Timestamp,
     pub global: Vec<FirewallRule>,
     pub by_hostname: HashMap<String, Vec<FirewallRule>>,
     pub sig: String,
@@ -27,7 +28,7 @@ pub type SuggestedPolicy = PolicyBundleDoc;
 #[derive(Serialize)]
 struct PolicyBundleSignPayload<'a> {
     version: u64,
-    timestamp: &'a str,
+    timestamp: Timestamp,
     global: &'a [FirewallRule],
     by_hostname: &'a HashMap<String, Vec<FirewallRule>>,
 }
@@ -35,7 +36,7 @@ struct PolicyBundleSignPayload<'a> {
 fn policy_bundle_sign_payload(bundle: &PolicyBundleDoc) -> anyhow::Result<Vec<u8>> {
     Ok(serde_json::to_vec(&PolicyBundleSignPayload {
         version: bundle.version,
-        timestamp: &bundle.timestamp,
+        timestamp: bundle.timestamp,
         global: &bundle.global,
         by_hostname: &bundle.by_hostname,
     })?)
@@ -44,7 +45,7 @@ fn policy_bundle_sign_payload(bundle: &PolicyBundleDoc) -> anyhow::Result<Vec<u8
 pub fn sign_policy_bundle(
     sk: &SigningKey,
     version: u64,
-    timestamp: String,
+    timestamp: Timestamp,
     global: Vec<FirewallRule>,
     by_hostname: HashMap<String, Vec<FirewallRule>>,
 ) -> anyhow::Result<PolicyBundleDoc> {
@@ -83,7 +84,7 @@ pub fn effective_suggested(policy: &PolicyBundleDoc, hostname: &str) -> Vec<Fire
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingSuggestion {
-    pub received_at: String,
+    pub received_at: Timestamp,
     pub policy: PolicyBundleDoc,
 }
 
@@ -109,7 +110,9 @@ mod tests {
                 peer: PeerFilter::Any,
             }],
         );
-        let bundle = sign_policy_bundle(&sk, 1, "2026-01-01T00:00:00Z".into(), vec![], by).unwrap();
+        let bundle =
+            sign_policy_bundle(&sk, 1, "2026-01-01T00:00:00Z".parse().unwrap(), vec![], by)
+                .unwrap();
         verify_policy_bundle(&vk, &bundle).unwrap();
     }
 
@@ -121,7 +124,7 @@ mod tests {
         let bundle = sign_policy_bundle(
             &sk,
             1,
-            "2026-01-01T00:00:00Z".into(),
+            "2026-01-01T00:00:00Z".parse().unwrap(),
             vec![],
             HashMap::new(),
         )

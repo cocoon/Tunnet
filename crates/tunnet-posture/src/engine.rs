@@ -8,7 +8,7 @@ use crate::collectors::{
 use crate::error::PostureError;
 use crate::score::{PostureScoringConfig, inject_posture_score};
 use crate::value::PostureValue;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,7 +28,7 @@ pub enum CollectorStatus {
 #[derive(Debug, Clone)]
 pub struct PostureState {
     pub attributes: HashMap<String, PostureValue>,
-    pub last_collected: HashMap<String, DateTime<Utc>>,
+    pub last_collected: HashMap<String, Timestamp>,
     pub collector_statuses: HashMap<String, CollectorStatus>,
     pub state_hash: String,
 }
@@ -222,7 +222,7 @@ impl PostureEngine {
         &self,
         force_all: bool,
     ) -> Result<(Vec<(String, PostureValue, PostureValue)>, bool), PostureError> {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut new_attrs = HashMap::new();
         let mut statuses = HashMap::new();
 
@@ -238,7 +238,7 @@ impl PostureEngine {
                     .get(collector.name())
                     .copied();
                 if let Some(last) = last
-                    && now.signed_duration_since(last).to_std().unwrap_or_default()
+                    && std::time::Duration::try_from(now.duration_since(last)).unwrap_or_default()
                         < collector.min_interval()
                 {
                     continue;

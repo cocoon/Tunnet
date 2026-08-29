@@ -1,3 +1,4 @@
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -259,13 +260,13 @@ pub enum ClientMsg {
     PostureReport {
         full: bool,
         attributes: std::collections::HashMap<String, serde_json::Value>,
-        collected_at: chrono::DateTime<chrono::Utc>,
+        collected_at: Timestamp,
     },
 
     /// Effective merged config (local ∪ remote ∪ defaults) for dashboard display.
     EffectiveConfigReport {
         config: EffectiveAgentConfig,
-        reported_at: chrono::DateTime<chrono::Utc>,
+        reported_at: Timestamp,
     },
 }
 

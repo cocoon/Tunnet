@@ -31,18 +31,20 @@ pub async fn run_ws(
     }
 
     // Stamp this session so cleanup does not clear a newer reconnect.
-    let session_connected_at: Option<chrono::DateTime<chrono::Utc>> =
-        match sqlx::query_scalar("SELECT connected_at FROM devices WHERE endpoint_id = $1")
-            .bind(&endpoint_id)
-            .fetch_optional(&state.pool)
-            .await
-        {
-            Ok(at) => at,
-            Err(e) => {
-                tracing::warn!(?e, %endpoint_id, "failed to read session connected_at");
-                None
-            }
-        };
+    let session_connected_at_micros: Option<i64> = match sqlx::query_scalar(
+        "SELECT (extract(epoch FROM connected_at) * 1000000)::bigint \
+             FROM devices WHERE endpoint_id = $1",
+    )
+    .bind(&endpoint_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(at) => at,
+        Err(e) => {
+            tracing::warn!(?e, %endpoint_id, "failed to read session connected_at");
+            None
+        }
+    };
 
     let (mut ws_tx, mut ws_rx) = socket.split();
     let mut rx = state.ws_hub.register(
@@ -113,7 +115,7 @@ pub async fn run_ws(
                                     && crate::relay_map::license_tier()
                                         == tunnet_license::LicenseTier::Cloud
                                 {
-                                    let month = chrono::Utc::now().format("%Y%m").to_string();
+                                    let month = jiff::Timestamp::now().strftime("%Y%m").to_string();
                                     let month_i: i32 = month.parse().unwrap_or(0);
                                     if let Err(e) = sqlx::query(
                                         "INSERT INTO org_usage_monthly \
@@ -657,9 +659,12 @@ pub async fn run_ws(
     }
 
     hub.unregister(&ep_for_cleanup, &organization_id, &network_ids);
-    if let Err(e) =
-        crate::presence::mark_agent_disconnected(&state.pool, &ep_for_cleanup, session_connected_at)
-            .await
+    if let Err(e) = crate::presence::mark_agent_disconnected(
+        &state.pool,
+        &ep_for_cleanup,
+        session_connected_at_micros,
+    )
+    .await
     {
         tracing::warn!(?e, %ep_for_cleanup, "failed to mark agent disconnected");
     }

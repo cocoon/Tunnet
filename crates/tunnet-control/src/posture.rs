@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use jiff::Timestamp;
 use sqlx::PgPool;
 use tunnet_common::posture::{PostureEnforcementConfig, PostureEvalResult};
 use tunnet_common::ws::ServerMsg;
@@ -20,7 +20,7 @@ use crate::ws_hub::WsHub;
 
 #[derive(Debug, Clone)]
 pub struct PostureGraceState {
-    pub started_at: DateTime<Utc>,
+    pub started_at: Timestamp,
     pub grace_period_secs: u64,
 }
 
@@ -53,7 +53,7 @@ pub async fn handle_posture_report(
     endpoint_id: &str,
     full: bool,
     attributes: HashMap<String, serde_json::Value>,
-    collected_at: DateTime<Utc>,
+    collected_at: Timestamp,
 ) -> anyhow::Result<()> {
     let org_id: Option<String> =
         sqlx::query_scalar("SELECT organization_id FROM devices WHERE endpoint_id = $1")
@@ -80,7 +80,8 @@ pub async fn handle_posture_report(
         sqlx::query(
             "INSERT INTO posture_attributes \
                (id, endpoint_id, organization_id, namespace, key, value, collected_at, source) \
-             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'agent') \
+             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, \
+                     to_timestamp($6::double precision / 1000000.0), 'agent') \
              ON CONFLICT (endpoint_id, namespace, key) DO UPDATE SET \
                value = EXCLUDED.value, \
                collected_at = EXCLUDED.collected_at, \
@@ -91,7 +92,7 @@ pub async fn handle_posture_report(
         .bind(namespace)
         .bind(key)
         .bind(value)
-        .bind(collected_at)
+        .bind(collected_at.as_microsecond())
         .execute(&state.pool)
         .await?;
     }
@@ -101,7 +102,7 @@ pub async fn handle_posture_report(
         sqlx::query(
             "INSERT INTO posture_attributes \
                (id, endpoint_id, organization_id, namespace, key, value, collected_at, source) \
-             VALUES (gen_random_uuid(), $1, $2, 'ip', 'address', $3, $4, 'control') \
+             VALUES (gen_random_uuid(), $1, $2, 'ip', 'address', $3, now(), 'control') \
              ON CONFLICT (endpoint_id, namespace, key) DO UPDATE SET \
                value = EXCLUDED.value, \
                collected_at = EXCLUDED.collected_at, \
@@ -110,7 +111,6 @@ pub async fn handle_posture_report(
         .bind(endpoint_id)
         .bind(&organization_id)
         .bind(&ip_value)
-        .bind(Utc::now())
         .execute(&state.pool)
         .await?;
     }
@@ -237,10 +237,13 @@ fn compute_enforcement(
                 grace_map
                     .entry(endpoint_id.to_string())
                     .or_insert_with(|| PostureGraceState {
-                        started_at: Utc::now(),
+                        started_at: Timestamp::now(),
                         grace_period_secs: grace_secs,
                     });
-            let elapsed = (Utc::now() - entry.started_at).num_seconds().max(0) as u64;
+            let elapsed = Timestamp::now()
+                .duration_since(entry.started_at)
+                .as_secs()
+                .max(0) as u64;
             if elapsed >= entry.grace_period_secs {
                 ("revoke".into(), Some(0), remediation)
             } else {

@@ -9,13 +9,7 @@ use uuid::Uuid;
 use crate::pg_inet::{self, PgIp};
 use crate::relay_map::{self, RelayRow};
 
-type EndpointRow = (
-    String,
-    bool,
-    i64,
-    serde_json::Value,
-    Option<chrono::DateTime<chrono::Utc>>,
-);
+type EndpointRow = (String, bool, i64, serde_json::Value, Option<i64>);
 
 /// url, region, auth_token, organization_id, status
 type RelayDbRow = (String, String, Option<String>, Option<String>, String);
@@ -27,7 +21,7 @@ pub async fn build_endpoint_snapshot(
 ) -> anyhow::Result<EndpointSnapshot> {
     let endpoint_row: Option<EndpointRow> = sqlx::query_as(
         "SELECT e.organization_id, e.ipv6_enabled, o.snapshot_version, e.labels, \
-           CASE \
+           (extract(epoch FROM CASE \
              WHEN e.expired_at IS NOT NULL THEN e.expired_at \
              WHEN COALESCE( \
                e.inactivity_ttl, \
@@ -46,7 +40,7 @@ pub async fn build_endpoint_snapshot(
                END \
              ) \
              ELSE NULL \
-           END \
+           END) * 1000000)::bigint \
          FROM devices e \
          JOIN organization o ON o.id = e.organization_id \
          WHERE e.endpoint_id = $1",
@@ -55,7 +49,7 @@ pub async fn build_endpoint_snapshot(
     .fetch_optional(pool)
     .await?;
 
-    let (organization_id, ipv6_enabled, org_version, labels_value, expires_at) =
+    let (organization_id, ipv6_enabled, org_version, labels_value, expires_at_micros) =
         endpoint_row.ok_or_else(|| anyhow::anyhow!("endpoint not found"))?;
     let labels = crate::device_labels::normalize_labels(&labels_value);
     let tenant_ipv6 = if ipv6_enabled {
@@ -176,7 +170,10 @@ pub async fn build_endpoint_snapshot(
         connectivity_relay_fallback,
         org_ca_pem,
         labels,
-        expires_at: expires_at.map(|t| t.to_rfc3339()),
+        expires_at: expires_at_micros
+            .map(jiff::Timestamp::from_microsecond)
+            .transpose()?
+            .map(|timestamp| timestamp.to_string()),
         version: org_version as u64,
     })
 }

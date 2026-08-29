@@ -490,11 +490,16 @@ fn print_status(
     }
 
     print_service_lines(out, service, agent_running);
+    let mut uptime = String::new();
+    jiff::fmt::friendly::SpanPrinter::new()
+        .print_unsigned_duration(
+            &std::time::Duration::from_secs(node.uptime_secs),
+            &mut uptime,
+        )
+        .expect("formatting a duration into a String cannot fail");
     out.writeln(format!(
         "  uptime     {}  ·  daemon v{}  ·  snap {}",
-        output::format_uptime(node.uptime_secs),
-        node.daemon_version,
-        node.snapshot_version
+        uptime, node.daemon_version, node.snapshot_version
     ));
 
     if let Some(od) = &node.on_demand {
@@ -520,9 +525,17 @@ fn print_control_plane(out: &Output, cp: &tunnet_common::local_api::ControlPlane
     };
     let mut line = format!("  control    {state}  {}", cp.url);
     if let Some(secs) = cp.connected_for_secs {
-        line.push_str(&format!("  ·  up {}", output::format_uptime(secs)));
+        let mut duration = String::new();
+        jiff::fmt::friendly::SpanPrinter::new()
+            .print_unsigned_duration(&std::time::Duration::from_secs(secs), &mut duration)
+            .expect("formatting a duration into a String cannot fail");
+        line.push_str(&format!("  ·  up {duration}"));
     } else if let Some(secs) = cp.last_change_secs_ago {
-        line.push_str(&format!("  ·  {}", output::format_uptime(secs)));
+        let mut duration = String::new();
+        jiff::fmt::friendly::SpanPrinter::new()
+            .print_unsigned_duration(&std::time::Duration::from_secs(secs), &mut duration)
+            .expect("formatting a duration into a String cannot fail");
+        line.push_str(&format!("  ·  {duration}"));
         line.push_str(" ago");
     }
     if cp.reconnects > 0 {
@@ -592,10 +605,11 @@ fn print_network_section(out: &Output, net: &NetworkSummary, peers: Option<&Vec<
         ));
     }
     if let Some(secs) = net.expires_in_secs {
-        out.writeln(format!(
-            "  expiry     {} remaining",
-            output::format_uptime(secs)
-        ));
+        let mut duration = String::new();
+        jiff::fmt::friendly::SpanPrinter::new()
+            .print_unsigned_duration(&std::time::Duration::from_secs(secs), &mut duration)
+            .expect("formatting a duration into a String cannot fail");
+        out.writeln(format!("  expiry     {} remaining", duration));
     }
 
     if let Some(peers) = peers {
@@ -1243,7 +1257,12 @@ async fn stream_inspect_console(out: &Output, inspector_url: &str) -> anyhow::Re
             let path = truncate_path(&row.path, 48);
             out.writeln(format!(
                 "  {} {} {}  {:>5}  {}",
-                out.dim(&short_time(&row.started_at)),
+                out.dim(
+                    &row.started_at
+                        .parse::<jiff::Timestamp>()
+                        .map(|timestamp| timestamp.strftime("%H:%M:%S").to_string())
+                        .unwrap_or_else(|_| row.started_at.clone()),
+                ),
                 out.bold(&method),
                 path,
                 status_painted,
@@ -1262,14 +1281,6 @@ struct InspectLogRow {
     path: String,
     status: u16,
     latency_ms: u64,
-}
-
-fn short_time(rfc3339: &str) -> String {
-    // Prefer HH:MM:SS from an RFC3339 timestamp.
-    if let Some(t) = rfc3339.split('T').nth(1) {
-        return t.chars().take(8).collect();
-    }
-    rfc3339.chars().take(8).collect()
 }
 
 fn truncate_path(path: &str, max: usize) -> String {

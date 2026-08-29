@@ -94,14 +94,8 @@ pub async fn edge_register_handler(
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
     };
 
-    let row: Option<(
-        Uuid,
-        String,
-        String,
-        String,
-        Option<chrono::DateTime<chrono::Utc>>,
-    )> = match sqlx::query_as(
-        "SELECT t.edge_id, e.name, e.domain, e.kind, t.used_at \
+    let row: Option<(Uuid, String, String, String, bool)> = match sqlx::query_as(
+        "SELECT t.edge_id, e.name, e.domain, e.kind, t.used_at IS NOT NULL \
              FROM edge_registration_tokens t \
              JOIN edges e ON e.id = t.edge_id \
              WHERE t.token_hash = $1 AND t.expires_at > now()",
@@ -114,13 +108,13 @@ pub async fn edge_register_handler(
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
     };
 
-    let Some((edge_id, name, domain, kind, used_at)) = row else {
+    let Some((edge_id, name, domain, kind, was_used)) = row else {
         return err(StatusCode::UNAUTHORIZED, "invalid or expired edge token");
     };
 
     // First use claims the token; reconnects with the same token are allowed
     // when the endpoint id matches the stored public_key.
-    if used_at.is_some() {
+    if was_used {
         let existing: Option<String> =
             match sqlx::query_scalar("SELECT public_key FROM edges WHERE id = $1")
                 .bind(edge_id)
@@ -150,7 +144,7 @@ pub async fn edge_register_handler(
         return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}"));
     }
 
-    if used_at.is_none()
+    if !was_used
         && let Err(e) =
             sqlx::query("UPDATE edge_registration_tokens SET used_at = now() WHERE token_hash = $1")
                 .bind(&token_hash)
@@ -857,7 +851,7 @@ pub struct EdgeTrafficLogLine {
     pub request_headers: serde_json::Value,
     #[serde(default)]
     pub response_headers: serde_json::Value,
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Option<jiff::Timestamp>,
     #[serde(default)]
     pub bytes: Option<i64>,
 }
@@ -957,7 +951,8 @@ pub async fn edge_traffic_handler(
                 "INSERT INTO tunnel_request_logs \
                    (tunnel_id, organization_id, method, path, status_code, latency_ms, \
                     source_ip, request_headers, response_headers, created_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, \
+                         to_timestamp($10::double precision / 1000000.0))",
             )
             .bind(tunnel_id)
             .bind(&organization_id)
@@ -968,7 +963,7 @@ pub async fn edge_traffic_handler(
             .bind(line.source_ip.as_deref())
             .bind(&req_headers)
             .bind(&res_headers)
-            .bind(at)
+            .bind(at.as_microsecond())
             .execute(&state.pool)
             .await
         } else {
@@ -997,7 +992,7 @@ pub async fn edge_traffic_handler(
                 if meter_usage {
                     let bytes = line.bytes.unwrap_or(0).max(0);
                     if bytes > 0 {
-                        let month = chrono::Utc::now().format("%Y%m").to_string();
+                        let month = jiff::Timestamp::now().strftime("%Y%m").to_string();
                         let month_i: i32 = month.parse().unwrap_or(0);
                         if let Err(e) = sqlx::query(
                             "INSERT INTO org_usage_monthly \
@@ -1095,7 +1090,7 @@ pub async fn edge_usage_handler(State(state): State<SharedState>, req: Request<B
             .into_response();
     }
 
-    let month = chrono::Utc::now().format("%Y%m").to_string();
+    let month = jiff::Timestamp::now().strftime("%Y%m").to_string();
     let month_i: i32 = month.parse().unwrap_or(0);
     let mut accepted = 0u32;
     for entry in &body.entries {

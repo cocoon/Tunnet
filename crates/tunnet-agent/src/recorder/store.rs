@@ -46,7 +46,7 @@ pub struct RecordingIndexEntry {
     pub byte_size: u64,
     pub sha256_hex: String,
     pub duration_ms: u64,
-    pub started_at: i64,
+    pub started_at: jiff::Timestamp,
 }
 
 impl RecordingStore {
@@ -115,7 +115,7 @@ impl RecordingStore {
         sha256_hex: &str,
         duration_ms: u64,
     ) -> anyhow::Result<()> {
-        let started_at = chrono::Utc::now().timestamp();
+        let started_at = jiff::Timestamp::now();
         let db = self.db.lock().unwrap_or_else(|e| e.into_inner());
         db.execute(
             "INSERT OR REPLACE INTO recordings
@@ -133,7 +133,7 @@ impl RecordingStore {
                 byte_size as i64,
                 sha256_hex,
                 duration_ms as i64,
-                started_at,
+                started_at.as_second(),
             ],
         )?;
         Ok(())
@@ -159,7 +159,13 @@ impl RecordingStore {
                 byte_size: row.get::<_, i64>(7)? as u64,
                 sha256_hex: row.get(8)?,
                 duration_ms: row.get::<_, i64>(9)? as u64,
-                started_at: row.get(10)?,
+                started_at: jiff::Timestamp::from_second(row.get(10)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        10,
+                        rusqlite::types::Type::Integer,
+                        Box::new(error),
+                    )
+                })?,
             })
         })?;
         let mut out = Vec::new();
@@ -189,7 +195,13 @@ impl RecordingStore {
                 byte_size: row.get::<_, i64>(7)? as u64,
                 sha256_hex: row.get(8)?,
                 duration_ms: row.get::<_, i64>(9)? as u64,
-                started_at: row.get(10)?,
+                started_at: jiff::Timestamp::from_second(row.get(10)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        10,
+                        rusqlite::types::Type::Integer,
+                        Box::new(error),
+                    )
+                })?,
             })
         })?;
         Ok(rows.next().transpose()?)
@@ -209,8 +221,7 @@ impl ActiveCastWriter {
         if self.header_written {
             return Ok(());
         }
-        let ts = chrono::Utc::now().timestamp();
-        let line = asciinema_header_line(&self.meta, ts);
+        let line = asciinema_header_line(&self.meta, jiff::Timestamp::now().as_second());
         self.write_line(&line)?;
         self.header_written = true;
         Ok(())

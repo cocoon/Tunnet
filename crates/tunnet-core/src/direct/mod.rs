@@ -81,7 +81,7 @@ pub use policy_docs::{
 };
 #[cfg(feature = "direct")]
 pub use presence::{
-    PRESENCE_PUBLISH_INTERVAL, PRESENCE_TTL_SECS, PresenceBeacon, PresenceConfig, PresenceHandle,
+    PRESENCE_PUBLISH_INTERVAL, PRESENCE_TTL, PresenceBeacon, PresenceConfig, PresenceHandle,
     PresenceTable, build_beacon, sign_beacon, spawn_presence, verify_beacon,
 };
 

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use chrono::Timelike;
 use hmac::{Hmac, KeyInit, Mac};
+use jiff::Timestamp;
 use serde::Serialize;
 use sha2::Sha256;
 
@@ -27,9 +27,9 @@ pub fn canonical_v1(event: &AuditEvent, prev_hash: &str) -> String {
         &event.type_uid.to_string(),
         &event.severity_id.to_string(),
         &event.status_id.to_string(),
-        &event
-            .time
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        &Timestamp::from_second(event.time.as_second())
+            .expect("whole-second audit timestamp")
+            .to_string(),
         &event.message,
         &event.actor.actor_type,
         &event.actor.actor_id,
@@ -79,7 +79,7 @@ pub fn chain_events(
     let mut prev_hash = start_prev_hash.to_string();
     for event in events.iter_mut() {
         // Truncate to whole seconds so DB round-trip matches the canonical string.
-        event.time = event.time.with_nanosecond(0).unwrap_or(event.time);
+        event.time = Timestamp::from_second(event.time.as_second()).unwrap_or(event.time);
         seq += 1;
         event.sequence_number = Some(seq);
         event.prev_entry_hash = Some(prev_hash.clone());
@@ -119,9 +119,7 @@ mod tests {
             },
         );
         e.sequence_number = Some(1);
-        e.time = chrono::DateTime::parse_from_rfc3339("2026-07-20T12:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
+        e.time = "2026-07-20T12:00:00Z".parse().unwrap();
 
         let c1 = canonical_v1(&e, GENESIS_HASH);
         let c2 = canonical_v1(&e, GENESIS_HASH);

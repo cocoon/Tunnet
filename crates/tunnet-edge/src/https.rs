@@ -318,9 +318,11 @@ pub fn cert_valid_until(cert_pem: &str) -> Option<String> {
     let cert = rustls_pemfile::certs(&mut reader).next()?.ok()?;
     let (_, parsed) = x509_parser::parse_x509_certificate(cert.as_ref()).ok()?;
     let not_after = parsed.validity().not_after;
-    // ASN.1 Time → chrono via timestamp when possible.
+    // Convert ASN.1 time through its Unix timestamp when possible.
     let ts = not_after.timestamp();
-    chrono::DateTime::from_timestamp(ts, 0).map(|dt| dt.to_rfc3339())
+    jiff::Timestamp::from_second(ts)
+        .ok()
+        .map(|timestamp| timestamp.to_string())
 }
 
 /// Ephemeral self-signed cert for local/dev when --cert/--key are omitted.

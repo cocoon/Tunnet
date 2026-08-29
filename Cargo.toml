@@ -93,12 +93,11 @@ sqlx = { version = "0.9", features = [
   "tls-rustls-ring",
   "postgres",
   "uuid",
-  "chrono",
   "json",
   "ipnetwork",
 ] }
 uuid = { version = "1", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
+jiff = { version = "0.2", features = ["serde"] }
 ipnet = { version = "2", features = ["serde"] }
 ipnetwork = { version = "0.21", features = ["serde"] }
 netdev = { version = "0.46", default-features = false, features = ["gateway"] }

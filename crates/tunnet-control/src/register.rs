@@ -15,7 +15,7 @@ pub struct RegisterDeviceParams {
     pub device_type: String,
     pub metadata: Option<serde_json::Value>,
     pub labels: Option<HashMap<String, String>>,
-    pub expires_in: Option<String>,
+    pub expires_in: Option<i64>,
     pub public_ip: Option<std::net::IpAddr>,
     /// `"active"` (token/SDK) or `"pending"` (quick enroll).
     pub membership_status: String,
@@ -211,7 +211,7 @@ pub async fn register_device(
 
     sqlx::query(
         "INSERT INTO devices (endpoint_id, organization_id, tenant_ipv6, type, name, metadata, labels, inactivity_ttl, expired_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::interval, NULL) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::bigint * interval '1 second', NULL) \
          ON CONFLICT (endpoint_id) DO UPDATE \
          SET metadata = devices.metadata || EXCLUDED.metadata, \
              type = EXCLUDED.type, \
@@ -221,11 +221,11 @@ pub async fn register_device(
                ELSE EXCLUDED.labels \
              END, \
              inactivity_ttl = CASE \
-               WHEN $8::interval IS NOT NULL THEN $8::interval \
+               WHEN $8::bigint IS NOT NULL THEN $8::bigint * interval '1 second' \
                ELSE devices.inactivity_ttl \
              END, \
              expired_at = CASE \
-               WHEN $8::interval IS NOT NULL THEN NULL \
+               WHEN $8::bigint IS NOT NULL THEN NULL \
                ELSE devices.expired_at \
              END, \
              last_seen = now()",
@@ -237,7 +237,7 @@ pub async fn register_device(
     .bind(&params.hostname)
     .bind(initial_metadata)
     .bind(labels_json)
-    .bind(params.expires_in.as_deref())
+    .bind(params.expires_in)
     .execute(&mut *tx)
     .await
     .map_err(|e| {
@@ -359,7 +359,7 @@ pub async fn register_device(
             "os": params.os,
             "agentVersion": params.agent_version,
             "kind": params.device_type,
-            "reportedAt": chrono::Utc::now().to_rfc3339(),
+            "reportedAt": jiff::Timestamp::now().to_string(),
         })
     });
 

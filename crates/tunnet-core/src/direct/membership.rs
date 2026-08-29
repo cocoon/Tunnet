@@ -18,7 +18,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::Context;
 use arc_swap::ArcSwap;
 use bytes::Bytes;
-use chrono::{DateTime, Duration, Utc};
 use ed25519_dalek::SigningKey;
 use futures_util::StreamExt;
 use iroh::protocol::ProtocolHandler;
@@ -30,6 +29,7 @@ use iroh_docs::protocol::Docs;
 use iroh_docs::store::Query;
 use iroh_docs::{AuthorId, DocTicket, NamespaceId};
 use iroh_gossip::net::Gossip;
+use jiff::{Span, Timestamp};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tunnet_common::DnsConfig;
@@ -57,7 +57,7 @@ pub struct MembershipEntry {
     pub collision_index: u8,
     #[serde(default)]
     pub tags: Vec<String>,
-    pub joined_at: DateTime<Utc>,
+    pub joined_at: Timestamp,
     #[serde(default)]
     pub coordinator: bool,
     #[serde(default = "default_active")]
@@ -441,7 +441,7 @@ impl DocsMembership {
             anyhow::bail!("coordinator signing key not configured");
         };
         let epoch = self.inner.network_epoch.load(Ordering::Relaxed);
-        let now = Utc::now();
+        let now = Timestamp::now();
         sign_grant(
             sk,
             NetworkGrant {
@@ -450,7 +450,7 @@ impl DocsMembership {
                 role,
                 network_epoch: epoch,
                 issued_at: now,
-                expires_at: now + Duration::days(3650),
+                expires_at: now.checked_add(Span::new().days(3650))?,
                 content_key: self.inner.content_key.clone(),
                 sig: String::new(),
             },
@@ -825,7 +825,7 @@ impl DocsMembership {
             );
         } else {
             let pending = crate::direct::policy_docs::PendingSuggestion {
-                received_at: Utc::now().to_rfc3339(),
+                received_at: Timestamp::now(),
                 policy: suggested,
             };
             let json = serde_json::to_vec_pretty(&pending)?;
@@ -891,8 +891,9 @@ impl DocsMembership {
             anyhow::bail!("coordinator signing key not configured");
         };
 
-        let version = Utc::now().timestamp() as u64;
-        let timestamp = Utc::now().to_rfc3339();
+        let now = Timestamp::now();
+        let version = u64::try_from(now.as_second()).unwrap_or_default();
+        let timestamp = now;
         let bundle = sign_policy_bundle(sk, version, timestamp, global, by_hostname)?;
 
         set_str(

@@ -1,5 +1,6 @@
 //! Verify the per-org HMAC hash chain against Postgres.
 
+use jiff::Timestamp;
 use sqlx::{FromRow, PgPool};
 
 use crate::chain::{GENESIS_HASH, canonical_v1, compute_entry_hash};
@@ -11,8 +12,8 @@ pub struct VerifyReport {
     pub events_verified: u64,
     pub first_sequence: Option<i64>,
     pub last_sequence: Option<i64>,
-    pub first_time: Option<chrono::DateTime<chrono::Utc>>,
-    pub last_time: Option<chrono::DateTime<chrono::Utc>>,
+    pub first_time: Option<Timestamp>,
+    pub last_time: Option<Timestamp>,
     pub broken_at: Option<i64>,
     pub error: Option<String>,
 }
@@ -26,7 +27,7 @@ struct AuditVerifyRow {
     type_uid: i32,
     severity_id: i16,
     status_id: i16,
-    time: chrono::DateTime<chrono::Utc>,
+    time_micros: i64,
     message: String,
     actor_type: String,
     actor_id: String,
@@ -49,7 +50,8 @@ pub async fn verify_org_chain(
 ) -> anyhow::Result<VerifyReport> {
     let rows: Vec<AuditVerifyRow> = sqlx::query_as(
         "SELECT sequence_number, category_uid, class_uid, activity_id, type_uid,
-                severity_id, status_id, time, message,
+                severity_id, status_id,
+                (extract(epoch FROM time) * 1000000)::bigint AS time_micros, message,
                 actor_type, actor_id, host(actor_ip) AS actor_ip,
                 target_type, target_id, network_id, group_id, metadata, trace_id,
                 prev_entry_hash, entry_hash, hmac_schema_version
@@ -93,6 +95,7 @@ pub async fn verify_org_chain(
             break;
         }
 
+        let time = Timestamp::from_microsecond(row.time_micros)?;
         let event = AuditEvent {
             category_uid: row.category_uid as u16,
             class_uid: row.class_uid as u16,
@@ -100,7 +103,7 @@ pub async fn verify_org_chain(
             type_uid: row.type_uid as u32,
             severity_id: row.severity_id as u8,
             status_id: row.status_id as u8,
-            time: row.time,
+            time,
             message: row.message.clone(),
             actor: Actor {
                 actor_type: row.actor_type.clone(),
@@ -146,10 +149,10 @@ pub async fn verify_org_chain(
 
         if report.first_sequence.is_none() {
             report.first_sequence = Some(seq);
-            report.first_time = Some(row.time);
+            report.first_time = Some(time);
         }
         report.last_sequence = Some(seq);
-        report.last_time = Some(row.time);
+        report.last_time = Some(time);
         report.events_verified += 1;
         prev_hash = row.entry_hash.clone();
     }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use chrono::Utc;
+use jiff::Timestamp;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tunnet_common::posture::CustomScriptConfig;
@@ -74,7 +74,7 @@ impl PostureRuntime {
                                 let msg = ClientMsg::PostureReport {
                                     full: event.full_snapshot,
                                     attributes: json_map(&attrs),
-                                    collected_at: Utc::now(),
+                                    collected_at: Timestamp::now(),
                                 };
                                 if delta_tx.send(msg).await.is_err() {
                                     break;
@@ -96,7 +96,7 @@ impl PostureRuntime {
                     let msg = ClientMsg::PostureReport {
                         full: event.full_snapshot,
                         attributes: json_map(&attrs),
-                        collected_at: Utc::now(),
+                        collected_at: Timestamp::now(),
                     };
                     if client_tx.send(msg).await.is_err() {
                         tracing::debug!("initial posture report dropped (ws closed)");

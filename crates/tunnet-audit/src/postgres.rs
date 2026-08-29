@@ -69,7 +69,7 @@ impl PostgresPgSink {
                 ) VALUES (
                     $1, $2,
                     $3, $4, $5, $6,
-                    $7, $8, $9, $10,
+                    $7, $8, to_timestamp($9::double precision / 1000000.0), $10,
                     $11, $12, $13, $14, $15::inet, $16,
                     $17, $18, $19,
                     $20, $21, $22, $23, $24, $25,
@@ -84,7 +84,7 @@ impl PostgresPgSink {
             .bind(event.type_uid as i32)
             .bind(event.severity_id as i16)
             .bind(event.status_id as i16)
-            .bind(event.time)
+            .bind(event.time.as_microsecond())
             .bind(&event.message)
             .bind(&event.actor.actor_type)
             .bind(&event.actor.actor_id)

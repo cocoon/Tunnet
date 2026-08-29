@@ -12,13 +12,7 @@ use uuid::Uuid;
 use crate::state::SharedState;
 use crate::token_hash::hash_token;
 
-type RegistrationTokenRow = (
-    Uuid,
-    String,
-    String,
-    Option<chrono::DateTime<chrono::Utc>>,
-    Option<String>,
-);
+type RegistrationTokenRow = (Uuid, String, String, bool, Option<String>);
 
 fn err(code: StatusCode, msg: &str) -> Response {
     (code, Json(json!({ "error": msg }))).into_response()
@@ -102,7 +96,7 @@ pub async fn connectivity_relay_register_handler(
     };
 
     let row: Option<RegistrationTokenRow> = match sqlx::query_as(
-        "SELECT t.relay_id, r.name, r.url, t.used_at, t.organization_id \
+        "SELECT t.relay_id, r.name, r.url, t.used_at IS NOT NULL, t.organization_id \
          FROM relay_registration_tokens t \
          JOIN relays r ON r.id = t.relay_id \
          WHERE t.token_hash = $1 AND t.expires_at > now() \
@@ -116,7 +110,7 @@ pub async fn connectivity_relay_register_handler(
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}")),
     };
 
-    let Some((relay_id, name, _existing_url, used_at, organization_id)) = row else {
+    let Some((relay_id, name, _existing_url, was_used, organization_id)) = row else {
         return err(
             StatusCode::UNAUTHORIZED,
             "invalid or expired relay registration token",
@@ -141,7 +135,7 @@ pub async fn connectivity_relay_register_handler(
         return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("db: {e}"));
     }
 
-    if used_at.is_none()
+    if !was_used
         && let Err(e) = sqlx::query(
             "UPDATE relay_registration_tokens SET used_at = now() WHERE token_hash = $1",
         )
@@ -322,7 +316,7 @@ pub async fn connectivity_relay_usage_handler(
             .into_response();
     }
 
-    let month = chrono::Utc::now().format("%Y%m").to_string();
+    let month = jiff::Timestamp::now().strftime("%Y%m").to_string();
     let month_i: i32 = month.parse().unwrap_or(0);
     let mut accepted = 0u32;
     for entry in &body.entries {

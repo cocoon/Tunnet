@@ -4,7 +4,7 @@ use axum::body::{Body, to_bytes};
 use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use chrono::Utc;
+use jiff::Timestamp;
 use tunnet_common::{HDR_ENDPOINT_ID, HDR_SIGNATURE, HDR_TIMESTAMP, MAX_SKEW_SECS};
 
 use crate::state::SharedState;
@@ -67,7 +67,7 @@ pub async fn authenticate_with_limit(
             AuthError(StatusCode::UNAUTHORIZED, "missing X-Timestamp")
         })?;
 
-    if (Utc::now().timestamp() - ts).abs() > MAX_SKEW_SECS {
+    if (Timestamp::now().as_second() - ts).abs() > MAX_SKEW_SECS {
         state.metrics.auth_failure("stale_ts");
         return Err(AuthError(StatusCode::UNAUTHORIZED, "stale timestamp"));
     }

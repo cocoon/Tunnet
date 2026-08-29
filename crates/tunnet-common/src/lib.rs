@@ -1,5 +1,4 @@
 pub mod agent_policy;
-pub mod duration;
 pub mod edge;
 pub mod ipv6;
 pub mod local_api;

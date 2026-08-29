@@ -536,7 +536,7 @@ async fn register_handler(State(state): State<SharedState>, req: Request<Body>) 
         serde_json::json!({
             "hostname": parsed.hostname,
             "agentVersion": parsed.agent_version,
-            "reportedAt": chrono::Utc::now().to_rfc3339(),
+            "reportedAt": jiff::Timestamp::now().to_string(),
         })
     });
     let pool = state.pool.clone();
@@ -640,7 +640,7 @@ async fn ws_handler(
         None => return err(StatusCode::UNAUTHORIZED, "missing X-Endpoint-Signature"),
     };
 
-    if (chrono::Utc::now().timestamp() - ts).abs() > tunnet_common::MAX_SKEW_SECS {
+    if (jiff::Timestamp::now().as_second() - ts).abs() > tunnet_common::MAX_SKEW_SECS {
         return err(StatusCode::UNAUTHORIZED, "stale timestamp");
     }
     let vk = match tunnet_common::signing::verifying_key_from_hex(&endpoint_id) {

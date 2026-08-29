@@ -31,7 +31,7 @@ where
 
     loop {
         let started = Instant::now();
-        let started_at = chrono::Utc::now().to_rfc3339();
+        let started_at = jiff::Timestamp::now();
 
         let req =
             match read_http_message(&mut relay_recv, &mut relay_buf, MessageKind::Request, None)
@@ -139,7 +139,7 @@ pub async fn replay_exchange(
 
     let raw_req = rebuild_request(exchange);
     let started = Instant::now();
-    let started_at = chrono::Utc::now().to_rfc3339();
+    let started_at = jiff::Timestamp::now();
 
     tcp_write.write_all(&raw_req).await?;
     tcp_write.flush().await.ok();

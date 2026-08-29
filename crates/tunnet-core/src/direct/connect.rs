@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 
 use anyhow::Context;
-use chrono::Utc;
 use iroh::EndpointId;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::direct::contact::{contact_id_from_endpoint, parse_contact_id};
@@ -23,7 +23,7 @@ pub struct ConnectPending {
     pub contact_id: String,
     pub endpoint_id: String,
     pub hostname: String,
-    pub received_at: String,
+    pub received_at: Timestamp,
 }
 
 fn load_allowlist(state: &LocalApiState) -> anyhow::Result<HashSet<String>> {
@@ -211,7 +211,7 @@ pub fn list_pending(state: &LocalApiState) -> anyhow::Result<Vec<DirectConnectPe
             contact_id: p.contact_id,
             endpoint_id: p.endpoint_id,
             hostname: p.hostname,
-            received_at: p.received_at,
+            received_at: p.received_at.to_string(),
         })
         .collect())
 }
@@ -354,7 +354,7 @@ pub async fn handle_inbound_connect(
         contact_id: contact_id.clone(),
         endpoint_id,
         hostname,
-        received_at: Utc::now().to_rfc3339(),
+        received_at: Timestamp::now(),
     });
     let _ = std::fs::write(&pending_path, serde_json::to_vec_pretty(&list)?);
 
