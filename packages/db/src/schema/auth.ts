@@ -8,6 +8,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 const textArray = (name: string) => text(name).array();
@@ -120,6 +121,7 @@ export const account = pgTable(
   "account",
   {
     id: text("id").primaryKey(),
+    issuer: text("issuer").notNull(),
     accountId: text("account_id").notNull(),
     providerId: text("provider_id").notNull(),
     userId: text("user_id")
@@ -143,7 +145,13 @@ export const account = pgTable(
       .$onUpdate(() => new Date())
       .notNull(),
   },
-  (table) => [index("account_user_id_idx").on(table.userId)],
+  (table) => [
+    index("account_user_id_idx").on(table.userId),
+    uniqueIndex("account_issuer_account_id_uidx").on(
+      table.issuer,
+      table.accountId,
+    ),
+  ],
 );
 
 export const verification = pgTable(
@@ -403,7 +411,7 @@ export const deviceCode = pgTable(
     pollingInterval: integer("polling_interval"),
   },
   (table) => [
-    index("device_code_device_code_idx").on(table.deviceCode),
-    index("device_code_user_code_idx").on(table.userCode),
+    uniqueIndex("device_code_device_code_uidx").on(table.deviceCode),
+    uniqueIndex("device_code_user_code_uidx").on(table.userCode),
   ],
 );

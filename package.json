@@ -34,7 +34,7 @@
     "vitepress": "^2.0.0-alpha.19"
   },
   "dependencies": {
-    "ip-address": "^10.5.0",
-    "zod": "^4.4.3"
+    "ip-address": "^10.7.0",
+    "zod": "^4.5.3"
   }
 }

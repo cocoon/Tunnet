@@ -279,11 +279,12 @@ function buildAuth(license: LicenseManager) {
     enabled: stripeEnabled,
   });
 
-  const stripeClient = stripeEnabled
-    ? new Stripe(stripeSecret!, {
-        apiVersion: "2026-07-29.dahlia",
-      })
-    : null;
+  const stripeClient =
+    stripeEnabled && stripeSecret
+      ? new Stripe(stripeSecret, {
+          apiVersion: "2026-08-26.dahlia",
+        })
+      : null;
 
   const authBeforeHook = createAuthMiddleware(async (ctx) => {
     if (ctx.path === "/organization/delete") {
@@ -344,6 +345,9 @@ function buildAuth(license: LicenseManager) {
     appName: "Tunnet Management",
     baseURL: getManagementUrl(),
     advanced: {
+      database: {
+        joins: true,
+      },
       ...(sharedCookieDomain
         ? {
             crossSubDomainCookies: {
@@ -356,6 +360,7 @@ function buildAuth(license: LicenseManager) {
     },
     database: drizzleAdapter(db, {
       provider: "pg",
+      transaction: true,
       schema: {
         user: schema.user,
         session: schema.session,
@@ -375,8 +380,8 @@ function buildAuth(license: LicenseManager) {
         ...(stripeEnabled ? { subscription: schema.subscription } : {}),
       },
     }),
-    experimental: {
-      joins: true,
+    account: {
+      identityStrategy: "provider-id",
     },
     emailAndPassword: {
       enabled: true,
@@ -549,11 +554,11 @@ function buildAuth(license: LicenseManager) {
           },
         },
       }),
-      ...(stripeEnabled && stripeClient
+      ...(stripeEnabled && stripeClient && stripeWebhookSecret
         ? [
             stripe({
               stripeClient,
-              stripeWebhookSecret: stripeWebhookSecret!,
+              stripeWebhookSecret,
               createCustomerOnSignUp: false,
               organization: { enabled: true },
               subscription: {
@@ -605,9 +610,6 @@ function buildAuth(license: LicenseManager) {
         cachedTrustedClients: TRUSTED_OAUTH_CLIENT_IDS,
         clientReference: ({ session }) =>
           (session?.activeOrganizationId as string | undefined) ?? undefined,
-        silenceWarnings: {
-          oauthAuthServerConfig: true,
-        },
       }),
     ],
   });

@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@tunnet/ip": "workspace:*",
-    "better-auth": "^1.6.23",
+    "better-auth": "^1.7.2",
     "parse-duration": "^2.1.8",
     "zod": "^4.4.3"
   }
