@@ -4,33 +4,26 @@ use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use anyhow::{Context, bail};
 use base64::Engine;
-use sha2::{Digest, Sha256};
 
 /// Resolve the AES-256 key used for CA PEM encryption at rest.
 ///
-/// Matches management: 64-char hex, 32-byte base64, or sha256(`tunnet-dev-ca-key`) fallback.
-pub fn resolve_ca_key(raw: Option<&str>) -> [u8; 32] {
-    if let Some(raw) = raw {
-        if raw.len() == 64 && raw.chars().all(|c| c.is_ascii_hexdigit()) {
-            let mut out = [0u8; 32];
-            if hex::decode_to_slice(raw, &mut out).is_ok() {
-                return out;
-            }
+/// Matches management: 64-char hex or 32-byte base64.
+pub fn resolve_ca_key(raw: Option<&str>) -> anyhow::Result<[u8; 32]> {
+    let raw = raw.context("TUNNET_CA_ENCRYPTION_KEY is required to decrypt CA private keys")?;
+    if raw.len() == 64 && raw.chars().all(|c| c.is_ascii_hexdigit()) {
+        let mut out = [0u8; 32];
+        if hex::decode_to_slice(raw, &mut out).is_ok() {
+            return Ok(out);
         }
-        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw)
-            && bytes.len() == 32
-        {
-            let mut out = [0u8; 32];
-            out.copy_from_slice(&bytes);
-            return out;
-        }
-        tracing::warn!("TUNNET_CA_ENCRYPTION_KEY invalid - using insecure local-dev CA key");
-    } else {
-        tracing::warn!("TUNNET_CA_ENCRYPTION_KEY unset - using insecure local-dev CA key");
     }
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&Sha256::digest(b"tunnet-dev-ca-key"));
-    out
+    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw)
+        && bytes.len() == 32
+    {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&bytes);
+        return Ok(out);
+    }
+    bail!("TUNNET_CA_ENCRYPTION_KEY must be 32-byte hex (64 chars) or base64")
 }
 
 /// Decrypt a blob produced by management `encryptPem`: base64(iv‖tag‖ciphertext).
@@ -58,4 +51,24 @@ pub fn decrypt_pem(key: &[u8; 32], blob: &str) -> anyhow::Result<String> {
         .decrypt(&nonce, sealed.as_ref())
         .map_err(|_| anyhow::anyhow!("AES-GCM decrypt failed (wrong CA key?)"))?;
     String::from_utf8(plain).context("decrypted PEM is not utf8")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ca_key_is_required() {
+        assert!(resolve_ca_key(None).is_err());
+        assert!(resolve_ca_key(Some("not-a-key")).is_err());
+    }
+
+    #[test]
+    fn ca_key_accepts_hex_and_base64() {
+        let expected = [7u8; 32];
+        let hex = hex::encode(expected);
+        let base64 = base64::engine::general_purpose::STANDARD.encode(expected);
+        assert_eq!(resolve_ca_key(Some(&hex)).unwrap(), expected);
+        assert_eq!(resolve_ca_key(Some(&base64)).unwrap(), expected);
+    }
 }

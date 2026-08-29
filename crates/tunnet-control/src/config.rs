@@ -20,7 +20,7 @@ pub struct Args {
     pub service_secret: Option<SecretString>,
 
     /// AES-256 key for decrypting internal-CA leaf private keys (same as management).
-    /// 64-char hex or 32-byte base64. Falls back to insecure local-dev key when unset.
+    /// 64-char hex or 32-byte base64. Required when encrypted CA keys are used.
     #[arg(long, env = "TUNNET_CA_ENCRYPTION_KEY")]
     pub ca_encryption_key: Option<String>,
 

@@ -16,9 +16,15 @@ pub async fn replay_endpoint_workloads(state: &SharedState, endpoint_id: &str) {
     if let Err(e) = replay_tunnels(&state.pool, &state.ws_hub, endpoint_id).await {
         tracing::warn!(?e, %endpoint_id, "tunnel replay on reconnect failed");
     }
-    let ca_key = ca_crypto::resolve_ca_key(state.args.ca_encryption_key.as_deref());
-    if let Err(e) = replay_serves(&state.pool, &state.ws_hub, endpoint_id, &ca_key).await {
-        tracing::warn!(?e, %endpoint_id, "serve replay on reconnect failed");
+    match ca_crypto::resolve_ca_key(state.args.ca_encryption_key.as_deref()) {
+        Ok(ca_key) => {
+            if let Err(e) = replay_serves(&state.pool, &state.ws_hub, endpoint_id, &ca_key).await {
+                tracing::warn!(?e, %endpoint_id, "serve replay on reconnect failed");
+            }
+        }
+        Err(e) => {
+            tracing::error!(?e, %endpoint_id, "serve replay disabled: CA encryption key unavailable");
+        }
     }
 }
 

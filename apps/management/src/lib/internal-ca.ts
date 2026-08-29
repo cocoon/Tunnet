@@ -3,18 +3,12 @@
  *
  * Root CA PEM is public (distributed in snapshots). Private keys are encrypted
  * at rest with AES-256-GCM using TUNNET_CA_ENCRYPTION_KEY (32-byte hex or
- * base64). Without that env var, a derived key from a warning-level fallback
- * is used so local dev still works - never use that in production.
+ * base64). The key is mandatory; there is no recoverable development fallback.
  */
 
 import "reflect-metadata";
 
-import {
-  createCipheriv,
-  createDecipheriv,
-  createHash,
-  randomBytes,
-} from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import * as x509 from "@peculiar/x509";
 import { schema } from "@tunnet/db";
 import { and, eq, isNull } from "drizzle-orm";
@@ -40,10 +34,7 @@ function encryptionKey(): Buffer {
       "TUNNET_CA_ENCRYPTION_KEY must be 32-byte hex (64 chars) or base64",
     );
   }
-  console.warn(
-    "TUNNET_CA_ENCRYPTION_KEY unset - using insecure local-dev CA key",
-  );
-  return createHash("sha256").update("tunnet-dev-ca-key").digest();
+  throw new Error("TUNNET_CA_ENCRYPTION_KEY is required to encrypt CA keys");
 }
 
 export function encryptPem(pem: string): string {
