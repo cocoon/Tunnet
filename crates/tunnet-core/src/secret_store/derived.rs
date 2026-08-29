@@ -30,9 +30,9 @@ pub fn derive_wrap_key(salt: &[u8]) -> anyhow::Result<[u8; 32]> {
     expand.update(&[0x01]);
     let okm = expand.finalize().into_bytes();
 
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&okm);
-    Ok(out)
+    okm.as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("derived key must be 32 bytes"))
 }
 
 fn read_machine_id() -> anyhow::Result<String> {

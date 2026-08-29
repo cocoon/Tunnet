@@ -10,18 +10,19 @@ use base64::Engine;
 /// Matches management: 64-char hex or 32-byte base64.
 pub fn resolve_ca_key(raw: Option<&str>) -> anyhow::Result<[u8; 32]> {
     let raw = raw.context("TUNNET_CA_ENCRYPTION_KEY is required to decrypt CA private keys")?;
-    if raw.len() == 64 && raw.chars().all(|c| c.is_ascii_hexdigit()) {
-        let mut out = [0u8; 32];
-        if hex::decode_to_slice(raw, &mut out).is_ok() {
-            return Ok(out);
-        }
+    if raw.len() == 64
+        && raw.chars().all(|c| c.is_ascii_hexdigit())
+        && let Ok(bytes) = hex::decode(raw)
+        && let Ok(key) = bytes.try_into()
+    {
+        return Ok(key);
     }
     if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw)
         && bytes.len() == 32
     {
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&bytes);
-        return Ok(out);
+        return bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("CA key must be 32 bytes"));
     }
     bail!("TUNNET_CA_ENCRYPTION_KEY must be 32-byte hex (64 chars) or base64")
 }

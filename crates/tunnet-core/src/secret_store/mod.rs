@@ -270,12 +270,13 @@ pub fn load_secrets(paths: &StatePaths) -> anyhow::Result<(AgentSecrets, SealTie
     if seed.len() != 32 {
         bail!("identity seed must be 32 bytes");
     }
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&seed);
+    let identity_seed = seed
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("identity seed must be 32 bytes"))?;
 
     Ok((
         AgentSecrets {
-            identity_seed: arr,
+            identity_seed,
             networks: payload.networks,
             auth: payload.auth,
         },
@@ -323,9 +324,8 @@ fn decode_dek32(hex_str: &str) -> anyhow::Result<[u8; 32]> {
     if v.len() != 32 {
         bail!("dek must be 32 bytes");
     }
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&v);
-    Ok(out)
+    v.try_into()
+        .map_err(|_| anyhow::anyhow!("dek must be 32 bytes"))
 }
 
 fn wrap_dek(wrap_key: &[u8; 32], dek: &[u8]) -> anyhow::Result<Vec<u8>> {
@@ -354,9 +354,9 @@ fn unwrap_dek(wrap_key: &[u8; 32], wrapped: &[u8]) -> anyhow::Result<[u8; 32]> {
     if plain.len() != 32 {
         bail!("unwrapped DEK wrong length");
     }
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&plain);
-    Ok(out)
+    plain
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("unwrapped DEK wrong length"))
 }
 
 fn random_salt() -> [u8; 16] {
