@@ -1,6 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import type { PlanId } from "@tunnet/api/billing";
 import {
   Avatar,
@@ -42,7 +41,10 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { PageHeader } from "@/components/app/page-header";
 import { PageToolbar } from "@/components/app/page-toolbar";
@@ -175,7 +177,7 @@ function UsersPage() {
     });
   }, [invitations, search]);
 
-  const memberColumns = useMemo<ColumnDef<Member>[]>(
+  const memberColumns = useMemo<DataTableColumnDef<Member>[]>(
     () => [
       {
         id: "user",
@@ -264,14 +266,14 @@ function UsersPage() {
                   </DropdownMenuContent>
                 </DropdownMenu>
               ),
-            } satisfies ColumnDef<Member>,
+            } satisfies DataTableColumnDef<Member>,
           ]
         : []),
     ],
     [canManage],
   );
 
-  const invitationColumns = useMemo<ColumnDef<Invitation>[]>(
+  const invitationColumns = useMemo<DataTableColumnDef<Invitation>[]>(
     () => [
       {
         id: "user",
@@ -338,7 +340,7 @@ function UsersPage() {
                   </DropdownMenuContent>
                 </DropdownMenu>
               ),
-            } satisfies ColumnDef<Invitation>,
+            } satisfies DataTableColumnDef<Invitation>,
           ]
         : []),
     ],
@@ -407,7 +409,7 @@ function UsersPage() {
           canManage ? (
             <div className="flex items-center gap-2">
               {cloudInvites ? (
-                inviteLocked ? (
+                inviteBlock === "no_invites" ? null : inviteLocked ? (
                   <div className="flex flex-col items-end gap-1.5 sm:flex-row sm:items-center sm:gap-2">
                     <Button type="button" disabled>
                       <MailIcon className="mr-2 size-4" />
@@ -707,7 +709,7 @@ function InviteDialog({
                 id="invite-email"
                 type="email"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={setEmail}
                 required
               />
             </div>
@@ -815,7 +817,7 @@ function CreateUserDialog({
               <Input
                 id="create-name"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={setName}
                 required
               />
             </div>
@@ -825,7 +827,7 @@ function CreateUserDialog({
                 id="create-email"
                 type="email"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={setEmail}
                 required
               />
             </div>
@@ -835,7 +837,7 @@ function CreateUserDialog({
                 id="create-password"
                 type="password"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={setPassword}
                 required
                 minLength={8}
                 autoComplete="new-password"

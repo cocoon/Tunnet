@@ -83,7 +83,7 @@ export function DefinitionFormSheet({
             <Input
               id="posture-name"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={setName}
               disabled={Boolean(editing)}
               placeholder="secure-workstation"
             />
@@ -98,7 +98,7 @@ export function DefinitionFormSheet({
             <Input
               id="posture-description"
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={setDescription}
               placeholder="Requires encryption and firewall"
             />
           </div>

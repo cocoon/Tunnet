@@ -96,8 +96,8 @@ export function PortsInput({
         disabled={disabled}
         placeholder="80, 443, 8000-9000, or * for any"
         aria-invalid={Boolean(showError)}
-        onChange={(e) => {
-          const next = e.target.value;
+        onChange={(value) => {
+          const next = value;
           setText(next);
           setTouched(true);
           const result = parsePortsInput(next);

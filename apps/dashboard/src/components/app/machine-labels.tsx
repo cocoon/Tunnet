@@ -89,12 +89,10 @@ export function MachineLabelsEditor({
                   className="font-mono text-sm"
                   placeholder="env"
                   value={row.key}
-                  onChange={(e) => {
+                  onChange={(value) => {
                     setRows((current) =>
                       current.map((item) =>
-                        item.id === row.id
-                          ? { ...item, key: e.target.value }
-                          : item,
+                        item.id === row.id ? { ...item, key: value } : item,
                       ),
                     );
                   }}
@@ -103,12 +101,10 @@ export function MachineLabelsEditor({
                   className="font-mono text-sm"
                   placeholder="production"
                   value={row.value}
-                  onChange={(e) => {
+                  onChange={(value) => {
                     setRows((current) =>
                       current.map((item) =>
-                        item.id === row.id
-                          ? { ...item, value: e.target.value }
-                          : item,
+                        item.id === row.id ? { ...item, value: value } : item,
                       ),
                     );
                   }}
@@ -268,7 +264,7 @@ export function MachineExpiryDialog({
             id="machine-expiry"
             placeholder="7d, 12h, 50s, or never"
             value={value}
-            onChange={(e) => setValue(e.target.value)}
+            onChange={setValue}
             className="font-mono"
           />
           <p className="text-muted-foreground text-xs leading-relaxed">

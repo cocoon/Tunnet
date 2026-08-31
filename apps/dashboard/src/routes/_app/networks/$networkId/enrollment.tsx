@@ -1,6 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import type { EnrollmentToken } from "@tunnet/api/management";
 import { Button } from "@tunnet/ui/components/button";
 import { Skeleton } from "@tunnet/ui/components/skeleton";
@@ -9,7 +8,10 @@ import { PlusIcon, TrashIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { EnrollmentTokenDialog } from "@/components/app/enrollment-token-dialog";
 import { useCan } from "@/hooks/use-permission";
@@ -33,7 +35,7 @@ function NetworkEnrollmentPage() {
   const [revokeHash, setRevokeHash] = useState<string | null>(null);
   const [revoking, setRevoking] = useState(false);
 
-  const columns = useMemo<ColumnDef<EnrollmentToken>[]>(
+  const columns = useMemo<DataTableColumnDef<EnrollmentToken>[]>(
     () => [
       {
         id: "tokenHash",
@@ -81,7 +83,7 @@ function NetworkEnrollmentPage() {
                   <TrashIcon className="size-4" />
                 </Button>
               ),
-            } satisfies ColumnDef<EnrollmentToken>,
+            } satisfies DataTableColumnDef<EnrollmentToken>,
           ]
         : []),
     ],

@@ -542,16 +542,14 @@ function MachineDetailPage() {
 
       <Tabs
         value={tab}
+        variant="underline"
         onValueChange={(v) => {
           if (v) setTab(v);
         }}
         className="gap-5"
       >
         <div className="border-b border-border/70">
-          <TabsList
-            variant="line"
-            className="h-auto w-full justify-start gap-0 overflow-x-auto overflow-y-hidden rounded-none bg-transparent p-0"
-          >
+          <TabsList className="h-auto w-full justify-start gap-0 overflow-x-auto overflow-y-hidden rounded-none bg-transparent p-0">
             <TabsTrigger value="overview" className="rounded-none px-3">
               Overview
             </TabsTrigger>
@@ -1014,7 +1012,7 @@ function MachineDetailPage() {
                   <Input
                     id="machine-name"
                     value={nameDraft}
-                    onChange={(e) => setNameDraft(e.target.value)}
+                    onChange={setNameDraft}
                     maxLength={253}
                     placeholder={device.metadata.hostname}
                   />

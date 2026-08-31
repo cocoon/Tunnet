@@ -1,6 +1,7 @@
 import type { Network, RemoteAgentPolicy } from "@tunnet/api/management";
 import { inheritRemoteAgentPolicy } from "@tunnet/api/management";
 import { Button } from "@tunnet/ui/components/button";
+import { Checkbox } from "@tunnet/ui/components/checkbox";
 import { Input } from "@tunnet/ui/components/input";
 import { Label } from "@tunnet/ui/components/label";
 import {
@@ -73,16 +74,13 @@ function PolicyToggle({
           disabled={disabled || !override}
         />
       </div>
-      <label className="flex items-center gap-2 text-xs">
-        <input
-          type="checkbox"
-          checked={override}
-          onChange={(e) => onOverrideChange(e.target.checked)}
-          disabled={disabled}
-          className="size-3.5 rounded border-border"
-        />
-        Override org default
-      </label>
+      <Checkbox
+        checked={override}
+        onCheckedChange={onOverrideChange}
+        disabled={disabled}
+        label="Override org default"
+        className="text-xs"
+      />
     </div>
   );
 }
@@ -245,16 +243,13 @@ export function NetworkAgentPolicyTab({
                 : "default"
             }
           />
-          <label className="flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
-              checked={mtuOverride}
-              onChange={(e) => setMtuOverride(e.target.checked)}
-              disabled={!canUpdate}
-              className="size-3.5 rounded border-border"
-            />
-            Override org default
-          </label>
+          <Checkbox
+            checked={mtuOverride}
+            onCheckedChange={setMtuOverride}
+            disabled={!canUpdate}
+            label="Override org default"
+            className="text-xs"
+          />
           <Input
             id="network-mtu"
             type="number"
@@ -262,7 +257,7 @@ export function NetworkAgentPolicyTab({
             max={9000}
             placeholder="Org default"
             value={tunnelMtu}
-            onChange={(e) => setTunnelMtu(e.target.value)}
+            onChange={setTunnelMtu}
             disabled={!canUpdate || !mtuOverride}
             className="max-w-xs"
           />
@@ -291,16 +286,13 @@ export function NetworkAgentPolicyTab({
             label="Relay policy"
             value={formatRelayPolicy(orgPolicy.relay?.policy)}
           />
-          <label className="flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
-              checked={relayOverride}
-              onChange={(e) => setRelayOverride(e.target.checked)}
-              disabled={!canUpdate}
-              className="size-3.5 rounded border-border"
-            />
-            Override org default
-          </label>
+          <Checkbox
+            checked={relayOverride}
+            onCheckedChange={setRelayOverride}
+            disabled={!canUpdate}
+            label="Override org default"
+            className="text-xs"
+          />
           <Select
             value={relayPolicy}
             onValueChange={(v) =>

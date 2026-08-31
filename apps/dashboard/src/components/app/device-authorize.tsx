@@ -158,7 +158,7 @@ export function AuthorizeCliDialog({
                 <Input
                   id="cli-user-code"
                   value={userCode}
-                  onChange={(e) => setUserCode(e.target.value)}
+                  onChange={setUserCode}
                   placeholder="ABCD-1234"
                   autoComplete="one-time-code"
                   autoFocus

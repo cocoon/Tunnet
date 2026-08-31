@@ -1,68 +1,257 @@
 "use client";
+// beui.dev/components/motion/input
 
-import { Input as InputPrimitive } from "@base-ui/react/input";
-import type * as React from "react";
+import {
+  AnimatePresence,
+  animate,
+  motion,
+  useReducedMotion,
+} from "motion/react";
+import { Eye, EyeOff } from "lucide-react";
+import {
+  forwardRef,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type InputHTMLAttributes,
+  type ReactNode,
+} from "react";
 import { cn } from "#lib/utils";
 
-export type InputProps = Omit<
-  InputPrimitive.Props & React.RefAttributes<HTMLInputElement>,
-  "size"
-> & {
-  size?: "sm" | "default" | "lg" | number;
-  unstyled?: boolean;
-  nativeInput?: boolean;
+export type InputClassNames = {
+  root?: string;
+  label?: string;
+  field?: string;
+  input?: string;
+  leftIcon?: string;
+  rightIcon?: string;
+  successIcon?: string;
+  errorMessage?: string;
 };
 
-export function Input({
-  className,
-  size = "default",
-  unstyled = false,
-  nativeInput = false,
-  style,
-  ...props
-}: InputProps): React.ReactElement {
-  const inputClassName = cn(
-    "h-8.5 w-full min-w-0 rounded-[inherit] px-[calc(--spacing(3)-1px)] leading-8.5 outline-none [transition:background-color_5000000s_ease-in-out_0s] placeholder:text-muted-foreground/72 sm:h-7.5 sm:leading-7.5",
-    size === "sm" &&
-      "h-7.5 px-[calc(--spacing(2.5)-1px)] leading-7.5 sm:h-6.5 sm:leading-6.5",
-    size === "lg" && "h-9.5 leading-9.5 sm:h-8.5 sm:leading-8.5",
-    props.type === "search" &&
-      "[&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none [&::-webkit-search-results-button]:appearance-none [&::-webkit-search-results-decoration]:appearance-none",
-    props.type === "file" &&
-      "text-muted-foreground file:me-3 file:bg-transparent file:font-medium file:text-foreground file:text-sm",
-  );
-
-  return (
-    <span
-      className={
-        cn(
-          !unstyled &&
-            "relative inline-flex w-full rounded-lg border border-input bg-background not-dark:bg-clip-padding text-base text-foreground shadow-xs/5 ring-ring/24 transition-shadow before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] not-has-disabled:not-has-focus-visible:not-has-aria-invalid:before:shadow-[0_1px_--theme(--color-black/4%)] has-focus-visible:has-aria-invalid:border-destructive/64 has-focus-visible:has-aria-invalid:ring-destructive/16 has-aria-invalid:border-destructive/36 has-focus-visible:border-ring has-autofill:bg-foreground/4 has-disabled:opacity-64 has-[:disabled,:focus-visible,[aria-invalid]]:shadow-none has-focus-visible:ring-[3px] sm:text-sm dark:bg-input/32 dark:has-autofill:bg-foreground/8 dark:has-aria-invalid:ring-destructive/24 dark:not-has-disabled:not-has-focus-visible:not-has-aria-invalid:before:shadow-[0_-1px_--theme(--color-white/6%)]",
-          className,
-        ) || undefined
-      }
-      data-size={size}
-      data-slot="input-control"
-    >
-      {nativeInput ? (
-        <input
-          className={inputClassName}
-          data-slot="input"
-          size={typeof size === "number" ? size : undefined}
-          style={typeof style === "function" ? undefined : style}
-          {...props}
-        />
-      ) : (
-        <InputPrimitive
-          className={inputClassName}
-          data-slot="input"
-          size={typeof size === "number" ? size : undefined}
-          style={style}
-          {...props}
-        />
-      )}
-    </span>
-  );
+export interface InputProps extends Omit<
+  InputHTMLAttributes<HTMLInputElement>,
+  "value" | "defaultValue" | "onChange"
+> {
+  label?: string;
+  value?: string;
+  defaultValue?: string;
+  onChange?: (value: string) => void;
+  /** Truthy error triggers a shake, red border and (if a string) a message. */
+  error?: string | boolean;
+  /** Reserve one message line so validation does not shift nearby content. */
+  reserveErrorLine?: boolean;
+  success?: boolean;
+  leftIcon?: ReactNode;
+  rightIcon?: ReactNode;
+  className?: string;
+  classNames?: InputClassNames;
 }
 
-export { InputPrimitive };
+export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
+  {
+    label,
+    value: valueProp,
+    defaultValue,
+    onChange,
+    onFocus,
+    onBlur,
+    error,
+    reserveErrorLine = false,
+    success,
+    leftIcon,
+    rightIcon,
+    className,
+    classNames,
+    disabled,
+    id: idProp,
+    type,
+    ...rest
+  },
+  ref,
+) {
+  const reactId = useId();
+  const id = idProp ?? reactId;
+  const reduce = useReducedMotion();
+
+  const controlled = valueProp !== undefined;
+  const [internal, setInternal] = useState(defaultValue ?? "");
+  const value = controlled ? (valueProp ?? "") : internal;
+
+  const [focused, setFocused] = useState(false);
+  const [passwordVisible, setPasswordVisible] = useState(false);
+
+  const fieldRef = useRef<HTMLDivElement>(null);
+
+  const hasError = Boolean(error);
+  const errorMessage = typeof error === "string" ? error : null;
+
+  const passwordToggle = type === "password" ? (
+    <button
+      type="button"
+      aria-label={passwordVisible ? "Hide password" : "Show password"}
+      onClick={() => setPasswordVisible((visible) => !visible)}
+      className="pointer-events-auto rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+    >
+      {passwordVisible ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+    </button>
+  ) : null;
+
+  // Right edge shows the success check, otherwise the caller's icon or the
+  // built-in password visibility control.
+  const rightSlot = success ? null : rightIcon ?? passwordToggle;
+
+  // Shake the field when an error appears.
+  useEffect(() => {
+    if (!fieldRef.current || reduce || !hasError) return;
+    animate(
+      fieldRef.current,
+      { x: [0, -6, 6, -4, 4, -2, 0] },
+      { duration: 0.45 },
+    );
+  }, [hasError, reduce]);
+
+  const handleChange = (next: string) => {
+    if (!controlled) setInternal(next);
+    onChange?.(next);
+  };
+
+  return (
+    <div
+      className={cn("flex flex-col gap-1.5", className, classNames?.root)}
+    >
+      {label ? (
+        <label
+          htmlFor={id}
+          className={cn(
+            "px-1 text-sm font-medium text-foreground",
+            classNames?.label,
+          )}
+        >
+          {label}
+        </label>
+      ) : null}
+
+      <div
+        ref={fieldRef}
+        data-state={
+          hasError
+            ? "error"
+            : success
+              ? "success"
+              : focused
+                ? "focused"
+                : "idle"
+        }
+        className={cn(
+      "relative h-10 overflow-hidden rounded-full border transition-colors duration-200",
+          "border-border",
+          focused && !hasError && "border-foreground/40 ring-2 ring-ring/40",
+          hasError && "border-destructive ring-2 ring-destructive/25",
+          disabled && "opacity-60",
+          classNames?.field,
+        )}
+      >
+        {leftIcon ? (
+          <span
+            className={cn(
+              "pointer-events-none absolute left-3 top-1/2 flex -translate-y-1/2 items-center text-muted-foreground [&_svg]:h-4 [&_svg]:w-4",
+              classNames?.leftIcon,
+            )}
+          >
+            {leftIcon}
+          </span>
+        ) : null}
+
+        <input
+          ref={ref}
+          id={id}
+          type={type === "password" && passwordVisible ? "text" : type}
+          value={value}
+          disabled={disabled}
+          aria-invalid={hasError || undefined}
+          aria-describedby={errorMessage ? `${id}-error` : undefined}
+          {...rest}
+          onChange={(e) => handleChange(e.target.value)}
+          onFocus={(event) => {
+            setFocused(true);
+            onFocus?.(event);
+          }}
+          onBlur={(event) => {
+            setFocused(false);
+            onBlur?.(event);
+          }}
+          className={cn(
+            "peer h-full w-full bg-transparent text-sm leading-5 text-foreground caret-foreground outline-none",
+            "placeholder:text-muted-foreground/60",
+            leftIcon ? "pl-10" : "pl-3.5",
+            rightSlot || success ? "pr-10" : "pr-3.5",
+            disabled && "cursor-not-allowed",
+            classNames?.input,
+          )}
+        />
+
+        {success ? (
+          <motion.svg
+            viewBox="0 0 24 24"
+            fill="none"
+            className={cn(
+              "absolute right-3.5 top-1/2 h-5 w-5 -translate-y-1/2 text-(--color-success)",
+              classNames?.successIcon,
+            )}
+          >
+            <motion.path
+              d="M5 12.5l4.5 4.5L19 7.5"
+              stroke="currentColor"
+              strokeWidth={2.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              initial={reduce ? { pathLength: 1 } : { pathLength: 0 }}
+              animate={{ pathLength: 1 }}
+              transition={{ duration: 0.35, ease: "easeOut" }}
+            />
+          </motion.svg>
+        ) : rightSlot ? (
+          <span
+            className={cn(
+              "absolute right-0 top-0 flex h-full items-center text-muted-foreground [&_button]:grid [&_button]:size-10 [&_button]:place-items-center [&_svg]:h-4 [&_svg]:w-4",
+              classNames?.rightIcon,
+            )}
+          >
+            {rightSlot}
+          </span>
+        ) : null}
+      </div>
+
+      <div className={reserveErrorLine ? "min-h-4" : "contents"}>
+        <AnimatePresence initial={false}>
+          {errorMessage ? (
+            <motion.p
+              id={`${id}-error`}
+              role="alert"
+              initial={
+                reduce
+                  ? { opacity: 0 }
+                  : { opacity: 0, y: -4, filter: "blur(4px)" }
+              }
+              animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+              exit={
+                reduce
+                  ? { opacity: 0 }
+                  : { opacity: 0, y: -4, filter: "blur(4px)" }
+              }
+              transition={{ duration: 0.2 }}
+              className={cn(
+                "px-1 text-xs text-destructive",
+                classNames?.errorMessage,
+              )}
+            >
+              {errorMessage}
+            </motion.p>
+          ) : null}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+});

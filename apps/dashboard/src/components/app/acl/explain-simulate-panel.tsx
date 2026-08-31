@@ -266,7 +266,7 @@ export function ExplainSimulatePanel({
             max={65535}
             value={port}
             disabled={protocol === "icmp"}
-            onChange={(e) => setPort(e.target.value)}
+            onChange={setPort}
           />
         </div>
       </div>

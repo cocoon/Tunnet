@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import type { ColumnDef, RowSelectionState } from "@tanstack/react-table";
+import type { RowSelectionState } from "@tanstack/react-table";
 import { Button } from "@tunnet/ui/components/button";
 import {
   DropdownMenu,
@@ -24,7 +24,10 @@ import { AddMachinePanel } from "@/components/app/add-machine-panel";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { CreateServeDialog } from "@/components/app/create-serve-dialog";
 import { CreateTunnelDialog } from "@/components/app/create-tunnel-dialog";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { EnrollmentTokenDialog } from "@/components/app/enrollment-token-dialog";
 import { LastSeenCell } from "@/components/app/last-seen-cell";
@@ -198,7 +201,7 @@ function MachinesPage() {
     );
   }, [filtered, rowSelection]);
 
-  const columns = useMemo<ColumnDef<AggregatedMachine>[]>(
+  const columns = useMemo<DataTableColumnDef<AggregatedMachine>[]>(
     () => [
       {
         id: "machine",

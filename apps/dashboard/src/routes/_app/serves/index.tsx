@@ -1,5 +1,4 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "@tunnet/ui/components/button";
 import {
   Select,
@@ -13,7 +12,10 @@ import { formatDistanceToNow } from "date-fns";
 import { PlusIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { CreateServeDialog } from "@/components/app/create-serve-dialog";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { EntityStatus } from "@/components/app/entity-status";
 import { PageHeader } from "@/components/app/page-header";
@@ -53,7 +55,7 @@ function ServesPage() {
     );
   }, [serves, search, statusFilter]);
 
-  const columns = useMemo<ColumnDef<ServeRow>[]>(
+  const columns = useMemo<DataTableColumnDef<ServeRow>[]>(
     () => [
       {
         id: "status",

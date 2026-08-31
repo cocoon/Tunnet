@@ -146,7 +146,7 @@ export function RegisterRelayDialog({
                 <Input
                   id="relay-name"
                   value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  onChange={setName}
                   placeholder="eu-relay-1"
                   pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?"
                   required
@@ -157,7 +157,7 @@ export function RegisterRelayDialog({
                 <Input
                   id="relay-region"
                   value={region}
-                  onChange={(e) => setRegion(e.target.value)}
+                  onChange={setRegion}
                   placeholder="eu-west"
                   required
                 />
@@ -167,7 +167,7 @@ export function RegisterRelayDialog({
                 <Input
                   id="relay-url"
                   value={url}
-                  onChange={(e) => setUrl(e.target.value)}
+                  onChange={setUrl}
                   placeholder="https://relay.example.com:443"
                 />
               </div>
@@ -202,7 +202,7 @@ export function RegisterRelayDialog({
                 <Input
                   id="relay-metrics"
                   value={metricsUrl}
-                  onChange={(e) => setMetricsUrl(e.target.value)}
+                  onChange={setMetricsUrl}
                   placeholder="https://metrics.example.com"
                 />
               </div>

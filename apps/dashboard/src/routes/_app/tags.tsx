@@ -1,5 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import type { TagDefinition } from "@tunnet/api/management";
 import { Button } from "@tunnet/ui/components/button";
 import {
@@ -17,7 +16,10 @@ import { PlusIcon, TrashIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { PageHeader } from "@/components/app/page-header";
 import { TagOwnerCombobox } from "@/components/app/tag-combobox";
@@ -41,7 +43,7 @@ function TagsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
-  const columns = useMemo<ColumnDef<TagDefinition>[]>(
+  const columns = useMemo<DataTableColumnDef<TagDefinition>[]>(
     () => [
       {
         accessorKey: "name",
@@ -93,7 +95,7 @@ function TagsPage() {
                   <TrashIcon className="size-4" />
                 </Button>
               ),
-            } satisfies ColumnDef<TagDefinition>,
+            } satisfies DataTableColumnDef<TagDefinition>,
           ]
         : []),
     ],
@@ -230,7 +232,7 @@ function CreateTagDialog({
               <Input
                 id="tag-name"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={setName}
                 placeholder="production"
                 pattern="^[a-z0-9][a-z0-9-_]*$"
                 required
@@ -255,7 +257,7 @@ function CreateTagDialog({
               <Input
                 id="tag-user-owners"
                 value={userOwners}
-                onChange={(e) => setUserOwners(e.target.value)}
+                onChange={setUserOwners}
                 placeholder="you@company.com"
               />
             </div>

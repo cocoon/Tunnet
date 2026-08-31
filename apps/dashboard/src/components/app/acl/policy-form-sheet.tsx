@@ -638,9 +638,9 @@ export function PolicyFormSheet({
                 <Input
                   id="policy-slug"
                   value={slugTouched ? slug : autoSlug}
-                  onChange={(e) => {
+                  onChange={(value) => {
                     setSlugTouched(true);
-                    setSlug(e.target.value);
+                    setSlug(value);
                   }}
                   placeholder="allow-eng-to-db-tcp-5432"
                 />
@@ -679,9 +679,9 @@ export function PolicyFormSheet({
                   type="number"
                   min={0}
                   step={1}
-                  value={orderIndex}
-                  onChange={(e) => {
-                    const n = Number.parseInt(e.target.value, 10);
+                  value={String(orderIndex)}
+                  onChange={(value) => {
+                    const n = Number.parseInt(value, 10);
                     setOrderIndex(Number.isNaN(n) ? 0 : n);
                   }}
                 />

@@ -1,5 +1,4 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import type { Network } from "@tunnet/api/management";
 import { Button } from "@tunnet/ui/components/button";
 import {
@@ -16,7 +15,10 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { CreateNetworkDialog } from "@/components/app/create-network-dialog";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { PageHeader } from "@/components/app/page-header";
 import { PageToolbar } from "@/components/app/page-toolbar";
@@ -73,7 +75,7 @@ function NetworksPage() {
     );
   }, [rows, search]);
 
-  const columns = useMemo<ColumnDef<NetworkRow>[]>(
+  const columns = useMemo<DataTableColumnDef<NetworkRow>[]>(
     () => [
       {
         id: "name",

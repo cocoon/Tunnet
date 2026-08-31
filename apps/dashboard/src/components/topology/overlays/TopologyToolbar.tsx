@@ -83,7 +83,7 @@ export function TopologyToolbar({
           <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
           <Input
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={setSearchQuery}
             placeholder="Search nodes…"
             className="h-8 pl-7 text-[12px]"
           />

@@ -468,9 +468,9 @@ function ValueControl({
         id={`${baseId}-num`}
         type="number"
         className="h-8"
-        value={typeof row.value === "number" ? row.value : ""}
-        onChange={(e) => {
-          const n = e.target.value === "" ? 0 : Number(e.target.value);
+        value={typeof row.value === "number" ? String(row.value) : ""}
+        onChange={(value) => {
+          const n = value === "" ? 0 : Number(value);
           onChange({ value: Number.isFinite(n) ? n : 0 });
         }}
       />
@@ -484,7 +484,7 @@ function ValueControl({
       value={
         typeof row.value === "string" ? row.value : String(row.value ?? "")
       }
-      onChange={(e) => onChange({ value: e.target.value })}
+      onChange={(value) => onChange({ value })}
       placeholder="value"
     />
   );
@@ -536,7 +536,7 @@ function MultiValueInput({
         <Input
           id={id}
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={setDraft}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === ",") {
               e.preventDefault();

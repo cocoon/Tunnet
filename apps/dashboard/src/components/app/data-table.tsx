@@ -1,12 +1,14 @@
 import {
   type ColumnDef,
-  flexRender,
-  getCoreRowModel,
-  getPaginationRowModel,
+  columnVisibilityFeature,
+  createPaginatedRowModel,
   type OnChangeFn,
   type RowData,
   type RowSelectionState,
-  useReactTable,
+  rowPaginationFeature,
+  rowSelectionFeature,
+  tableFeatures,
+  useTable,
 } from "@tanstack/react-table";
 import { Button } from "@tunnet/ui/components/button";
 import { Checkbox } from "@tunnet/ui/components/checkbox";
@@ -28,18 +30,28 @@ import {
 import { cn } from "@tunnet/ui/lib/utils";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 
-declare module "@tanstack/react-table" {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  interface ColumnMeta<TData extends RowData, TValue> {
-    className?: string;
-    headerClassName?: string;
-  }
-}
+type DataTableColumnMeta = {
+  className?: string;
+  headerClassName?: string;
+};
+
+const dataTableFeatures = tableFeatures({
+  columnVisibilityFeature,
+  rowPaginationFeature,
+  rowSelectionFeature,
+  paginatedRowModel: createPaginatedRowModel(),
+  columnMeta: {} as DataTableColumnMeta,
+});
+
+export type DataTableColumnDef<TData extends RowData> = ColumnDef<
+  typeof dataTableFeatures,
+  TData
+>;
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
 
-type DataTableProps<TData> = {
-  columns: ColumnDef<TData, unknown>[];
+type DataTableProps<TData extends RowData> = {
+  columns: DataTableColumnDef<TData>[];
   data: TData[];
   getRowId?: (row: TData) => string;
   className?: string;
@@ -52,7 +64,7 @@ type DataTableProps<TData> = {
   pageSize?: number | false;
 };
 
-export function DataTable<TData>({
+export function DataTable<TData extends RowData>({
   columns,
   data,
   getRowId,
@@ -68,13 +80,11 @@ export function DataTable<TData>({
   const initialPageSize =
     pageSizeProp === false ? Math.max(data.length, 1) : pageSizeProp;
 
-  const table = useReactTable({
+  const table = useTable({
+    features: dataTableFeatures,
     data,
     columns,
-    getCoreRowModel: getCoreRowModel(),
-    ...(paginationEnabled
-      ? { getPaginationRowModel: getPaginationRowModel() }
-      : {}),
+    manualPagination: !paginationEnabled,
     enableRowSelection: selectable,
     onRowSelectionChange,
     getRowId,
@@ -91,8 +101,8 @@ export function DataTable<TData>({
     (k) => rowSelection?.[k],
   ).length;
   const pageCount = table.getPageCount();
-  const pageIndex = table.getState().pagination.pageIndex;
-  const pageSize = table.getState().pagination.pageSize;
+  const pageIndex = table.state.pagination.pageIndex;
+  const pageSize = table.state.pagination.pageSize;
   const from = data.length === 0 ? 0 : pageIndex * pageSize + 1;
   const to = Math.min(data.length, (pageIndex + 1) * pageSize);
 
@@ -105,17 +115,19 @@ export function DataTable<TData>({
               <TableRow key={headerGroup.id}>
                 {selectable ? (
                   <TableHead className="w-10">
-                    <Checkbox
-                      checked={table.getIsAllPageRowsSelected()}
-                      indeterminate={
-                        table.getIsSomePageRowsSelected() &&
-                        !table.getIsAllPageRowsSelected()
-                      }
-                      onCheckedChange={(value) =>
-                        table.toggleAllPageRowsSelected(value === true)
-                      }
-                      aria-label="Select all on page"
-                    />
+                    <span className="flex items-center justify-center">
+                      <Checkbox
+                        checked={table.getIsAllPageRowsSelected()}
+                        indeterminate={
+                          table.getIsSomePageRowsSelected() &&
+                          !table.getIsAllPageRowsSelected()
+                        }
+                        onCheckedChange={(value) =>
+                          table.toggleAllPageRowsSelected(value === true)
+                        }
+                        aria-label="Select all on page"
+                      />
+                    </span>
                   </TableHead>
                 ) : null}
                 {headerGroup.headers.map((header) => (
@@ -123,12 +135,9 @@ export function DataTable<TData>({
                     key={header.id}
                     className={header.column.columnDef.meta?.headerClassName}
                   >
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(
-                          header.column.columnDef.header,
-                          header.getContext(),
-                        )}
+                    {header.isPlaceholder ? null : (
+                      <table.FlexRender header={header} />
+                    )}
                   </TableHead>
                 ))}
               </TableRow>
@@ -159,13 +168,15 @@ export function DataTable<TData>({
                 >
                   {selectable ? (
                     <TableCell>
-                      <Checkbox
-                        checked={row.getIsSelected()}
-                        onCheckedChange={(value) =>
-                          row.toggleSelected(value === true)
-                        }
-                        aria-label="Select row"
-                      />
+                      <span className="flex items-center justify-center">
+                        <Checkbox
+                          checked={row.getIsSelected()}
+                          onCheckedChange={(value) =>
+                            row.toggleSelected(value === true)
+                          }
+                          aria-label="Select row"
+                        />
+                      </span>
                     </TableCell>
                   ) : null}
                   {row.getVisibleCells().map((cell) => (
@@ -173,10 +184,7 @@ export function DataTable<TData>({
                       key={cell.id}
                       className={cell.column.columnDef.meta?.className}
                     >
-                      {flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext(),
-                      )}
+                      <table.FlexRender cell={cell} />
                     </TableCell>
                   ))}
                 </TableRow>

@@ -8,6 +8,7 @@ import {
   type PlanId,
   seatCost,
 } from "@tunnet/api/billing";
+import { ActionSwapCascadeButton } from "@tunnet/ui/components/action-swap-cascade";
 import { Button } from "@tunnet/ui/components/button";
 import {
   Dialog,
@@ -75,7 +76,7 @@ export function UpgradePlanDialog({
 
   function selectPlan(id: BillablePlanId) {
     setSelected(id);
-    setSeats(checkoutSeats(id, seats));
+    setSeats(checkoutSeats(id, minimumSeats(id)));
   }
 
   async function startCheckout() {
@@ -127,7 +128,7 @@ export function UpgradePlanDialog({
             </DialogTitle>
             <DialogDescription className="max-w-xl text-sm leading-relaxed">
               14-day trial on Personal, Team, and Business. Limits unlock
-              immediately - cancel anytime from the billing portal.
+              immediately
             </DialogDescription>
           </DialogHeader>
         </div>
@@ -179,13 +180,11 @@ export function UpgradePlanDialog({
                     /month
                   </span>
                 </div>
-                <p className="text-muted-foreground mt-1 text-xs">
-                  {plan.pricing === "flat"
-                    ? "Flat rate · 1 user"
-                    : plan.pricing === "per_seat"
-                      ? `$${plan.price}/seat · ${minimumSeats(plan.id)}-seat minimum`
-                      : null}
-                </p>
+                {isPerSeatPlanId(plan.id) && (
+                  <p className="text-muted-foreground mt-1 text-xs">
+                    ${plan.price}/seat · {minimumSeats(plan.id)} seat minimum
+                  </p>
+                )}
                 <p className="text-muted-foreground mt-2 text-sm leading-snug">
                   {plan.pitch}
                 </p>
@@ -246,29 +245,28 @@ export function UpgradePlanDialog({
 
         <div className="flex flex-col gap-3 border-t border-border/70 bg-muted/20 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
           <p className="text-muted-foreground text-xs leading-relaxed sm:max-w-sm">
-            Checkout opens in Stripe. You can manage invoices and payment
-            methods anytime from Billing.
+            Cancel anytime from the billing portal
           </p>
           <div className="flex shrink-0 gap-2">
-            <Button
+            <ActionSwapCascadeButton
               type="button"
-              variant="outline"
-              disabled={busy}
-              onClick={() => onOpenChange(false)}
-            >
-              Not now
-            </Button>
-            <Button
-              type="button"
+              variant="primary"
+              size="sm"
+              cycle={false}
+              value={busy ? "busy" : "ready"}
+              items={[
+                {
+                  id: "ready",
+                  label:
+                    currentPlanId === selected
+                      ? "Manage in Stripe"
+                      : `Start ${selectedPlan.name} trial`,
+                },
+                { id: "busy", label: "Redirecting…" },
+              ]}
               disabled={busy}
               onClick={() => void startCheckout()}
-            >
-              {busy
-                ? "Redirecting…"
-                : currentPlanId === selected
-                  ? "Manage in Stripe"
-                  : `Start ${selectedPlan.name} trial`}
-            </Button>
+            />
           </div>
         </div>
       </DialogContent>

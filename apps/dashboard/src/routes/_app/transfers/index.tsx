@@ -1,5 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "@tunnet/ui/components/button";
 import { Checkbox } from "@tunnet/ui/components/checkbox";
 import { Label } from "@tunnet/ui/components/label";
@@ -13,7 +12,10 @@ import {
 import { Skeleton } from "@tunnet/ui/components/skeleton";
 import { formatDistanceToNow } from "date-fns";
 import { useEffect, useMemo, useState } from "react";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { EntityStatus } from "@/components/app/entity-status";
 import { PageHeader } from "@/components/app/page-header";
@@ -73,7 +75,7 @@ function TransfersPage() {
     );
   }, [transfers, search]);
 
-  const columns = useMemo<ColumnDef<TransferRow>[]>(
+  const columns = useMemo<DataTableColumnDef<TransferRow>[]>(
     () => [
       {
         id: "status",

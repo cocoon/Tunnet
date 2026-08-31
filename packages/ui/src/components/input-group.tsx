@@ -125,8 +125,15 @@ function InputGroupText({ className, ...props }: React.ComponentProps<"span">) {
 
 function InputGroupInput({
   className,
+  onChange,
+  value,
+  defaultValue,
   ...props
-}: React.ComponentProps<"input">) {
+}: Omit<React.ComponentProps<"input">, "defaultValue" | "onChange" | "value"> & {
+  defaultValue?: string;
+  onChange?: (value: string) => void;
+  value?: string;
+}) {
   return (
     <Input
       data-slot="input-group-control"
@@ -134,6 +141,9 @@ function InputGroupInput({
         "flex-1 rounded-none border-0 bg-transparent shadow-none ring-0 focus-visible:ring-0 aria-invalid:ring-0 dark:bg-transparent",
         className,
       )}
+      defaultValue={defaultValue}
+      onChange={onChange}
+      value={value}
       {...props}
     />
   );

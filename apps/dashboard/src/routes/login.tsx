@@ -2,12 +2,6 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Badge } from "@tunnet/ui/components/badge";
 import { Button } from "@tunnet/ui/components/button";
 import { Input } from "@tunnet/ui/components/input";
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupButton,
-  InputGroupInput,
-} from "@tunnet/ui/components/input-group";
 import { Label } from "@tunnet/ui/components/label";
 import { Separator } from "@tunnet/ui/components/separator";
 import {
@@ -16,15 +10,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "@tunnet/ui/components/tabs";
-import {
-  ArrowRightIcon,
-  Building2Icon,
-  EyeIcon,
-  EyeOffIcon,
-  KeyRoundIcon,
-  LockKeyholeIcon,
-  ShieldCheckIcon,
-} from "lucide-react";
+import { ArrowRightIcon, Building2Icon } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import { FcGoogle } from "react-icons/fc";
 import { toast } from "sonner";
@@ -53,7 +39,6 @@ function LoginPage() {
   const signupEnabled = useFeature("openSignUp");
   const [activeTab, setActiveTab] = useState<AuthTab>("signin");
   const [loadingAction, setLoadingAction] = useState<LoadingAction>(null);
-  const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -151,10 +136,11 @@ function LoginPage() {
               <Header />
               <Tabs
                 value={activeTab}
+                variant="segment"
                 onValueChange={(value) => setActiveTab(value as AuthTab)}
-                className="mt-8"
+                className="mt-4"
               >
-                <TabsList className="grid h-11 w-full grid-cols-3 bg-muted/70 p-1">
+                <TabsList>
                   <TabsTrigger value="signin">Sign in</TabsTrigger>
                   <TabsTrigger value="signup" disabled={!showSignup}>
                     Sign up
@@ -162,15 +148,11 @@ function LoginPage() {
                   <TabsTrigger value="sso">SSO</TabsTrigger>
                 </TabsList>
 
-                <TabsContent value="signin" className="mt-6">
+                <TabsContent value="signin">
                   <OAuthActions />
                   <AuthDivider />
                   <SignInForm
                     loading={loadingAction === "signin"}
-                    showPassword={showPassword}
-                    onTogglePassword={() =>
-                      setShowPassword((current) => !current)
-                    }
                     onSubmit={(event) => void handleSignIn(event)}
                   />
                   {showSignup ? (
@@ -187,7 +169,7 @@ function LoginPage() {
                   ) : null}
                 </TabsContent>
 
-                <TabsContent value="sso" className="mt-6">
+                <TabsContent value="sso">
                   <SsoForm
                     loading={loadingAction === "sso"}
                     onSubmit={(event) => void handleSso(event)}
@@ -195,7 +177,7 @@ function LoginPage() {
                 </TabsContent>
 
                 {showSignup ? (
-                  <TabsContent value="signup" className="mt-6">
+                  <TabsContent value="signup">
                     <SignUpForm
                       loading={loadingAction === "signup"}
                       onSubmit={(event) => void handleSignUp(event)}
@@ -254,13 +236,7 @@ function BrandPanel() {
           href="/"
           className="inline-flex items-center gap-2 text-xs font-medium text-white/60 transition-colors hover:text-white"
         >
-          <span className="flex size-8 items-center justify-center rounded-xl border border-white/15 bg-white/8 p-1.5 shadow-lg shadow-black/20 backdrop-blur">
-            <img
-              src="/logo.png"
-              alt="Tunnet"
-              className="size-full object-contain"
-            />
-          </span>
+          <img src="/logo.png" alt="Tunnet" className="size-8 object-contain" />
           <span className="font-mono text-[11px] uppercase tracking-[0.24em]">
             Tunnet
           </span>
@@ -268,20 +244,14 @@ function BrandPanel() {
       </div>
       <div className="relative p-10 xl:p-12">
         <h2 className="max-w-lg font-heading text-5xl font-semibold leading-[0.92] tracking-tight text-white xl:text-6xl">
-          Your network,
+          Your network
           <br />
-          <span className="text-white/45">in your hands.</span>
+          <span className="text-white/45">in your hands</span>
         </h2>
         <p className="mt-6 max-w-sm text-sm leading-relaxed text-white/60">
           Connect machines, manage private networks, and keep every route under
           control from one calm workspace.
         </p>
-        <div className="mt-10 grid max-w-md grid-cols-2 gap-3 text-xs text-white/65">
-          <Feature icon={<ShieldCheckIcon />} label="Private by design" />
-          <Feature icon={<KeyRoundIcon />} label="Identity-aware access" />
-          <Feature icon={<Building2Icon />} label="Built for teams" />
-          <Feature icon={<LockKeyholeIcon />} label="Encrypted connections" />
-        </div>
       </div>
     </aside>
   );
@@ -307,10 +277,6 @@ function Header() {
           <h1 className="font-heading text-4xl font-semibold tracking-tight sm:text-5xl">
             Let&apos;s get connected
           </h1>
-          <p className="mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
-            Sign in to manage your networks and machines, or create a new
-            workspace.
-          </p>
         </div>
       </div>
     </header>
@@ -354,13 +320,9 @@ function AuthDivider() {
 
 function SignInForm({
   loading,
-  showPassword,
-  onTogglePassword,
   onSubmit,
 }: {
   loading: boolean;
-  showPassword: boolean;
-  onTogglePassword: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   return (
@@ -373,33 +335,17 @@ function SignInForm({
           required
           autoComplete="email"
           placeholder="you@company.com"
-          size="lg"
         />
       </Field>
       <Field label="Password" htmlFor="signin-password" hint="Required">
-        <InputGroup className="h-10">
-          <InputGroupInput
-            id="signin-password"
-            name="password"
-            type={showPassword ? "text" : "password"}
-            required
-            autoComplete="current-password"
-            placeholder="Enter your password"
-          />
-          <InputGroupAddon align="inline-end">
-            <InputGroupButton
-              aria-label={showPassword ? "Hide password" : "Show password"}
-              onClick={onTogglePassword}
-              className="text-muted-foreground hover:text-foreground"
-            >
-              {showPassword ? (
-                <EyeOffIcon aria-hidden="true" />
-              ) : (
-                <EyeIcon aria-hidden="true" />
-              )}
-            </InputGroupButton>
-          </InputGroupAddon>
-        </InputGroup>
+        <Input
+          id="signin-password"
+          name="password"
+          type="password"
+          required
+          autoComplete="current-password"
+          placeholder="Enter your password"
+        />
       </Field>
       <div className="flex items-center justify-between gap-4 text-xs text-muted-foreground">
         <button
@@ -442,7 +388,6 @@ function SignUpForm({
           required
           autoComplete="name"
           placeholder="Alex Morgan"
-          size="lg"
         />
       </Field>
       <Field label="Email" htmlFor="signup-email">
@@ -453,7 +398,6 @@ function SignUpForm({
           required
           autoComplete="email"
           placeholder="you@company.com"
-          size="lg"
         />
       </Field>
       <Field
@@ -469,7 +413,6 @@ function SignUpForm({
           minLength={8}
           autoComplete="new-password"
           placeholder="Create a password"
-          size="lg"
         />
       </Field>
       <Button
@@ -503,10 +446,7 @@ function SsoForm({
             <Building2Icon aria-hidden="true" className="size-4" />
           </span>
           <div>
-            <p className="text-sm font-medium">
-              Sign in with your organization
-            </p>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            <p className="text-xs leading-relaxed text-muted-foreground">
               Use your work email or organization domain to continue through its
               identity provider.
             </p>
@@ -520,7 +460,6 @@ function SsoForm({
           type="email"
           autoComplete="email"
           placeholder="you@company.com"
-          size="lg"
         />
       </Field>
       <div className="relative flex items-center gap-3" aria-hidden="true">
@@ -538,12 +477,10 @@ function SsoForm({
           name="sso-domain"
           type="text"
           placeholder="company.com"
-          size="lg"
         />
       </Field>
       <Button
         type="submit"
-        size="lg"
         disabled={loading}
         className="mt-1 h-11 w-full justify-between px-4"
       >
@@ -574,15 +511,6 @@ function Field({
         ) : null}
       </div>
       {children}
-    </div>
-  );
-}
-
-function Feature({ icon, label }: { icon: ReactNode; label: string }) {
-  return (
-    <div className="flex items-center gap-2.5 rounded-xl border border-white/10 bg-white/6 px-3 py-2.5 backdrop-blur-sm">
-      <span className="text-white/70 [&_svg]:size-3.5">{icon}</span>
-      <span>{label}</span>
     </div>
   );
 }

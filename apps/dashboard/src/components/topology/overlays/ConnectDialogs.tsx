@@ -256,7 +256,7 @@ function CreatePolicyFromPeersDialog({
             <Label className="text-[12px]">Ports (optional)</Label>
             <Input
               value={ports}
-              onChange={(e) => setPorts(e.target.value)}
+              onChange={setPorts}
               placeholder="80, 443, 8000-8010"
               className="h-8 font-mono text-[12px]"
             />
@@ -265,7 +265,7 @@ function CreatePolicyFromPeersDialog({
             <Label className="text-[12px]">Slug (optional)</Label>
             <Input
               value={slug}
-              onChange={(e) => setSlug(e.target.value)}
+              onChange={setSlug}
               placeholder="peer-to-peer"
               className="h-8 font-mono text-[12px]"
             />

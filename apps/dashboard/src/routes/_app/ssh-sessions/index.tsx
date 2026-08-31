@@ -1,5 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "@tunnet/ui/components/button";
 import {
   Dialog,
@@ -18,7 +17,10 @@ import { Skeleton } from "@tunnet/ui/components/skeleton";
 import { formatDistanceToNow } from "date-fns";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { EntityStatus } from "@/components/app/entity-status";
 import { PageHeader } from "@/components/app/page-header";
@@ -77,7 +79,7 @@ function SshSessionsPage() {
     );
   }, [sessions, search]);
 
-  const columns = useMemo<ColumnDef<SessionRow>[]>(
+  const columns = useMemo<DataTableColumnDef<SessionRow>[]>(
     () => [
       {
         id: "status",

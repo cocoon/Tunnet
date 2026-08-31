@@ -1,5 +1,4 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "@tunnet/ui/components/button";
 import {
   Select,
@@ -12,9 +11,11 @@ import { Skeleton } from "@tunnet/ui/components/skeleton";
 import { formatDistanceToNow } from "date-fns";
 import { CopyIcon, PlusIcon } from "lucide-react";
 import { useMemo, useState } from "react";
-import { toast } from "sonner";
 import { CreateTunnelDialog } from "@/components/app/create-tunnel-dialog";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { EntityStatus } from "@/components/app/entity-status";
 import { PageHeader } from "@/components/app/page-header";
@@ -62,7 +63,7 @@ function TunnelsPage() {
     );
   }, [tunnels, search, statusFilter]);
 
-  const columns = useMemo<ColumnDef<TunnelRow>[]>(
+  const columns = useMemo<DataTableColumnDef<TunnelRow>[]>(
     () => [
       {
         id: "status",
@@ -88,9 +89,7 @@ function TunnelsPage() {
                 size="icon"
                 className="size-7"
                 onClick={() => {
-                  void navigator.clipboard
-                    .writeText(url)
-                    .then(() => toast.success("Copied to clipboard"));
+                  void navigator.clipboard.writeText(url);
                 }}
               >
                 <CopyIcon className="size-3.5" />

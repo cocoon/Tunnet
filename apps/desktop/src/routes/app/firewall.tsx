@@ -178,7 +178,7 @@ function FirewallPage() {
                       <Input
                         id="fw-protocol"
                         value={protocol}
-                        onChange={(e) => setProtocol(e.target.value)}
+                        onChange={setProtocol}
                         placeholder="tcp"
                       />
                     </div>
@@ -187,7 +187,7 @@ function FirewallPage() {
                       <Input
                         id="fw-port"
                         value={port}
-                        onChange={(e) => setPort(e.target.value)}
+                        onChange={setPort}
                         placeholder="443"
                       />
                     </div>

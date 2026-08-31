@@ -139,7 +139,7 @@ export function EnrollmentTokenDialog({
                 min={1}
                 max={10080}
                 value={ttlMinutes}
-                onChange={(e) => setTtlMinutes(e.target.value)}
+                onChange={setTtlMinutes}
               />
             </div>
             <div className="space-y-2">

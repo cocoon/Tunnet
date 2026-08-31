@@ -295,10 +295,10 @@ export function IntegrationFormFields({
                     placeholder="Name"
                     className="h-8"
                     value={pair.key}
-                    onChange={(e) =>
+                    onChange={(value) =>
                       updateHeaders(
                         headers.map((h) =>
-                          h.id === pair.id ? { ...h, key: e.target.value } : h,
+                          h.id === pair.id ? { ...h, key: value } : h,
                         ),
                       )
                     }
@@ -308,12 +308,10 @@ export function IntegrationFormFields({
                     placeholder="Value"
                     className="h-8"
                     value={pair.value}
-                    onChange={(e) =>
+                    onChange={(value) =>
                       updateHeaders(
                         headers.map((h) =>
-                          h.id === pair.id
-                            ? { ...h, value: e.target.value }
-                            : h,
+                          h.id === pair.id ? { ...h, value } : h,
                         ),
                       )
                     }
@@ -421,7 +419,7 @@ function Field({
         id={id}
         type={type}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={onChange}
         placeholder={placeholder}
         autoComplete={autoComplete}
       />

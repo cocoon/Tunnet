@@ -74,7 +74,7 @@ export function PolicySelectorFields({
         ) : kind !== "any" ? (
           <Input
             value={value}
-            onChange={(e) => onValueChange(e.target.value)}
+            onChange={onValueChange}
             placeholder={selectorPlaceholder(kind)}
             required
             className="flex-1"

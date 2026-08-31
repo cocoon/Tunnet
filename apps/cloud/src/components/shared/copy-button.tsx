@@ -35,7 +35,6 @@ export function CopyButton({
       ) : (
         <CopyIcon className="size-3.5" />
       )}
-      <span>{copied ? "Copied" : label}</span>
     </button>
   );
 }

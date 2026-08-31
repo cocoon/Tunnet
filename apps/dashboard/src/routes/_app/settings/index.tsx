@@ -138,7 +138,7 @@ function UserSettingsPage() {
                   id="current-password"
                   type="password"
                   value={currentPassword}
-                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  onChange={setCurrentPassword}
                   required
                 />
               </div>
@@ -149,7 +149,7 @@ function UserSettingsPage() {
                   type="password"
                   minLength={8}
                   value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
+                  onChange={setNewPassword}
                   required
                 />
               </div>

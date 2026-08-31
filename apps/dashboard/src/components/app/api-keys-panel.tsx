@@ -1,5 +1,4 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { ColumnDef } from "@tanstack/react-table";
 import {
   API_KEY_SCOPES,
   type ApiKey,
@@ -23,7 +22,10 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { CopyField } from "@/components/app/copy-field";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { PlanGate } from "@/components/app/plan/plan-gate";
 import { usePlanFeature } from "@/hooks/use-org-plan";
 import { useCan } from "@/hooks/use-permission";
@@ -80,7 +82,7 @@ export function ApiKeysPanel() {
     },
   });
 
-  const columns = useMemo<ColumnDef<ApiKey>[]>(
+  const columns = useMemo<DataTableColumnDef<ApiKey>[]>(
     () => [
       {
         id: "name",
@@ -132,7 +134,7 @@ export function ApiKeysPanel() {
                   <TrashIcon className="size-4" />
                 </Button>
               ),
-            } satisfies ColumnDef<ApiKey>,
+            } satisfies DataTableColumnDef<ApiKey>,
           ]
         : []),
     ],
@@ -319,7 +321,7 @@ function CreateApiKeyDialog({
               <Input
                 id="key-name"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={setName}
                 placeholder="CI deploy key"
                 required
               />

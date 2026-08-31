@@ -1,4 +1,4 @@
-import { Link, useRouterState } from "@tanstack/react-router";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Tabs, TabsList, TabsTrigger } from "@tunnet/ui/components/tabs";
 import type { ReactNode } from "react";
 import { PageHeader } from "@/components/app/page-header";
@@ -37,6 +37,7 @@ export function PosturePageShell({
   children: ReactNode;
 }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const navigate = useNavigate();
   const tab = tabFromPath(pathname);
 
   return (
@@ -48,18 +49,15 @@ export function PosturePageShell({
         dense
       />
 
-      <Tabs value={tab} className="gap-6">
+      <Tabs value={tab} variant="underline" className="flex flex-col gap-6">
         <div className="border-b border-border/70">
-          <TabsList
-            variant="line"
-            className="h-auto w-full justify-start gap-0 overflow-x-auto rounded-none bg-transparent p-0"
-          >
+          <TabsList className="h-auto w-full justify-start gap-0 overflow-x-auto rounded-none bg-transparent p-0">
             {TABS.map((item) => (
               <TabsTrigger
                 key={item.value}
                 value={item.value}
                 className="rounded-none px-3"
-                render={<Link to={item.to} />}
+                onClick={() => void navigate({ to: item.to })}
               >
                 {item.label}
               </TabsTrigger>

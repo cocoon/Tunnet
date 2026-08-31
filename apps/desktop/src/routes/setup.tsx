@@ -105,11 +105,8 @@ function SetupPage() {
 
       <div className="relative">
         {mode === "direct" ? (
-          <Tabs defaultValue="join" className="gap-5">
-            <TabsList
-              variant="line"
-              className="mx-auto h-auto w-full max-w-xs justify-center gap-6 bg-transparent p-0"
-            >
+          <Tabs defaultValue="join" variant="underline" className="gap-5">
+            <TabsList className="mx-auto h-auto w-full max-w-xs justify-center gap-6 bg-transparent p-0">
               <TabsTrigger
                 value="join"
                 className="rounded-none px-3 py-2 text-sm data-active:text-foreground"
@@ -139,7 +136,7 @@ function SetupPage() {
                     <Input
                       id="invite"
                       value={inviteCode}
-                      onChange={(e) => setInviteCode(e.target.value)}
+                      onChange={setInviteCode}
                       placeholder="tn_…"
                       className="h-11 rounded-xl"
                     />
@@ -149,7 +146,7 @@ function SetupPage() {
                     <Input
                       id="join-hostname"
                       value={joinHostname}
-                      onChange={(e) => setJoinHostname(e.target.value)}
+                      onChange={setJoinHostname}
                       className="h-11 rounded-xl"
                     />
                   </div>
@@ -207,7 +204,7 @@ function SetupPage() {
                     <Input
                       id="network-name"
                       value={networkName}
-                      onChange={(e) => setNetworkName(e.target.value)}
+                      onChange={setNetworkName}
                       className="h-11 rounded-xl"
                     />
                   </div>
@@ -216,7 +213,7 @@ function SetupPage() {
                     <Input
                       id="create-hostname"
                       value={createHostname}
-                      onChange={(e) => setCreateHostname(e.target.value)}
+                      onChange={setCreateHostname}
                       className="h-11 rounded-xl"
                     />
                   </div>
@@ -239,7 +236,7 @@ function SetupPage() {
                       id="secret"
                       type="password"
                       value={secret}
-                      onChange={(e) => setSecret(e.target.value)}
+                      onChange={setSecret}
                       className="h-11 rounded-xl"
                     />
                   </div>
@@ -281,7 +278,7 @@ function SetupPage() {
                 <Input
                   id="control-url"
                   value={controlUrl}
-                  onChange={(e) => setControlUrl(e.target.value)}
+                  onChange={setControlUrl}
                   placeholder="https://control.example.com"
                   className="h-11 rounded-xl"
                 />
@@ -292,7 +289,7 @@ function SetupPage() {
                   id="token"
                   type="password"
                   value={token}
-                  onChange={(e) => setToken(e.target.value)}
+                  onChange={setToken}
                   className="h-11 rounded-xl"
                 />
               </div>
@@ -301,7 +298,7 @@ function SetupPage() {
                 <Input
                   id="org"
                   value={org}
-                  onChange={(e) => setOrg(e.target.value)}
+                  onChange={setOrg}
                   className="h-11 rounded-xl"
                 />
               </div>
@@ -312,7 +309,7 @@ function SetupPage() {
                 <Input
                   id="management-url"
                   value={managementUrl}
-                  onChange={(e) => setManagementUrl(e.target.value)}
+                  onChange={setManagementUrl}
                   className="h-11 rounded-xl"
                 />
               </div>
@@ -321,7 +318,7 @@ function SetupPage() {
                 <Input
                   id="dashboard-url"
                   value={dashboardUrl}
-                  onChange={(e) => setDashboardUrl(e.target.value)}
+                  onChange={setDashboardUrl}
                   className="h-11 rounded-xl"
                 />
               </div>

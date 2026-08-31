@@ -66,7 +66,7 @@ function ServePage() {
             <Input
               className="w-32"
               value={servePort}
-              onChange={(e) => setServePort(e.target.value)}
+              onChange={setServePort}
               placeholder="Port"
             />
             <Button
@@ -108,7 +108,7 @@ function ServePage() {
             <Input
               className="w-32"
               value={tunnelPort}
-              onChange={(e) => setTunnelPort(e.target.value)}
+              onChange={setTunnelPort}
               placeholder="Port"
             />
             <Button
@@ -138,12 +138,12 @@ function ServePage() {
           <div className="grid gap-2 md:grid-cols-3">
             <Input
               value={sendPath}
-              onChange={(e) => setSendPath(e.target.value)}
+              onChange={setSendPath}
               placeholder="File path"
             />
             <Input
               value={sendTarget}
-              onChange={(e) => setSendTarget(e.target.value)}
+              onChange={setSendTarget}
               placeholder="Target peer"
             />
             <Button

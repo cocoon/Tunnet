@@ -1,6 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import {
   DEFAULT_DYNAMIC_ROLE_POSITION,
   STATIC_ROLE_NAMES,
@@ -30,7 +29,10 @@ import { LockIcon, MoreHorizontalIcon, PlusIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { PageHeader } from "@/components/app/page-header";
 import { PlanGate } from "@/components/app/plan/plan-gate";
@@ -121,7 +123,7 @@ function RolesPage() {
     }
   }
 
-  const columns = useMemo<ColumnDef<RoleRow>[]>(
+  const columns = useMemo<DataTableColumnDef<RoleRow>[]>(
     () => [
       {
         id: "role",
@@ -212,7 +214,7 @@ function RolesPage() {
                   </DropdownMenu>
                 );
               },
-            } satisfies ColumnDef<RoleRow>,
+            } satisfies DataTableColumnDef<RoleRow>,
           ]
         : []),
     ],
@@ -419,7 +421,7 @@ function RoleEditorDialog({
             <Input
               id="role-name"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={setName}
               placeholder="moderator"
             />
           </div>
@@ -430,7 +432,7 @@ function RoleEditorDialog({
                 id="role-position"
                 type="number"
                 value={position}
-                onChange={(e) => setPosition(e.target.value)}
+                onChange={setPosition}
               />
             </div>
             <div className="grid gap-2">
@@ -439,7 +441,7 @@ function RoleEditorDialog({
                 id="role-color"
                 type="color"
                 value={color}
-                onChange={(e) => setColor(e.target.value)}
+                onChange={setColor}
               />
             </div>
           </div>

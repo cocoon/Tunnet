@@ -327,7 +327,7 @@ export function CreateTunnelDialog({
                     min={1}
                     max={65535}
                     value={port}
-                    onChange={(e) => setPort(e.target.value)}
+                    onChange={setPort}
                     required
                   />
                 </div>
@@ -373,8 +373,8 @@ export function CreateTunnelDialog({
                 <Input
                   id="tunnel-subdomain"
                   value={subdomain}
-                  onChange={(e) => {
-                    setSubdomain(e.target.value);
+                  onChange={(value) => {
+                    setSubdomain(value);
                     setFormError(null);
                     setSuggestedSubdomain(null);
                   }}
@@ -442,7 +442,7 @@ export function CreateTunnelDialog({
                         <Input
                           id="basic-user"
                           value={basicAuthUser}
-                          onChange={(e) => setBasicAuthUser(e.target.value)}
+                          onChange={setBasicAuthUser}
                           autoComplete="off"
                         />
                       </div>
@@ -452,7 +452,7 @@ export function CreateTunnelDialog({
                           id="basic-pass"
                           type="password"
                           value={basicAuthPassword}
-                          onChange={(e) => setBasicAuthPassword(e.target.value)}
+                          onChange={setBasicAuthPassword}
                           autoComplete="new-password"
                         />
                       </div>

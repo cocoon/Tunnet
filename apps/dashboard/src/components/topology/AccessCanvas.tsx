@@ -176,6 +176,7 @@ function AccessCanvasInner({ orgId }: { orgId: string }) {
         <div className="border-b border-border/60 px-3 py-2.5">
           <Tabs
             value={accessTab}
+            variant="underline"
             onValueChange={(v) => {
               if (v) {
                 setAccessTab(v as AccessEntityTab);
@@ -183,7 +184,7 @@ function AccessCanvasInner({ orgId }: { orgId: string }) {
               }
             }}
           >
-            <TabsList variant="line" className="w-full justify-start">
+            <TabsList className="w-full justify-start">
               <TabsTrigger value="peers" className="px-2 text-[11px]">
                 Peers
               </TabsTrigger>
@@ -197,7 +198,7 @@ function AccessCanvasInner({ orgId }: { orgId: string }) {
           </Tabs>
           <Input
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={setSearchQuery}
             placeholder="Filter…"
             className="mt-2 h-8 text-[12px]"
           />

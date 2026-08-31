@@ -2,6 +2,7 @@ import {
   createFileRoute,
   Link,
   Outlet,
+  useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
 import {
@@ -26,6 +27,7 @@ export const Route = createFileRoute("/_app/networks/$networkId")({
 function NetworkLayout() {
   const { networkId } = Route.useParams();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const navigate = useNavigate();
   const { data: activeOrg } = useActiveOrganization();
   const { data: network, isPending } = useNetwork(activeOrg?.id, networkId);
 
@@ -78,23 +80,28 @@ function NetworkLayout() {
           </BreadcrumbList>
         </Breadcrumb>
 
-        <Tabs value={tab}>
-          <TabsList
-            variant="line"
-            className="w-full justify-start gap-0 border-b border-border/50 pb-0"
-          >
+        <Tabs value={tab} variant="underline">
+          <TabsList className="w-full justify-start gap-0 border-b border-border/50 pb-0">
             <TabsTrigger
               value="overview"
               className="px-3"
-              render={<Link to="/networks/$networkId" params={{ networkId }} />}
+              onClick={() =>
+                void navigate({
+                  to: "/networks/$networkId",
+                  params: { networkId },
+                })
+              }
             >
               Mesh
             </TabsTrigger>
             <TabsTrigger
               value="access"
               className="px-3"
-              render={
-                <Link to="/networks/$networkId/access" params={{ networkId }} />
+              onClick={() =>
+                void navigate({
+                  to: "/networks/$networkId/access",
+                  params: { networkId },
+                })
               }
             >
               Access
@@ -102,8 +109,11 @@ function NetworkLayout() {
             <TabsTrigger
               value="routes"
               className="px-3"
-              render={
-                <Link to="/networks/$networkId/routes" params={{ networkId }} />
+              onClick={() =>
+                void navigate({
+                  to: "/networks/$networkId/routes",
+                  params: { networkId },
+                })
               }
             >
               Routes
@@ -111,8 +121,11 @@ function NetworkLayout() {
             <TabsTrigger
               value="policy"
               className="px-3"
-              render={
-                <Link to="/networks/$networkId/policy" params={{ networkId }} />
+              onClick={() =>
+                void navigate({
+                  to: "/networks/$networkId/policy",
+                  params: { networkId },
+                })
               }
             >
               Policy
@@ -120,11 +133,11 @@ function NetworkLayout() {
             <TabsTrigger
               value="enrollment"
               className="px-3"
-              render={
-                <Link
-                  to="/networks/$networkId/enrollment"
-                  params={{ networkId }}
-                />
+              onClick={() =>
+                void navigate({
+                  to: "/networks/$networkId/enrollment",
+                  params: { networkId },
+                })
               }
             >
               Enrollment

@@ -1,5 +1,4 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import type { KubernetesHubNode } from "@tunnet/api/management";
 import {
   Select,
@@ -10,7 +9,10 @@ import {
 } from "@tunnet/ui/components/select";
 import { Skeleton } from "@tunnet/ui/components/skeleton";
 import { useMemo, useState } from "react";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { KubernetesNodeSheet } from "@/components/app/kubernetes-node-sheet";
 import { PageHeader } from "@/components/app/page-header";
@@ -61,7 +63,7 @@ function KubernetesHubPage() {
     return [...set].sort();
   }, [data?.nodes]);
 
-  const columns = useMemo<ColumnDef<KubernetesHubNode>[]>(
+  const columns = useMemo<DataTableColumnDef<KubernetesHubNode>[]>(
     () => [
       {
         id: "name",

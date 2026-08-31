@@ -1,12 +1,14 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import type { Edge } from "@tunnet/api/management";
 import { Button } from "@tunnet/ui/components/button";
 import { Skeleton } from "@tunnet/ui/components/skeleton";
 import { formatDistanceToNow } from "date-fns";
 import { PlusIcon } from "lucide-react";
 import { useMemo, useState } from "react";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { EntityStatus } from "@/components/app/entity-status";
 import { PageHeader } from "@/components/app/page-header";
@@ -40,7 +42,7 @@ function EdgesPage() {
     );
   }, [edges, search]);
 
-  const columns = useMemo<ColumnDef<Edge>[]>(
+  const columns = useMemo<DataTableColumnDef<Edge>[]>(
     () => [
       {
         id: "status",

@@ -134,7 +134,7 @@ export function RegisterEdgeDialog({
                 <Input
                   id="edge-name"
                   value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  onChange={setName}
                   placeholder="eu-edge-1"
                   pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?"
                   required
@@ -145,7 +145,7 @@ export function RegisterEdgeDialog({
                 <Input
                   id="edge-region"
                   value={region}
-                  onChange={(e) => setRegion(e.target.value)}
+                  onChange={setRegion}
                   placeholder="eu-west"
                   required
                 />
@@ -155,7 +155,7 @@ export function RegisterEdgeDialog({
                 <Input
                   id="edge-domain"
                   value={domain}
-                  onChange={(e) => setDomain(e.target.value)}
+                  onChange={setDomain}
                   placeholder="tunnel.example.com"
                   required
                 />
@@ -165,7 +165,7 @@ export function RegisterEdgeDialog({
                 <Input
                   id="edge-ip"
                   value={publicIp}
-                  onChange={(e) => setPublicIp(e.target.value)}
+                  onChange={setPublicIp}
                   placeholder="203.0.113.5"
                 />
               </div>
@@ -177,7 +177,7 @@ export function RegisterEdgeDialog({
                   min={1}
                   max={100000}
                   value={capacity}
-                  onChange={(e) => setCapacity(e.target.value)}
+                  onChange={setCapacity}
                   required
                 />
               </div>

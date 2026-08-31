@@ -143,7 +143,7 @@ export function RegisterCloudRelayDialog({
                 <Input
                   id="cloud-relay-name"
                   value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  onChange={setName}
                   placeholder="cloud-eu-1"
                   pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?"
                   required
@@ -154,7 +154,7 @@ export function RegisterCloudRelayDialog({
                 <Input
                   id="cloud-relay-region"
                   value={region}
-                  onChange={(e) => setRegion(e.target.value)}
+                  onChange={setRegion}
                   placeholder="eu-west"
                   required
                 />
@@ -164,7 +164,7 @@ export function RegisterCloudRelayDialog({
                 <Input
                   id="cloud-relay-url"
                   value={url}
-                  onChange={(e) => setUrl(e.target.value)}
+                  onChange={setUrl}
                   placeholder="https://relay.tunnet.cloud:443"
                 />
               </div>
@@ -201,7 +201,7 @@ export function RegisterCloudRelayDialog({
                 <Input
                   id="cloud-relay-metrics"
                   value={metricsUrl}
-                  onChange={(e) => setMetricsUrl(e.target.value)}
+                  onChange={setMetricsUrl}
                   placeholder="https://metrics.example.com"
                 />
               </div>

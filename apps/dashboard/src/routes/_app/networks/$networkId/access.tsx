@@ -1,6 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import type {
   CreatePolicyBody,
   CreateSshPolicyBody,
@@ -46,7 +45,10 @@ import {
 } from "@/components/app/acl/policy-labels";
 import { formatPortsInput } from "@/components/app/acl/ports-input";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { PlanGate } from "@/components/app/plan/plan-gate";
 import {
@@ -79,9 +81,10 @@ function NetworkAccessPage() {
     <div className="space-y-5">
       <Tabs
         value={section}
+        variant="underline"
         onValueChange={(v) => setSection(v as "network" | "ssh")}
       >
-        <TabsList variant="line" className="w-fit">
+        <TabsList className="w-fit">
           <TabsTrigger value="network">Network</TabsTrigger>
           <TabsTrigger value="ssh">SSH Rules</TabsTrigger>
         </TabsList>
@@ -182,7 +185,7 @@ function NetworkPoliciesPanel() {
     return Math.max(...list.map((p) => p.orderIndex)) + 1;
   }, [policies]);
 
-  const columns = useMemo<ColumnDef<Policy>[]>(
+  const columns = useMemo<DataTableColumnDef<Policy>[]>(
     () => [
       {
         id: "slug",
@@ -262,7 +265,7 @@ function NetworkPoliciesPanel() {
                   <TrashIcon className="size-4" />
                 </Button>
               ),
-            } satisfies ColumnDef<Policy>,
+            } satisfies DataTableColumnDef<Policy>,
           ]
         : []),
     ],
@@ -353,13 +356,14 @@ function NetworkPoliciesPanel() {
 
       <Tabs
         value={toolsTab}
+        variant="underline"
         onValueChange={(v) => setToolsTab(v as "stack" | "explain")}
       >
-        <TabsList variant="line" className="w-fit">
+        <TabsList className="w-fit">
           <TabsTrigger value="stack">Effective stack</TabsTrigger>
           <TabsTrigger value="explain">Explain</TabsTrigger>
         </TabsList>
-        <TabsContent value="stack" className="mt-4">
+        <TabsContent value="stack">
           <EffectivePolicyPanel
             orgId={orgId}
             orgPolicies={orgPolicies ?? []}
@@ -367,7 +371,7 @@ function NetworkPoliciesPanel() {
             defaultAction={defaultAction}
           />
         </TabsContent>
-        <TabsContent value="explain" className="mt-4">
+        <TabsContent value="explain">
           <ExplainSimulatePanel
             orgId={orgId}
             networkId={networkId}
@@ -496,7 +500,7 @@ function SshRulesPanel() {
     },
   });
 
-  const columns = useMemo<ColumnDef<SshPolicy>[]>(
+  const columns = useMemo<DataTableColumnDef<SshPolicy>[]>(
     () => [
       {
         id: "action",
@@ -565,7 +569,7 @@ function SshRulesPanel() {
                   <TrashIcon className="size-4" />
                 </Button>
               ),
-            } satisfies ColumnDef<SshPolicy>,
+            } satisfies DataTableColumnDef<SshPolicy>,
           ]
         : []),
     ],
@@ -726,7 +730,7 @@ function CreateSshRuleDialog({
               <Input
                 id="ssh-users"
                 value={users}
-                onChange={(e) => setUsers(e.target.value)}
+                onChange={setUsers}
                 placeholder="root, ubuntu"
                 required
               />
@@ -755,7 +759,7 @@ function CreateSshRuleDialog({
                   type="number"
                   min={60}
                   value={checkPeriod}
-                  onChange={(e) => setCheckPeriod(e.target.value)}
+                  onChange={setCheckPeriod}
                   required
                 />
               </div>
@@ -797,7 +801,7 @@ function CreateSshRuleDialog({
                 id="ssh-priority"
                 type="number"
                 value={priority}
-                onChange={(e) => setPriority(e.target.value)}
+                onChange={setPriority}
               />
             </div>
           </div>

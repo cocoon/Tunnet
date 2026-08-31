@@ -1,6 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import type {
   CreatePolicyBody,
   PatchPolicyBody,
@@ -26,7 +25,10 @@ import {
 } from "@/components/app/acl/policy-labels";
 import { formatPortsInput } from "@/components/app/acl/ports-input";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { PageHeader } from "@/components/app/page-header";
 import { useCan } from "@/hooks/use-permission";
@@ -182,7 +184,7 @@ function OrganizationPoliciesPanel() {
     return Math.max(...list.map((p) => p.orderIndex)) + 1;
   }, [policies]);
 
-  const columns = useMemo<ColumnDef<Policy>[]>(
+  const columns = useMemo<DataTableColumnDef<Policy>[]>(
     () => [
       {
         id: "slug",
@@ -262,7 +264,7 @@ function OrganizationPoliciesPanel() {
                   <TrashIcon className="size-4" />
                 </Button>
               ),
-            } satisfies ColumnDef<Policy>,
+            } satisfies DataTableColumnDef<Policy>,
           ]
         : []),
     ],

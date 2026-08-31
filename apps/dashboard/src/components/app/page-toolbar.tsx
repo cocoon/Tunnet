@@ -40,7 +40,7 @@ export function PageToolbar({
               className="pl-9"
               placeholder={searchPlaceholder}
               value={search ?? ""}
-              onChange={(e) => onSearchChange(e.target.value)}
+              onChange={onSearchChange}
             />
           </div>
         ) : null}
@@ -51,8 +51,8 @@ export function PageToolbar({
         ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        {filters}
         {actions}
+        {filters}
       </div>
     </div>
   );

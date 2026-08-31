@@ -156,7 +156,7 @@ function PostureCompliancePage() {
               <div className="flex flex-wrap gap-2">
                 <Input
                   value={query}
-                  onChange={(e) => setQuery(e.target.value)}
+                  onChange={setQuery}
                   placeholder="Filter by name…"
                   className="h-8 w-full sm:w-52"
                   aria-label="Filter devices"

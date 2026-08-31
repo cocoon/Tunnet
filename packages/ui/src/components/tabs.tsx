@@ -1,89 +1,229 @@
 "use client";
+// beui.dev/components/motion/tabs
 
-import { Tabs as TabsPrimitive } from "@base-ui/react/tabs";
-import { cva, type VariantProps } from "class-variance-authority";
-
+import { motion, MotionConfig, useReducedMotion, type Transition } from "motion/react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useId,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
+import { EASE_OUT } from "#lib/ease";
 import { cn } from "#lib/utils";
 
-function Tabs({
-  className,
-  orientation = "horizontal",
-  ...props
-}: TabsPrimitive.Root.Props) {
-  return (
-    <TabsPrimitive.Root
-      data-slot="tabs"
-      data-orientation={orientation}
-      className={cn(
-        "group/tabs flex gap-2 data-[orientation=horizontal]:flex-col",
-        className,
-      )}
-      {...props}
-    />
-  );
+type Variant = "pill" | "underline" | "segment";
+
+type Ctx = {
+  value: string;
+  setValue: (v: string) => void;
+  layoutId: string;
+  variant: Variant;
+};
+
+const TabsCtx = createContext<Ctx | null>(null);
+
+function useTabs() {
+  const ctx = useContext(TabsCtx);
+  if (!ctx) throw new Error("Tabs.* must be used inside <Tabs>");
+  return ctx;
 }
 
-const tabsListVariants = cva(
-  "group/tabs-list inline-flex w-fit shrink-0 items-center justify-center rounded-lg p-[3px] text-muted-foreground group-data-[orientation=horizontal]/tabs:h-9 group-data-[orientation=vertical]/tabs:h-fit group-data-[orientation=vertical]/tabs:flex-col data-[variant=line]:rounded-none data-[variant=line]:h-auto!",
-  {
-    variants: {
-      variant: {
-        default: "bg-muted",
-        line: "gap-1 bg-transparent",
-      },
+// Weighty spring for the active-tab indicator: a touch of overshoot so it
+// settles with life instead of snapping.
+const transition: Transition = {
+  type: "spring",
+  stiffness: 170,
+  damping: 24,
+  mass: 1.2,
+};
+
+export function Tabs({
+  defaultValue,
+  value,
+  onValueChange,
+  variant = "pill",
+  children,
+  className,
+}: {
+  defaultValue?: string;
+  value?: string;
+  onValueChange?: (v: string) => void;
+  variant?: Variant;
+  children: ReactNode;
+  className?: string;
+}) {
+  const [internal, setInternal] = useState(defaultValue ?? "");
+  const layoutId = useId();
+  const reduce = useReducedMotion();
+  const controlled = value !== undefined;
+  const current = controlled ? value : internal;
+  const setValue = useCallback(
+    (v: string) => {
+      if (!controlled) setInternal(v);
+      onValueChange?.(v);
     },
-    defaultVariants: {
-      variant: "default",
-    },
-  },
-);
+    [controlled, onValueChange],
+  );
+  const contextValue = useMemo(
+    () => ({ value: current, setValue, layoutId, variant }),
+    [current, layoutId, setValue, variant],
+  );
+  return (
+    <MotionConfig transition={reduce ? { duration: 0 } : transition}>
+      <TabsCtx.Provider value={contextValue}>
+        {/* layoutRoot: the indicator's layoutId measures in page coordinates, so
+            inside fixed/scrolled containers it would replay scroll offsets as
+            movement. The pill only ever travels within the list, so scoping
+            projection to the Tabs wrapper is always correct. */}
+        <motion.div layoutRoot className={className}>
+          {children}
+        </motion.div>
+      </TabsCtx.Provider>
+    </MotionConfig>
+  );
+}
 
-function TabsList({
+const listClasses: Record<Variant, string> = {
+  pill: "inline-flex items-center gap-1 rounded-full bg-card p-1",
+  underline: "inline-flex items-center gap-1 border-b border-border",
+  segment: "inline-flex items-center gap-0 rounded-lg bg-card p-0.5",
+};
+
+export function TabsList({ children, className }: { children: ReactNode; className?: string }) {
+  const { variant } = useTabs();
+  return (
+    <div
+      role="tablist"
+      className={cn(listClasses[variant], "overflow-y-hidden", className)}
+    >
+      {children}
+    </div>
+  );
+}
+
+export function TabsTrigger({
+  value,
+  children,
+  disabled = false,
+  onClick,
   className,
-  variant = "default",
-  ...props
-}: TabsPrimitive.List.Props & VariantProps<typeof tabsListVariants>) {
+  indicatorClassName,
+}: {
+  value: string;
+  children: ReactNode;
+  disabled?: boolean;
+  onClick?: () => void;
+  className?: string;
+  indicatorClassName?: string;
+}) {
+  const { value: current, setValue, layoutId, variant } = useTabs();
+  const active = current === value;
+
+  if (variant === "underline") {
+    return (
+      <button
+        type="button"
+        role="tab"
+        aria-selected={active}
+        disabled={disabled}
+        onClick={() => {
+          setValue(value);
+          onClick?.();
+        }}
+        className={cn(
+          "relative isolate px-3 pb-2.5 pt-1 -mb-px text-sm font-medium transition-colors min-h-[44px] inline-flex items-center",
+          active
+            ? "text-foreground"
+            : "text-muted-foreground hover:text-foreground",
+          "disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50",
+          className,
+        )}
+      >
+        {children}
+        {active ? (
+        <motion.span
+          layoutId={layoutId}
+          layout="position"
+          className={cn(
+            "absolute -bottom-px left-0 right-0 h-px bg-primary",
+            indicatorClassName,
+          )}
+        />
+        ) : null}
+      </button>
+    );
+  }
+
+  const radius = variant === "pill" ? "rounded-full" : "rounded-md";
+
   return (
-    <TabsPrimitive.List
-      data-slot="tabs-list"
-      data-variant={variant}
-      className={cn(tabsListVariants({ variant }), className)}
-      {...props}
-    />
+    <div className="relative">
+      {active ? (
+        <motion.span
+          layoutId={layoutId}
+          layout="position"
+          style={{ borderRadius: variant === "pill" ? 9999 : 8 }}
+          className={cn(
+            "absolute inset-0 bg-primary",
+            radius,
+            indicatorClassName,
+          )}
+        />
+      ) : null}
+      <button
+        type="button"
+        role="tab"
+        aria-selected={active}
+        disabled={disabled}
+        onClick={() => {
+          setValue(value);
+          onClick?.();
+        }}
+        className={cn(
+          "relative z-10 inline-flex items-center justify-center whitespace-nowrap bg-transparent px-3.5 py-1.5 text-sm font-medium outline-none",
+          "transition-colors",
+          active
+            ? "text-primary-foreground"
+            : "text-muted-foreground hover:text-foreground",
+          "disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50",
+          radius,
+          className,
+        )}
+      >
+        {children}
+      </button>
+    </div>
   );
 }
 
-function TabsTrigger({
-  className,
-  render,
-  nativeButton,
-  ...props
-}: TabsPrimitive.Tab.Props) {
+export function TabsContent({ value, children, className }: { value: string; children: ReactNode; className?: string }) {
+  const { value: current } = useTabs();
+  const reduce = useReducedMotion();
+  const active = current === value;
+  // Inactive panels stay mounted but hidden, so their content (e.g. source
+  // code) is present in the server-rendered HTML for crawlers and assistive
+  // tech, instead of being dropped from the DOM.
+  if (!active) {
+    return (
+      <div hidden role="tabpanel" aria-hidden="true" className={className}>
+        {children}
+      </div>
+    );
+  }
   return (
-    <TabsPrimitive.Tab
-      data-slot="tabs-trigger"
-      className={cn(
-        "relative inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-2.5 py-1.5 text-sm font-medium whitespace-nowrap text-foreground/60 transition-all group-data-[orientation=vertical]/tabs:w-full group-data-[orientation=vertical]/tabs:justify-start group-data-[orientation=vertical]/tabs:h-auto group-data-[orientation=vertical]/tabs:py-2 hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50 has-data-[icon=inline-end]:pr-1 has-data-[icon=inline-start]:pl-1 aria-disabled:pointer-events-none aria-disabled:opacity-50 dark:text-muted-foreground dark:hover:text-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5",
-        "group-data-[variant=line]/tabs-list:bg-transparent group-data-[variant=line]/tabs-list:data-active:bg-transparent dark:group-data-[variant=line]/tabs-list:data-active:border-transparent dark:group-data-[variant=line]/tabs-list:data-active:bg-transparent",
-        "data-active:bg-background data-active:text-foreground dark:data-active:border-input dark:data-active:bg-input/30 dark:data-active:text-foreground",
-        "after:absolute after:bg-foreground after:opacity-0 after:transition-opacity group-data-[orientation=horizontal]/tabs:after:inset-x-0 group-data-[orientation=horizontal]/tabs:after:bottom-0 group-data-[orientation=horizontal]/tabs:after:h-0.5 group-data-[orientation=vertical]/tabs:after:inset-y-0 group-data-[orientation=vertical]/tabs:after:-right-1 group-data-[orientation=vertical]/tabs:after:w-0.5 group-data-[variant=line]/tabs-list:data-active:after:opacity-100",
-        className,
-      )}
-      render={render}
-      nativeButton={nativeButton ?? (render != null ? false : undefined)}
-      {...props}
-    />
+    <motion.div
+      key={value}
+      initial={{ opacity: 0, y: reduce ? 0 : 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18, ease: EASE_OUT }}
+      role="tabpanel"
+      aria-hidden="false"
+      className={cn("mt-4", className)}
+    >
+      {children}
+    </motion.div>
   );
 }
-
-function TabsContent({ className, ...props }: TabsPrimitive.Panel.Props) {
-  return (
-    <TabsPrimitive.Panel
-      data-slot="tabs-content"
-      className={cn("flex-1 text-xs/relaxed outline-none", className)}
-      {...props}
-    />
-  );
-}
-
-export { Tabs, TabsContent, TabsList, TabsTrigger, tabsListVariants };

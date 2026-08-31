@@ -243,7 +243,7 @@ export function CreateServeDialog({
                     min={1}
                     max={65535}
                     value={port}
-                    onChange={(e) => setPort(e.target.value)}
+                    onChange={setPort}
                     required
                   />
                 </div>

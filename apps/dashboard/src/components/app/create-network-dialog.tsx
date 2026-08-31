@@ -69,7 +69,7 @@ export function CreateNetworkDialog({
               <Input
                 id="network-name"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={setName}
                 placeholder="production"
                 pattern="[a-z0-9-]{3,32}"
                 required
@@ -83,7 +83,7 @@ export function CreateNetworkDialog({
               <Input
                 id="network-cidr"
                 value={cidr}
-                onChange={(e) => setCidr(e.target.value)}
+                onChange={setCidr}
                 required
               />
             </div>
@@ -95,7 +95,7 @@ export function CreateNetworkDialog({
                 min={576}
                 max={9000}
                 value={mtu}
-                onChange={(e) => setMtu(e.target.value)}
+                onChange={setMtu}
                 required
               />
             </div>

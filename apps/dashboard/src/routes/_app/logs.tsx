@@ -1,11 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import type { AuditEntry } from "@tunnet/api/management";
 import { Button } from "@tunnet/ui/components/button";
 import { Skeleton } from "@tunnet/ui/components/skeleton";
 import { formatDistanceToNow } from "date-fns";
 import { useEffect, useMemo, useState } from "react";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { PageHeader } from "@/components/app/page-header";
 import { useActiveOrganization } from "@/lib/auth-client";
 import { createManagementClient } from "@/lib/management-client";
@@ -30,7 +32,7 @@ function LogsPage() {
     }
   }, [initial]);
 
-  const columns = useMemo<ColumnDef<AuditEntry>[]>(
+  const columns = useMemo<DataTableColumnDef<AuditEntry>[]>(
     () => [
       {
         id: "time",

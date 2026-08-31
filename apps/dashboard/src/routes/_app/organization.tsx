@@ -654,7 +654,7 @@ function OrganizationSettingsPage() {
                   <Input
                     id="org-name"
                     value={name}
-                    onChange={(e) => setName(e.target.value)}
+                    onChange={setName}
                     disabled={!canUpdate}
                   />
                 </FieldBlock>
@@ -739,7 +739,7 @@ function OrganizationSettingsPage() {
                           <Input
                             id="inactivity-after"
                             value={inactivityAfter}
-                            onChange={(e) => setInactivityAfter(e.target.value)}
+                            onChange={setInactivityAfter}
                             placeholder="7d"
                             disabled={!canUpdate}
                             className="max-w-xs"
@@ -795,9 +795,7 @@ function OrganizationSettingsPage() {
                               <Input
                                 id="hard-delete-after"
                                 value={hardDeleteAfter}
-                                onChange={(e) =>
-                                  setHardDeleteAfter(e.target.value)
-                                }
+                                onChange={(value) => setHardDeleteAfter(value)}
                                 placeholder="7d"
                                 disabled={!canUpdate}
                                 className="max-w-xs"
@@ -869,7 +867,7 @@ function OrganizationSettingsPage() {
                       max={9000}
                       placeholder="Default"
                       value={agentTunnelMtu}
-                      onChange={(e) => setAgentTunnelMtu(e.target.value)}
+                      onChange={setAgentTunnelMtu}
                       disabled={!canUpdate}
                       className="max-w-xs"
                     />
@@ -894,8 +892,8 @@ function OrganizationSettingsPage() {
                       min={1}
                       max={168}
                       value={agentAutoUpdateIntervalHours}
-                      onChange={(e) =>
-                        setAgentAutoUpdateIntervalHours(e.target.value)
+                      onChange={(value) =>
+                        setAgentAutoUpdateIntervalHours(value)
                       }
                       disabled={!canUpdate || !agentAutoUpdateEnabled}
                       className="max-w-xs"
@@ -968,9 +966,7 @@ function OrganizationSettingsPage() {
                       min={30}
                       max={86400}
                       value={agentPostureIntervalSecs}
-                      onChange={(e) =>
-                        setAgentPostureIntervalSecs(e.target.value)
-                      }
+                      onChange={(value) => setAgentPostureIntervalSecs(value)}
                       disabled={!canUpdate}
                       className="max-w-xs"
                     />
@@ -1059,7 +1055,7 @@ function OrganizationSettingsPage() {
                         min={1}
                         placeholder="Never"
                         value={defaultTtl}
-                        onChange={(e) => setDefaultTtl(e.target.value)}
+                        onChange={setDefaultTtl}
                         disabled={!canUpdate}
                       />
                     </FieldBlock>
@@ -1073,7 +1069,7 @@ function OrganizationSettingsPage() {
                         min={1}
                         max={1000}
                         value={maxTunnels}
-                        onChange={(e) => setMaxTunnels(e.target.value)}
+                        onChange={setMaxTunnels}
                         disabled={!canUpdate}
                       />
                     </FieldBlock>
@@ -1093,7 +1089,7 @@ function OrganizationSettingsPage() {
                       <Input
                         id="custom-domain"
                         value={customDomain}
-                        onChange={(e) => setCustomDomain(e.target.value)}
+                        onChange={setCustomDomain}
                         placeholder="tunnels.example.com"
                         disabled={!canUpdate || !hasCustomDomains}
                       />
@@ -1116,7 +1112,7 @@ function OrganizationSettingsPage() {
                     <Input
                       id="peer-dns"
                       value={peerDnsSuffix}
-                      onChange={(e) => setPeerDnsSuffix(e.target.value)}
+                      onChange={setPeerDnsSuffix}
                       placeholder="tunnet"
                       disabled={!canUpdate}
                     />
@@ -1282,7 +1278,7 @@ function OrganizationSettingsPage() {
                       <Input
                         id="sso-domain"
                         value={ssoDomain}
-                        onChange={(e) => setSsoDomain(e.target.value)}
+                        onChange={setSsoDomain}
                         placeholder="company.com"
                         disabled={!canManageSso || !hasOidcSso}
                         required
@@ -1293,7 +1289,7 @@ function OrganizationSettingsPage() {
                       <Input
                         id="issuer-url"
                         value={issuerUrl}
-                        onChange={(e) => setIssuerUrl(e.target.value)}
+                        onChange={setIssuerUrl}
                         placeholder="https://accounts.example.com"
                         disabled={!canManageSso || !hasOidcSso}
                         required
@@ -1305,7 +1301,7 @@ function OrganizationSettingsPage() {
                         <Input
                           id="client-id"
                           value={clientId}
-                          onChange={(e) => setClientId(e.target.value)}
+                          onChange={setClientId}
                           disabled={!canManageSso || !hasOidcSso}
                           required
                         />
@@ -1315,7 +1311,7 @@ function OrganizationSettingsPage() {
                           id="client-secret"
                           type="password"
                           value={clientSecret}
-                          onChange={(e) => setClientSecret(e.target.value)}
+                          onChange={setClientSecret}
                           placeholder={
                             ssoProvider?.clientSecretSet
                               ? "Leave blank to keep current"
@@ -1336,7 +1332,7 @@ function OrganizationSettingsPage() {
                       <Input
                         id="discovery-url"
                         value={discoveryUrl}
-                        onChange={(e) => setDiscoveryUrl(e.target.value)}
+                        onChange={setDiscoveryUrl}
                         placeholder="Defaults to /.well-known/openid-configuration"
                         disabled={!canManageSso || !hasOidcSso}
                       />
@@ -1346,7 +1342,7 @@ function OrganizationSettingsPage() {
                       <Input
                         id="sso-scopes"
                         value={scopes}
-                        onChange={(e) => setScopes(e.target.value)}
+                        onChange={setScopes}
                         disabled={!canManageSso || !hasOidcSso}
                       />
                     </FieldBlock>
@@ -1378,7 +1374,7 @@ function OrganizationSettingsPage() {
                     <Input
                       placeholder={activeOrg?.name}
                       value={deleteConfirm}
-                      onChange={(e) => setDeleteConfirm(e.target.value)}
+                      onChange={setDeleteConfirm}
                       className="max-w-sm"
                     />
                     <div className="flex gap-2">

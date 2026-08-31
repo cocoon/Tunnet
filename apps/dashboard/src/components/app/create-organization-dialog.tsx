@@ -236,7 +236,7 @@ export function CreateOrganizationDialog({
                 <Input
                   id="org-name"
                   value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  onChange={setName}
                   placeholder="Acme Corp"
                   required
                   autoFocus

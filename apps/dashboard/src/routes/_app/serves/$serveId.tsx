@@ -223,8 +223,8 @@ function ServeDetailPage() {
         }}
       />
 
-      <Tabs defaultValue="overview" className="gap-4">
-        <TabsList variant="line">
+      <Tabs defaultValue="overview" variant="underline" className="gap-4">
+        <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="peers">
             Connected peers

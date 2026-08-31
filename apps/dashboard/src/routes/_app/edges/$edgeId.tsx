@@ -1,5 +1,4 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -30,7 +29,10 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { CopyField } from "@/components/app/copy-field";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { EntityStatus } from "@/components/app/entity-status";
 import { PageHeader } from "@/components/app/page-header";
@@ -98,7 +100,9 @@ function EdgeDetailPage() {
     [heartbeats],
   );
 
-  const tunnelColumns = useMemo<ColumnDef<(typeof edgeTunnels)[number]>[]>(
+  const tunnelColumns = useMemo<
+    DataTableColumnDef<(typeof edgeTunnels)[number]>[]
+  >(
     () => [
       {
         id: "status",
@@ -183,8 +187,8 @@ function EdgeDetailPage() {
         actions={<EntityStatus status={edge.status} />}
       />
 
-      <Tabs defaultValue="overview" className="gap-4">
-        <TabsList variant="line">
+      <Tabs defaultValue="overview" variant="underline" className="gap-4">
+        <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="tunnels">Tunnels</TabsTrigger>
           <TabsTrigger value="health">Health</TabsTrigger>
@@ -358,7 +362,7 @@ function EdgeDetailPage() {
                       <Input
                         id="edge-settings-name"
                         value={name}
-                        onChange={(e) => setName(e.target.value)}
+                        onChange={setName}
                       />
                     </div>
                     <div className="space-y-2">
@@ -366,7 +370,7 @@ function EdgeDetailPage() {
                       <Input
                         id="edge-settings-region"
                         value={region}
-                        onChange={(e) => setRegion(e.target.value)}
+                        onChange={setRegion}
                       />
                     </div>
                     <div className="space-y-2">
@@ -376,7 +380,7 @@ function EdgeDetailPage() {
                         type="number"
                         min={1}
                         value={capacity}
-                        onChange={(e) => setCapacity(e.target.value)}
+                        onChange={setCapacity}
                       />
                     </div>
                     <div className="space-y-2">

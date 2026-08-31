@@ -125,8 +125,8 @@ function CloudRelayDetailPage() {
         actions={<EntityStatus status={relay.status} />}
       />
 
-      <Tabs defaultValue="overview" className="gap-4">
-        <TabsList variant="line">
+      <Tabs defaultValue="overview" variant="underline" className="gap-4">
+        <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="health">Health</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
@@ -250,7 +250,7 @@ function CloudRelayDetailPage() {
                     <Input
                       id="cloud-relay-settings-name"
                       value={name}
-                      onChange={(e) => setName(e.target.value)}
+                      onChange={setName}
                     />
                   </div>
                   <div className="space-y-2">
@@ -258,7 +258,7 @@ function CloudRelayDetailPage() {
                     <Input
                       id="cloud-relay-settings-region"
                       value={region}
-                      onChange={(e) => setRegion(e.target.value)}
+                      onChange={setRegion}
                     />
                   </div>
                   <div className="space-y-2">
@@ -266,7 +266,7 @@ function CloudRelayDetailPage() {
                     <Input
                       id="cloud-relay-settings-url"
                       value={url}
-                      onChange={(e) => setUrl(e.target.value)}
+                      onChange={setUrl}
                     />
                   </div>
                   <div className="flex flex-wrap gap-2">

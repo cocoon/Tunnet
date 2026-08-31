@@ -1,4 +1,3 @@
-import type { ColumnDef } from "@tanstack/react-table";
 import type {
   CreateHostnameRouteBody,
   CreateSubnetRouteBody,
@@ -28,6 +27,7 @@ import {
 import { cn } from "@tunnet/ui/lib/utils";
 import { LockIcon, NetworkIcon, PlusIcon, TrashIcon } from "lucide-react";
 import { useEffect, useState } from "react";
+import type { DataTableColumnDef } from "@/components/app/data-table";
 
 export type UnifiedRoute = {
   id: string;
@@ -218,7 +218,7 @@ export function CreateSubnetRouteDialog({
                 className="font-mono"
                 placeholder="10.0.0.0/24"
                 value={cidr}
-                onChange={(e) => setCidr(e.target.value)}
+                onChange={setCidr}
                 required
               />
             </div>
@@ -227,7 +227,7 @@ export function CreateSubnetRouteDialog({
               <Input
                 id="subnet-desc"
                 value={description}
-                onChange={(e) => setDescription(e.target.value)}
+                onChange={setDescription}
                 placeholder="Optional"
               />
             </div>
@@ -320,7 +320,7 @@ export function CreateHostnameRouteDialog({
                 className="font-mono"
                 placeholder="wiki.internal or *.staging"
                 value={hostname}
-                onChange={(e) => setHostname(e.target.value)}
+                onChange={setHostname}
                 required
               />
             </div>
@@ -331,7 +331,7 @@ export function CreateHostnameRouteDialog({
                 className="font-mono"
                 placeholder="Optional - resolves locally if empty"
                 value={targetIp}
-                onChange={(e) => setTargetIp(e.target.value)}
+                onChange={setTargetIp}
               />
             </div>
             <div className="space-y-2">
@@ -339,7 +339,7 @@ export function CreateHostnameRouteDialog({
               <Input
                 id="host-desc"
                 value={description}
-                onChange={(e) => setDescription(e.target.value)}
+                onChange={setDescription}
                 placeholder="Optional"
               />
             </div>
@@ -562,7 +562,7 @@ export function buildNetworkRouteColumns({
   canManage: boolean;
   onToggle: (route: UnifiedRoute) => void;
   onDelete: (route: UnifiedRoute) => void;
-}): ColumnDef<UnifiedRoute>[] {
+}): DataTableColumnDef<UnifiedRoute>[] {
   return [
     {
       id: "type",
@@ -634,7 +634,7 @@ export function buildNetworkRouteColumns({
                 </div>
               );
             },
-          } satisfies ColumnDef<UnifiedRoute>,
+          } satisfies DataTableColumnDef<UnifiedRoute>,
         ]
       : []),
   ];
@@ -648,7 +648,7 @@ export function buildMachineRouteColumns({
   canManage: boolean;
   onToggle: (route: UnifiedRoute) => void;
   onDelete: (route: UnifiedRoute) => void;
-}): ColumnDef<UnifiedRoute>[] {
+}): DataTableColumnDef<UnifiedRoute>[] {
   return [
     {
       id: "type",
@@ -708,7 +708,7 @@ export function buildMachineRouteColumns({
                 </div>
               );
             },
-          } satisfies ColumnDef<UnifiedRoute>,
+          } satisfies DataTableColumnDef<UnifiedRoute>,
         ]
       : []),
   ];

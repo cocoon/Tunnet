@@ -1,5 +1,4 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import type { ColumnDef } from "@tanstack/react-table";
 import type { TunnelTrafficLog } from "@tunnet/api/management";
 import {
   Breadcrumb,
@@ -44,7 +43,10 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { CopyField } from "@/components/app/copy-field";
-import { DataTable } from "@/components/app/data-table";
+import {
+  DataTable,
+  type DataTableColumnDef,
+} from "@/components/app/data-table";
 import { EmptyState } from "@/components/app/empty-state";
 import { EntityStatus } from "@/components/app/entity-status";
 import { PageHeader } from "@/components/app/page-header";
@@ -143,7 +145,7 @@ function TunnelDetailPage() {
     [routingRules],
   );
 
-  const trafficColumns = useMemo<ColumnDef<TunnelTrafficLog>[]>(
+  const trafficColumns = useMemo<DataTableColumnDef<TunnelTrafficLog>[]>(
     () => [
       {
         id: "time",
@@ -164,9 +166,7 @@ function TunnelDetailPage() {
             type="button"
             className="font-mono text-xs hover:underline"
             onClick={() => {
-              void navigator.clipboard
-                .writeText(row.original.method)
-                .then(() => toast.success("Copied"));
+              void navigator.clipboard.writeText(row.original.method);
             }}
           >
             {row.original.method}
@@ -182,9 +182,7 @@ function TunnelDetailPage() {
             className="max-w-[240px] truncate font-mono text-xs hover:underline"
             title={row.original.path}
             onClick={() => {
-              void navigator.clipboard
-                .writeText(row.original.path)
-                .then(() => toast.success("Copied"));
+              void navigator.clipboard.writeText(row.original.path);
             }}
           >
             {row.original.path}
@@ -216,9 +214,7 @@ function TunnelDetailPage() {
               type="button"
               className="font-mono text-xs hover:underline"
               onClick={() => {
-                void navigator.clipboard
-                  .writeText(row.original.sourceIp!)
-                  .then(() => toast.success("Copied"));
+                void navigator.clipboard.writeText(row.original.sourceIp!);
               }}
             >
               {row.original.sourceIp}
@@ -339,8 +335,8 @@ function TunnelDetailPage() {
         }
       />
 
-      <Tabs defaultValue="overview" className="gap-4">
-        <TabsList variant="line">
+      <Tabs defaultValue="overview" variant="underline" className="gap-4">
+        <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="traffic">Traffic</TabsTrigger>
           <TabsTrigger value="configuration">Configuration</TabsTrigger>
@@ -462,7 +458,7 @@ function TunnelDetailPage() {
                     min={1}
                     max={65535}
                     value={localPort}
-                    onChange={(e) => setLocalPort(e.target.value)}
+                    onChange={setLocalPort}
                     disabled={!canManage}
                   />
                 </div>
@@ -471,7 +467,7 @@ function TunnelDetailPage() {
                   <Input
                     id="cfg-subdomain"
                     value={subdomain}
-                    onChange={(e) => setSubdomain(e.target.value)}
+                    onChange={setSubdomain}
                     pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?"
                     disabled={!canManage}
                   />
@@ -519,8 +515,8 @@ function TunnelDetailPage() {
                           <Input
                             id="cfg-basic-user"
                             value={basicAuthUser}
-                            onChange={(e) => {
-                              setBasicAuthUser(e.target.value);
+                            onChange={(value) => {
+                              setBasicAuthUser(value);
                               setClearBasicAuth(false);
                             }}
                             autoComplete="off"
@@ -534,8 +530,8 @@ function TunnelDetailPage() {
                             id="cfg-basic-pass"
                             type="password"
                             value={basicAuthPassword}
-                            onChange={(e) => {
-                              setBasicAuthPassword(e.target.value);
+                            onChange={(value) => {
+                              setBasicAuthPassword(value);
                               setClearBasicAuth(false);
                             }}
                             autoComplete="new-password"
@@ -700,7 +696,7 @@ function TunnelDetailPage() {
                     <Input
                       id="rule-path"
                       value={pathPattern}
-                      onChange={(e) => setPathPattern(e.target.value)}
+                      onChange={setPathPattern}
                       placeholder="/api/*"
                       required
                     />
@@ -738,7 +734,7 @@ function TunnelDetailPage() {
                       min={1}
                       max={65535}
                       value={targetPort}
-                      onChange={(e) => setTargetPort(e.target.value)}
+                      onChange={setTargetPort}
                       required
                     />
                   </div>
@@ -843,7 +839,7 @@ function TunnelDetailPage() {
                       min={1}
                       max={65535}
                       value={externalPort}
-                      onChange={(e) => setExternalPort(e.target.value)}
+                      onChange={setExternalPort}
                       required
                     />
                   </div>
@@ -880,7 +876,7 @@ function TunnelDetailPage() {
                       min={1}
                       max={65535}
                       value={mappingTargetPort}
-                      onChange={(e) => setMappingTargetPort(e.target.value)}
+                      onChange={setMappingTargetPort}
                       required
                     />
                   </div>
