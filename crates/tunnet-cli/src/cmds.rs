@@ -741,6 +741,14 @@ pub async fn run_dns_status(args: DnsStatusArgs) -> anyhow::Result<()> {
             info.upstream.join(", ")
         }
     ));
+    out.writeln(format!(
+        "dnssec    {}",
+        if info.dnssec {
+            out.green("validate")
+        } else {
+            out.dim("off")
+        }
+    ));
     out.writeln(format!("cache     {} entries", info.cached_entries));
     out.writeln(format!("synthetic {}", info.synthetic_base));
     out.writeln(format!("magic     {}", info.magic_ip));

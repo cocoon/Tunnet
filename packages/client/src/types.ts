@@ -502,6 +502,7 @@ export interface OnDemandStatusInfo {
 export interface DnsStatusInfo {
   suffix: string;
   upstream: string[];
+  dnssec: boolean;
   peer_dns_active: boolean;
   cached_entries: number;
   synthetic_base: string;

@@ -7,7 +7,7 @@ pub mod control;
 pub mod coordinator;
 pub mod direct;
 #[cfg(feature = "dns")]
-pub mod dns_stub;
+pub mod dns;
 pub mod effective_config;
 pub mod identity;
 #[cfg(feature = "tunnel")]

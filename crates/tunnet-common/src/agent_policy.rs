@@ -104,6 +104,8 @@ pub struct RemoteDnsPolicy {
     pub suffix: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub upstream: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dnssec: Option<bool>,
 }
 
 /// How agents select deployment vs org-owned connectivity relays.
@@ -221,6 +223,7 @@ pub struct EffectiveAgentConfig {
     pub exit_nodes_allow_use: ResolvedSetting<bool>,
     pub dns_suffix: ResolvedSetting<String>,
     pub dns_upstream: ResolvedSetting<Vec<String>>,
+    pub dnssec: ResolvedSetting<bool>,
     /// Always local source.
     pub local: LocalOnlySettings,
 }
@@ -272,6 +275,7 @@ pub fn inherit_remote_policy(
                 } else {
                     n.upstream.clone()
                 },
+                dnssec: n.dnssec.or(o.dnssec),
             }),
             (Some(n), None) => Some(n.clone()),
             (None, o) => o.clone(),
@@ -307,7 +311,7 @@ pub fn merge_agent_config(
     local_dual: &LocalDualOverrides,
     local_only: LocalOnlySettings,
 ) -> EffectiveAgentConfig {
-    let default_upstream = vec!["1.1.1.1".into(), "8.8.8.8".into()];
+    let default_upstream = crate::default_dns_upstream();
 
     let auto_enabled_remote = remote.auto_update.as_ref().map(|a| a.enabled);
     let auto_interval_remote = remote.auto_update.as_ref().map(|a| a.check_interval_hours);
@@ -329,6 +333,7 @@ pub fn merge_agent_config(
             Some(d.upstream.clone())
         }
     });
+    let dnssec_remote = remote.dns.as_ref().and_then(|d| d.dnssec);
 
     let relay_policy_remote = remote.relay.as_ref().map(|r| r.policy);
     let exit_advertise_remote = remote.exit_nodes.as_ref().map(|e| e.allow_advertise);
@@ -362,6 +367,7 @@ pub fn merge_agent_config(
         exit_nodes_allow_use: resolve_remote_only(exit_use_remote, true),
         dns_suffix: resolve_remote_only(dns_suffix_remote, DEFAULT_DNS_SUFFIX.into()),
         dns_upstream: resolve_remote_only(dns_upstream_remote, default_upstream),
+        dnssec: resolve_remote_only(dnssec_remote, false),
         local: local_only,
     }
 }

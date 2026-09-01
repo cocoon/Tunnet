@@ -162,11 +162,21 @@ fn default_synthetic_base() -> Ipv4Addr {
     Ipv4Addr::new(100, 100, 0, 1)
 }
 
+/// Upstream resolver list. `"system"` (alone) uses OS DNS configuration.
+/// Otherwise each entry is a nameserver URL (`udp+tcp://1.1.1.1:53`, `tls://1.1.1.1:853#cloudflare-dns.com`, …).
+pub fn default_dns_upstream() -> Vec<String> {
+    vec!["udp+tcp://1.1.1.1:53".into(), "udp+tcp://8.8.8.8:53".into()]
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DnsConfig {
     pub suffix: String,
+    #[serde(default = "default_dns_upstream")]
+    pub upstream: Vec<String>,
+    /// Hickory DNSSEC validation. Off by default: many stub forwarders and
+    /// middleboxes break signed zones. Turn on when upstreams are validating-capable.
     #[serde(default)]
-    pub upstream: Vec<std::net::IpAddr>,
+    pub dnssec: bool,
     #[serde(default = "default_synthetic_base")]
     pub synthetic_base: Ipv4Addr,
     #[serde(default = "default_magic_ip")]
@@ -177,11 +187,8 @@ impl Default for DnsConfig {
     fn default() -> Self {
         Self {
             suffix: "tunnet".into(),
-            upstream: vec![
-                std::net::IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
-                std::net::IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
-            ],
-            // CGNAT-style pool reserved for PeerDNS hostname routes.
+            upstream: default_dns_upstream(),
+            dnssec: false,
             synthetic_base: default_synthetic_base(),
             magic_ip: default_magic_ip(),
         }

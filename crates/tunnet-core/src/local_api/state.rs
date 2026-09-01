@@ -20,6 +20,7 @@ pub struct LocalApiState {
     pub agent_version: String,
     pub started_at: Instant,
     pub dns_upstream: Vec<String>,
+    pub dnssec: bool,
     pub synthetic_base: String,
     pub magic_ip: String,
     pub peer_dns_active: Arc<std::sync::atomic::AtomicBool>,

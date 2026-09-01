@@ -977,6 +977,7 @@ pub struct OnDemandStatusInfo {
 pub struct DnsStatusInfo {
     pub suffix: String,
     pub upstream: Vec<String>,
+    pub dnssec: bool,
     pub peer_dns_active: bool,
     pub cached_entries: usize,
     pub synthetic_base: String,

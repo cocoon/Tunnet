@@ -65,7 +65,8 @@ export const remoteAutoUpdatePolicySchema = z.object({
 
 export const remoteDnsPolicySchema = z.object({
   suffix: z.string().trim().min(1).max(63).optional(),
-  upstream: z.array(z.string().trim().min(1).max(64)).max(8).default([]),
+  upstream: z.array(z.string().trim().min(1).max(256)).max(8).default([]),
+  dnssec: z.boolean().optional(),
 });
 
 export const relayPolicySchema = z.enum(["inherit", "augment", "exclusive"]);
@@ -252,6 +253,7 @@ export function inheritRemoteAgentPolicy(
             network.dns?.upstream && network.dns.upstream.length > 0
               ? network.dns.upstream
               : (org.dns?.upstream ?? []),
+          dnssec: network.dns?.dnssec ?? org.dns?.dnssec,
         }
       : undefined;
 

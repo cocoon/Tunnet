@@ -19,7 +19,7 @@ direct = ["dep:iroh-docs", "dep:iroh-blobs", "dep:iroh-mainline-address-lookup",
 send = ["dep:iroh-blobs"]
 serve = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
 tunnel = ["dep:axum", "dep:httparse"]
-dns = ["dep:hickory-proto"]
+dns = ["dep:hickory-proto", "dep:hickory-resolver", "dep:rustls"]
 recording = []
 local_api = [
   "dep:axum",
@@ -59,6 +59,7 @@ ed25519-dalek.workspace = true
 ipnet.workspace = true
 prefix-trie.workspace = true
 hickory-proto = { workspace = true, optional = true }
+hickory-resolver = { workspace = true, optional = true }
 
 iroh.workspace = true
 iroh-gossip.workspace = true

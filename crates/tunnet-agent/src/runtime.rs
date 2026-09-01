@@ -239,16 +239,8 @@ pub async fn run(
                 let mut dns = membership_snap.dns.clone();
                 let eff = config_store.load();
                 dns.suffix = eff.effective.dns_suffix.value.clone();
-                let upstream: Vec<_> = eff
-                    .effective
-                    .dns_upstream
-                    .value
-                    .iter()
-                    .filter_map(|s| s.parse().ok())
-                    .collect();
-                if !upstream.is_empty() {
-                    dns.upstream = upstream;
-                }
+                dns.upstream = eff.effective.dns_upstream.value.clone();
+                dns.dnssec = eff.effective.dnssec.value;
                 dns
             },
         )
@@ -268,7 +260,8 @@ pub async fn run(
         hostname: hostname.clone(),
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
         started_at,
-        dns_upstream: dns_cfg.upstream.iter().map(|ip| ip.to_string()).collect(),
+        dns_upstream: dns_cfg.upstream.clone(),
+        dnssec: dns_cfg.dnssec,
         synthetic_base: dns_cfg.synthetic_base.to_string(),
         magic_ip: dns_cfg.magic_ip.to_string(),
         peer_dns_active: peer_dns_active.clone(),
@@ -473,8 +466,8 @@ pub async fn run(
         ingress: ingress.clone(),
     });
 
-    let dns_bind = tunnet_core::dns_stub::bind_addr(dns_cfg.magic_ip);
-    let _dns_task = tunnet_core::dns_stub::spawn(dns_bind, node.routes.clone(), dns_cfg.clone());
+    let dns_bind = tunnet_core::dns::bind_addr(dns_cfg.magic_ip);
+    let _dns_task = tunnet_core::dns::spawn(dns_bind, node.routes.clone(), dns_cfg.clone());
     let dns_guard = match crate::system_dns::configure(dns_cfg.magic_ip, &dns_cfg.suffix) {
         Ok(g) => Some(g),
         Err(e) => {

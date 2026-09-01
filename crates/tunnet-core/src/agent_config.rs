@@ -2,7 +2,7 @@
 //! node, Direct networks, firewall, DNS, connect allowlist, logging, mDNS, and updates.
 
 use std::collections::{BTreeMap, HashSet};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 use std::path::Path;
 
 use anyhow::Context;
@@ -117,7 +117,9 @@ pub struct DirectDnsSection {
     #[serde(default = "default_tld")]
     pub tld: String,
     #[serde(default = "default_upstream")]
-    pub upstream: Vec<IpAddr>,
+    pub upstream: Vec<String>,
+    #[serde(default)]
+    pub dnssec: bool,
 }
 
 impl Default for DirectDnsSection {
@@ -126,6 +128,7 @@ impl Default for DirectDnsSection {
             magic_ip: default_magic_ip(),
             tld: default_tld(),
             upstream: default_upstream(),
+            dnssec: false,
         }
     }
 }
@@ -249,11 +252,8 @@ fn default_magic_ip() -> Ipv4Addr {
 fn default_tld() -> String {
     "tunnet".into()
 }
-fn default_upstream() -> Vec<IpAddr> {
-    vec![
-        IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
-        IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
-    ]
+fn default_upstream() -> Vec<String> {
+    tunnet_common::default_dns_upstream()
 }
 fn default_log_level() -> String {
     "info".into()
@@ -492,6 +492,7 @@ impl DirectDnsSection {
             } else {
                 self.upstream.clone()
             },
+            dnssec: self.dnssec,
             synthetic_base: DnsConfig::default().synthetic_base,
             magic_ip: self.magic_ip,
         }

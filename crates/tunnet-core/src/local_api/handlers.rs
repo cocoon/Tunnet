@@ -661,6 +661,7 @@ pub(crate) fn build_dns_status(state: &LocalApiState) -> DnsStatusInfo {
     DnsStatusInfo {
         suffix: state.node.routes.dns_suffix(),
         upstream: state.dns_upstream.clone(),
+        dnssec: state.dnssec,
         peer_dns_active: state
             .peer_dns_active
             .load(std::sync::atomic::Ordering::SeqCst),
