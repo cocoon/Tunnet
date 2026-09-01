@@ -23,7 +23,6 @@ pub fn build_tun(
     ipv4: std::net::Ipv4Addr,
     prefix: u8,
     mtu: u16,
-    #[cfg(windows)] wintun_file: Option<&str>,
 ) -> anyhow::Result<AsyncDevice> {
     let builder = DeviceBuilder::new()
         .name(ifname)
@@ -31,29 +30,12 @@ pub fn build_tun(
         .mtu(mtu);
     #[cfg(windows)]
     let builder = {
-        use crate::wintun_path;
-        let path = wintun_path::resolve(wintun_file);
-        tracing::info!(path = %path.display(), "loading wintun.dll");
+        let path = crate::wintun::materialize()?;
         builder
             .wintun_file(path.display().to_string())
             .wintun_log(true)
     };
-    let dev = builder
-        .build_async()
-        .with_context(|| {
-            #[cfg(windows)]
-            {
-                let path = crate::wintun_path::resolve(wintun_file);
-                format!(
-                    "build_async TUN device (wintun={}). On Windows, ensure wintun.dll sits next to tunnet.exe",
-                    path.display()
-                )
-            }
-            #[cfg(not(windows))]
-            {
-                "build_async TUN device".to_string()
-            }
-        })?;
+    let dev = builder.build_async().context("build_async TUN device")?;
     tracing::info!(%ipv4, prefix, mtu, "TUN device up");
     Ok(dev)
 }

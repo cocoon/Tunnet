@@ -156,27 +156,6 @@ jobs:
           ext=""
           if [[ "$target" == *windows* ]]; then ext=".exe"; fi
 
-          wintun_arch=""
-          if [[ "$target" == "x86_64-pc-windows-msvc" ]]; then
-            wintun_arch="amd64"
-          elif [[ "$target" == "aarch64-pc-windows-msvc" ]]; then
-            wintun_arch="arm64"
-          fi
-
-          resolve_wintun() {
-            [ -n "$wintun_arch" ] || return 1
-            for path in \
-              "target/${target}/release/wintun.dll" \
-              "crates/tunnet-agent/resources/wintun/${wintun_arch}/wintun.dll"
-            do
-              if [ -f "$path" ]; then
-                echo "$path"
-                return 0
-              fi
-            done
-            return 1
-          }
-
           package_variant() {
             local variant="$1"
             shift
@@ -190,16 +169,6 @@ jobs:
                 cp "$src" "$staging/"
               fi
             done
-
-            if [ "$variant" = "tunnet-headless" ] || [ "$variant" = "tunnet" ]; then
-              if [ -n "$wintun_arch" ]; then
-                wintun_src="$(resolve_wintun)" || {
-                  echo "::error::wintun.dll not found for ${wintun_arch} (expected in target/${target}/release/ or crates/tunnet-agent/resources/wintun/)"
-                  exit 1
-                }
-                cp "$wintun_src" "$staging/wintun.dll"
-              fi
-            fi
 
             cp LICENSE LICENSING.md COMMERCIAL-LICENSE.md README.md "$staging/" 2>/dev/null || true
             cp -R licenses "$staging/" 2>/dev/null || true

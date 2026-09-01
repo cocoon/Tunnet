@@ -214,9 +214,6 @@ pub async fn run(
         }
     }
 
-    #[cfg(windows)]
-    let wintun_file = args.wintun_file.clone();
-
     let (assigned_ipv4, prefix, mtu, dns_cfg) = if is_direct {
         let _ = tunnet_core::TunnetConfig::ensure(&node.paths);
         (
@@ -258,7 +255,7 @@ pub async fn run(
     };
 
     // Bind Local API and signal service readiness before TUN/SSH bring-up. Control-plane
-    // presence can already be Online while wintun/SSH still start; `service start`
+    // presence can already be Online while the TUN device and SSH still start; `service start`
     // should not wait on that work.
     let peer_dns_active = Arc::new(AtomicBool::new(false));
     let (data_plane, cmd_rx) = DataPlaneHandle::new(8);
@@ -305,14 +302,7 @@ pub async fn run(
     #[cfg(unix)]
     crate::sd_notify::ready("running");
 
-    let tun = Arc::new(build_tun(
-        &args.ifname,
-        assigned_ipv4,
-        prefix,
-        mtu,
-        #[cfg(windows)]
-        wintun_file.as_deref(),
-    )?);
+    let tun = Arc::new(build_tun(&args.ifname, assigned_ipv4, prefix, mtu)?);
     crate::system_firewall::configure(&args.ifname);
     let _ = crate::magic_dns::ensure_magic_dns_addr(&args.ifname, dns_cfg.magic_ip);
     let tun_slot: TunSlot = Arc::new(tokio::sync::RwLock::new(TunSlotState {
@@ -549,8 +539,6 @@ pub async fn run(
             is_direct,
             network_id,
             underlay_hosts: underlay_hosts.clone(),
-            #[cfg(windows)]
-            wintun_file,
         },
         peer_dns_active: peer_dns_active.clone(),
         initial,

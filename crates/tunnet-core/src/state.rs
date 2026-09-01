@@ -64,7 +64,7 @@ impl StatePaths {
     pub fn secrets_meta_file(&self) -> PathBuf {
         self.dir.join("state.enc.meta")
     }
-    /// Core update staging, pending marker, and multi-file rollback unit.
+    /// Core update staging, pending marker, and rollback of the Core unit.
     pub fn update_dir(&self) -> PathBuf {
         self.dir.join("update")
     }

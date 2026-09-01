@@ -110,7 +110,6 @@ impl PeerIdentity {
     pub fn require_elevated(&self) -> Result<(), ApiError> {
         self.require_cap(LIFECYCLE)
     }
-
 }
 
 fn elevated_required_message() -> &'static str {

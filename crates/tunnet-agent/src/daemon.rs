@@ -40,9 +40,6 @@ pub struct RunArgs {
     pub keep_alive: bool,
     #[arg(long, env = "TUNNET_NO_ENCRYPT_STATE")]
     pub no_encrypt_state: bool,
-    #[cfg(windows)]
-    #[arg(long, env = "TUNNET_WINTUN_FILE")]
-    pub wintun_file: Option<String>,
 }
 
 pub fn init_logging(cli: &DaemonCli) {

@@ -13,14 +13,13 @@ use tauri::{
 use tauri_plugin_opener::OpenerExt;
 use tunnet_client::{TunnetClient, endpoint_reachable};
 use tunnet_common::local_api::{
-    CoreUpdateStatus, DataPlaneStatus, DiagInfo,
-    DirectFirewallAddRequest, DirectFirewallRemoveRequest, DirectInviteRequest,
-    DirectInviteResponse, DirectPeerRequest, DirectPendingResponse, DnsStatusInfo,
-    LocalEnrollRequest, LocalEvent, MetaInfo, NetcheckInfo, NetworkCreateRequest,
-    NetworkJoinRequest, NetworkLeaveRequest, NetworksResponse, NodeSummary, OkResponse,
-    PeersResponse, ResetRequest, RoutesInfo, SendFileRequest, ServeInfo, ServeStartRequest,
-    ServesResponse, SshRecordingsResponse, SshSessionsResponse, TransferInfo, TransfersResponse,
-    TunnelInfo, TunnelStartRequest, TunnelsResponse,
+    CoreUpdateStatus, DataPlaneStatus, DiagInfo, DirectFirewallAddRequest,
+    DirectFirewallRemoveRequest, DirectInviteRequest, DirectInviteResponse, DirectPeerRequest,
+    DirectPendingResponse, DnsStatusInfo, LocalEnrollRequest, LocalEvent, MetaInfo, NetcheckInfo,
+    NetworkCreateRequest, NetworkJoinRequest, NetworkLeaveRequest, NetworksResponse, NodeSummary,
+    OkResponse, PeersResponse, ResetRequest, RoutesInfo, SendFileRequest, ServeInfo,
+    ServeStartRequest, ServesResponse, SshRecordingsResponse, SshSessionsResponse, TransferInfo,
+    TransfersResponse, TunnelInfo, TunnelStartRequest, TunnelsResponse,
 };
 use tunnet_service::{self, ServiceProbe};
 

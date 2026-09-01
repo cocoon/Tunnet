@@ -228,7 +228,6 @@ pub fn start(state_dir: Option<&str>) -> anyhow::Result<()> {
             anyhow::anyhow!("{e:#}\nRun an elevated Command Prompt: tunnet service start")
         })?;
         println!("Starting tunnet service…");
-        win_service::ensure_wintun_present(state_dir)?;
         win_service::start_and_wait()?;
         wait_for_local_api(std::time::Duration::from_secs(60))?;
         println!("Service is running.");
@@ -301,7 +300,6 @@ pub fn restart(state_dir: Option<&str>) -> anyhow::Result<()> {
         win_service::ensure_elevated()?;
         println!("Restarting tunnet service…");
         install_inner(state_dir, false)?;
-        win_service::ensure_wintun_present(state_dir)?;
         if win_service::probe().active {
             win_service::stop_and_wait()?;
         }

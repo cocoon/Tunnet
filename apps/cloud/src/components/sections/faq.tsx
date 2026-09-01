@@ -26,7 +26,7 @@ const FAQ = [
   },
   {
     q: "Which platforms does the agent support?",
-    a: "macOS, Linux, and Windows. Linux and macOS require root to create a TUN interface. Windows requires Administrator with the Wintun driver installed.",
+    a: "macOS, Linux, and Windows. Linux and macOS require root to create a TUN interface. Windows requires Administrator.",
   },
   {
     q: "Can I bring my own edges and certificates?",

@@ -39,10 +39,10 @@ fn cli_name() -> &'static str {
 /// Canonical directory for service/daemon binaries on Windows.
 ///
 /// Layout (Windows): `%ProgramData%\tunnet\bin\` holds the *active* copies of
-/// `tunnet.exe`, `tunnetd.exe`, and `wintun.dll`. SCM always points at
-/// `tunnetd.exe` here. The desktop app may live under Program Files / NSIS
-/// `$INSTDIR`; install/update paths must stage into this directory via
-/// [`stage_daemon_exe`] so users never have competing "active" daemon copies.
+/// `tunnet.exe` and `tunnetd.exe`. SCM always points at `tunnetd.exe` here.
+/// The desktop app may live under Program Files / NSIS `$INSTDIR`;
+/// install/update paths must stage into this directory via [`stage_daemon_exe`]
+/// so users never have competing "active" daemon copies.
 #[cfg(windows)]
 pub fn installed_bin_dir(state_dir: Option<&str>) -> PathBuf {
     resolve_state_dir(state_dir).join("bin")
@@ -126,7 +126,7 @@ pub fn daemon_outdated(state_dir: Option<&str>) -> anyhow::Result<bool> {
     Ok(!same_artifact(&source, &dest))
 }
 
-/// Stage daemon (+ CLI + wintun) into [`installed_bin_dir`] and return the
+/// Stage daemon and CLI into [`installed_bin_dir`] and return the
 /// staged `tunnetd` path. This is the only path SCM should run.
 #[cfg(windows)]
 pub fn stage_daemon_exe(state_dir: Option<&str>) -> anyhow::Result<PathBuf> {
@@ -152,10 +152,6 @@ pub fn stage_daemon_exe(state_dir: Option<&str>) -> anyhow::Result<PathBuf> {
         let cli = dir.join(cli_name());
         if cli.is_file() {
             atomic_copy(&cli, &dest_dir.join(cli_name()))?;
-        }
-        let dll = dir.join("wintun.dll");
-        if dll.is_file() {
-            atomic_copy(&dll, &dest_dir.join("wintun.dll"))?;
         }
     }
 

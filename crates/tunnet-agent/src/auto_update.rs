@@ -182,7 +182,7 @@ fn replace_file(src: &std::path::Path, dest: &std::path::Path) -> Result<()> {
 
 #[cfg(windows)]
 fn core_unit_names() -> &'static [&'static str] {
-    &["tunnet.exe", "tunnetd.exe", "wintun.dll"]
+    &["tunnet.exe", "tunnetd.exe"]
 }
 #[cfg(not(windows))]
 fn core_unit_names() -> &'static [&'static str] {
@@ -278,12 +278,12 @@ mod tests {
         let install = temp.path().join("bin");
         std::fs::create_dir_all(&previous).unwrap();
         std::fs::create_dir_all(&install).unwrap();
-        for name in ["tunnet", "tunnetd", "wintun.dll"] {
+        for name in ["tunnet", "tunnetd"] {
             std::fs::write(previous.join(name), format!("old-{name}")).unwrap();
             std::fs::write(install.join(name), format!("new-{name}")).unwrap();
         }
-        restore_unit(&previous, &install, &["tunnet", "tunnetd", "wintun.dll"]).unwrap();
-        for name in ["tunnet", "tunnetd", "wintun.dll"] {
+        restore_unit(&previous, &install, &["tunnet", "tunnetd"]).unwrap();
+        for name in ["tunnet", "tunnetd"] {
             assert_eq!(
                 std::fs::read_to_string(install.join(name)).unwrap(),
                 format!("old-{name}")

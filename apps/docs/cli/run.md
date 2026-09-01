@@ -34,7 +34,7 @@ For the OS service, set the same variables in the service environment (for examp
 
 ## Requirements
 
-The agent needs root/admin privileges to create the TUN interface. On Linux, this means running with `sudo`. On Windows, run as Administrator with the Wintun driver installed.
+The agent needs root/admin privileges to create the TUN interface. On Linux, this means running with `sudo`. On Windows, run as Administrator.
 
 ## Behavior
 

@@ -222,13 +222,6 @@ try {
         Die "no binaries were installed"
     }
 
-    $wintunSrc = Join-Path $extracted "wintun.dll"
-    if (Test-Path $wintunSrc) {
-        $wintunDst = Join-Path $InstallDir "wintun.dll"
-        Copy-Item -Path $wintunSrc -Destination $wintunDst -Force
-        Write-Info "Installed wintun.dll -> $wintunDst"
-    }
-
     $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
     if ($machinePath -and ($machinePath -split ';' | Where-Object { $_ -eq $InstallDir }).Count -eq 0) {
         if (Test-IsAdmin) {

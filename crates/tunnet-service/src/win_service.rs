@@ -23,26 +23,6 @@ pub fn service_log_path() -> PathBuf {
     system_state_dir().join("service.log")
 }
 
-pub fn ensure_wintun_present(state_dir: Option<&str>) -> anyhow::Result<()> {
-    let staged = crate::paths::installed_bin_dir(state_dir).join("wintun.dll");
-    if staged.is_file() {
-        return Ok(());
-    }
-    let beside = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("wintun.dll")))
-        .unwrap_or_else(|| PathBuf::from("wintun.dll"));
-    if beside.is_file() {
-        return Ok(());
-    }
-    anyhow::bail!(
-        "wintun.dll not found (looked for {} and {}).\n\
-         Reinstall Tunnet or run `tunnet service start` to restore bundled binaries.",
-        staged.display(),
-        beside.display()
-    );
-}
-
 pub fn install(exe: &str, state_dir: Option<&str>) -> anyhow::Result<()> {
     let manager =
         open_scm_admin(ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)?;

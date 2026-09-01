@@ -37,7 +37,7 @@ mod upgrade;
 #[cfg(windows)]
 mod win_service;
 #[cfg(windows)]
-mod wintun_path;
+mod wintun;
 
 use clap::Parser;
 

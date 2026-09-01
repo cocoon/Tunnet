@@ -262,11 +262,6 @@ done
 
 [ "$INSTALLED_COUNT" -gt 0 ] || die "no binaries were installed"
 
-if [ -f "${EXTRACTED}/wintun.dll" ]; then
-  $SUDO install -m 644 "${EXTRACTED}/wintun.dll" "${INSTALL_DIR}/wintun.dll"
-  info "Installed wintun.dll -> ${INSTALL_DIR}/wintun.dll"
-fi
-
 if [ "$INSTALL_SERVICE" -eq 1 ] && [ -x "${INSTALL_DIR}/tunnet" ]; then
   if [ "$OS" = "linux" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
     if $SUDO "${INSTALL_DIR}/tunnet" service install 2>/dev/null; then

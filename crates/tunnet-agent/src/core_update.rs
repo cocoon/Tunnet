@@ -176,10 +176,10 @@ impl CoreUpdater {
     }
 
     fn schedule_activation(self: &Arc<Self>) -> anyhow::Result<()> {
-        let stage = self.paths.update_staging_dir();
-        let root = payload_root(&stage.join("payload"))?;
         #[cfg(windows)]
         {
+            let stage = self.paths.update_staging_dir();
+            let root = payload_root(&stage.join("payload"))?;
             let worker = stage.join("tunnet-update-worker.exe");
             std::fs::copy(root.join("tunnetd.exe"), &worker)?;
             std::process::Command::new(worker)
@@ -250,6 +250,7 @@ pub fn maybe_run_activation_worker() -> anyhow::Result<bool> {
     let state = args
         .get(2)
         .context("activation worker missing state directory")?;
+    #[cfg(windows)]
     let parent: u32 = args
         .get(3)
         .and_then(|v| v.to_str())
@@ -379,7 +380,7 @@ fn payload_root(root: &Path) -> anyhow::Result<PathBuf> {
 
 #[cfg(windows)]
 fn unit_names() -> &'static [&'static str] {
-    &["tunnet.exe", "tunnetd.exe", "wintun.dll"]
+    &["tunnet.exe", "tunnetd.exe"]
 }
 #[cfg(not(windows))]
 fn unit_names() -> &'static [&'static str] {

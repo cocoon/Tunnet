@@ -35,8 +35,6 @@ pub struct DataPlaneConfig {
     pub is_direct: bool,
     pub network_id: Uuid,
     pub underlay_hosts: Vec<Ipv4Addr>,
-    #[cfg(windows)]
-    pub wintun_file: Option<String>,
 }
 
 pub(crate) struct LivePlane {
@@ -208,8 +206,6 @@ async fn bring_up(
         cfg.assigned_ipv4,
         cfg.prefix,
         cfg.mtu,
-        #[cfg(windows)]
-        cfg.wintun_file.as_deref(),
     )?);
     crate::system_firewall::configure(&cfg.ifname);
     let _ = crate::magic_dns::ensure_magic_dns_addr(&cfg.ifname, cfg.dns_cfg.magic_ip);
