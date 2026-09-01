@@ -145,7 +145,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
                 : "idle"
         }
         className={cn(
-      "relative h-10 overflow-hidden rounded-full border transition-colors duration-200",
+          "relative h-8 overflow-hidden rounded-full border transition-colors duration-200",
           "border-border",
           focused && !hasError && "border-foreground/40 ring-2 ring-ring/40",
           hasError && "border-destructive ring-2 ring-destructive/25",
@@ -215,7 +215,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
         ) : rightSlot ? (
           <span
             className={cn(
-              "absolute right-0 top-0 flex h-full items-center text-muted-foreground [&_button]:grid [&_button]:size-10 [&_button]:place-items-center [&_svg]:h-4 [&_svg]:w-4",
+              "absolute right-0 top-0 flex h-full items-center text-muted-foreground [&_button]:grid [&_button]:size-8 [&_button]:place-items-center [&_svg]:h-4 [&_svg]:w-4",
               classNames?.rightIcon,
             )}
           >

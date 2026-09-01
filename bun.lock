@@ -110,9 +110,9 @@
         "@tanstack/react-router": "^1.170.32",
         "@tauri-apps/api": "^2.11.1",
         "@tauri-apps/plugin-autostart": "^2.5.1",
-        "@tauri-apps/plugin-opener": "^2.5.4",
+        "@tauri-apps/plugin-opener": "^2.5.5",
         "@tunnet/ui": "workspace:*",
-        "lucide-react": "^1.37.0",
+        "lucide-react": "^1.38.0",
         "motion": "^13.1.1",
         "next-themes": "^0.4.6",
         "react": "^19.2.8",
@@ -1043,7 +1043,7 @@
 
     "@tauri-apps/plugin-autostart": ["@tauri-apps/plugin-autostart@2.5.1", "", { "dependencies": { "@tauri-apps/api": "^2.8.0" } }, "sha512-zS/xx7yzveCcotkA+8TqkI2lysmG2wvQXv2HGAVExITmnFfHAdj1arGsbbfs3o6EktRHf6l34pJxc3YGG2mg7w=="],
 
-    "@tauri-apps/plugin-opener": ["@tauri-apps/plugin-opener@2.5.4", "", { "dependencies": { "@tauri-apps/api": "^2.11.0" } }, "sha512-1HnPkb+AmgO29HBazm4uPLKB+r7zzcTBW1d0fyYp1uP+jwtpoiNDGKMMzz58SFp49nOIrxdE3aUJtT57lfO9CQ=="],
+    "@tauri-apps/plugin-opener": ["@tauri-apps/plugin-opener@2.5.5", "", { "dependencies": { "@tauri-apps/api": "^2.11.0" } }, "sha512-xvzGai5aQds8j8R8RsUK/lW6pGG50YgOYIPLzvkqmkwAj7dfySOD7sGtejRzvVdMmv1EQfKVEFh1MvmDp8QR0g=="],
 
     "@tokenizer/inflate": ["@tokenizer/inflate@0.4.1", "", { "dependencies": { "debug": "^4.4.3", "token-types": "^6.1.1" } }, "sha512-2mAv+8pkG6GIZiF1kNg1jAjh27IDxEPKwdGul3snfztFerfPGI1LjDezZp3i7BElXompqEtPmoPx6c2wgtWsOA=="],
 
@@ -1545,7 +1545,7 @@
 
     "ee-first": ["ee-first@1.1.1", "", {}, "sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow=="],
 
-    "electron-to-chromium": ["electron-to-chromium@1.5.417", "", {}, "sha512-4T+DTDWuMPM4aHlHwWdAVCVWwp7LDilnhzkj+c/Lbj91XSQrLuOmZSLtS9Q4iIqjlPUbPOnC624zDVVHCHaolQ=="],
+    "electron-to-chromium": ["electron-to-chromium@1.5.418", "", {}, "sha512-UzS26r3AEbG5wSoGVpJKqwHIU9zwQN7LHdVIThDrJpS0I5KdlXFMEb8543fhc9dVnIIAST6ar8rhwa00AL5MlA=="],
 
     "elkjs": ["elkjs@0.12.0", "", {}, "sha512-YZcKynxVxYoKIOEpywEPwCFdg+BTbxQRNf3pbwdDCvc8O3kQD8bmIwSxKU1eOTVc4Xo+VG9Te+575mlfvOrhEQ=="],
 
@@ -2201,7 +2201,7 @@
 
     "stylis": ["stylis@4.4.0", "", {}, "sha512-5Z9ZpRzfuH6l/UAvCPAPUo3665Nk2wLaZU3x+TLHKVzIz33+sbJqbtrYoC3KD4/uVOr2Zp+L0LySezP9OHV9yA=="],
 
-    "systeminformation": ["systeminformation@5.33.6", "", { "os": "!aix", "bin": { "systeminformation": "lib/cli.js" } }, "sha512-hMOQG/eRUzuopuYGGdl8ntkau0nEC7fOaRoTUg1RSr2GTQIk2VNa76DA0+ApajkGfzmcgAupgIP/vt+jtoe5EA=="],
+    "systeminformation": ["systeminformation@5.33.7", "", { "os": "!aix", "bin": { "systeminformation": "lib/cli.js" } }, "sha512-ndIY+FxSMednjy1OAi7Av72fOPfaD2NMcwOS0uCLkX1F9GdqDn5eyHuMnTycjoabH5K2NqH1wPLBiaSbNbgQGg=="],
 
     "tabbable": ["tabbable@6.5.0", "", {}, "sha512-wieBHXygIm7OyQOu5hQlkk62/WyCFYGlWg7L6/ZCUZwx0o398Zkn4pVmMyfYhfMG8kGrj/Krt8eIk6UKC6VzwA=="],
 

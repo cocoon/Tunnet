@@ -9,7 +9,8 @@ import {
 } from "@tunnet/ui/components/card";
 import { Input } from "@tunnet/ui/components/input";
 import { Progress } from "@tunnet/ui/components/progress";
-import { useCallback, useEffect, useState } from "react";
+import { FileUp, GitBranch, Server } from "lucide-react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { CapabilityGate } from "@/components/CapabilityGate";
 import { api } from "@/lib/invoke";
 import type { ServeInfo, TransferInfo, TunnelInfo } from "@/lib/types";
@@ -97,7 +98,9 @@ function ServePage() {
             label: `${s.port} · ${s.url} (${s.status})`,
             onStop: () => void api.servesOff(s.port).then(() => load()),
           }))}
-          empty="No active serves"
+          emptyTitle="No active serves"
+          emptyDescription="Start a serve to share a local port with peers on this network."
+          emptyIcon={<Server aria-hidden="true" />}
         />
       </section>
 
@@ -128,14 +131,16 @@ function ServePage() {
             label: `${t.port} · ${t.public_url}`,
             onStop: () => void api.tunnelsOff(t.port).then(() => load()),
           }))}
-          empty="No active tunnels"
+          emptyTitle="No active tunnels"
+          emptyDescription="Start a tunnel when you need to expose a local port temporarily."
+          emptyIcon={<GitBranch aria-hidden="true" />}
         />
       </section>
 
       <section className="space-y-3">
         <h2 className="text-sm font-medium">Transfers</h2>
         <CapabilityGate permission="send">
-          <div className="grid gap-2 md:grid-cols-3">
+          <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
             <Input
               value={sendPath}
               onChange={setSendPath}
@@ -147,6 +152,7 @@ function ServePage() {
               placeholder="Target peer"
             />
             <Button
+              className="w-full md:w-auto"
               onClick={() =>
                 void api
                   .transfersSend({ path: sendPath, target: sendTarget })
@@ -165,18 +171,22 @@ function ServePage() {
 
 function ResourceList({
   items,
-  empty,
+  emptyTitle,
+  emptyDescription,
+  emptyIcon,
 }: {
   items: { id: string; label: string; onStop?: () => void }[];
-  empty: string;
+  emptyTitle: string;
+  emptyDescription: string;
+  emptyIcon: ReactNode;
 }) {
   if (items.length === 0) {
     return (
-      <Card>
-        <CardContent className="py-6 text-sm text-muted-foreground">
-          {empty}
-        </CardContent>
-      </Card>
+      <EmptyResourceState
+        icon={emptyIcon}
+        title={emptyTitle}
+        description={emptyDescription}
+      />
     );
   }
 
@@ -201,6 +211,30 @@ function ResourceList({
   );
 }
 
+function EmptyResourceState({
+  icon,
+  title,
+  description,
+}: {
+  icon: ReactNode;
+  title: string;
+  description: string;
+}) {
+  return (
+    <Card>
+      <CardContent className="flex items-center gap-3 px-4 py-4">
+        <div className="grid size-8 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground [&_svg]:size-4">
+          {icon}
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-foreground">{title}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function TransferList({
   transfers,
   onAction,
@@ -210,11 +244,11 @@ function TransferList({
 }) {
   if (transfers.length === 0) {
     return (
-      <Card>
-        <CardContent className="py-6 text-sm text-muted-foreground">
-          No active transfers
-        </CardContent>
-      </Card>
+      <EmptyResourceState
+        icon={<FileUp aria-hidden="true" />}
+        title="No active transfers"
+        description="Files you send or receive will appear here while they are in progress."
+      />
     );
   }
 

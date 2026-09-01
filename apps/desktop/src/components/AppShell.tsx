@@ -96,9 +96,14 @@ export function AppShell() {
             <div className="flex size-7 items-center justify-center rounded-md bg-primary text-xs font-semibold text-primary-foreground">
               T
             </div>
-            <span className="font-semibold tracking-tight group-data-[collapsible=icon]:hidden">
-              Tunnet
-            </span>
+            <div className="flex min-w-0 items-center gap-2 group-data-[collapsible=icon]:hidden">
+              <span className="truncate font-semibold tracking-tight">
+                Tunnet
+              </span>
+              <Badge variant="secondary" className="shrink-0 capitalize">
+                {modeLabel(meta?.mode ?? node?.mode)}
+              </Badge>
+            </div>
           </div>
         </SidebarHeader>
         <SidebarContent>
@@ -164,9 +169,6 @@ export function AppShell() {
             <span className="truncate text-sm font-medium">
               {network?.network_name || "Tunnet"}
             </span>
-            <Badge variant="secondary" className="capitalize">
-              {modeLabel(meta?.mode ?? node?.mode)}
-            </Badge>
             <span
               className={
                 connected

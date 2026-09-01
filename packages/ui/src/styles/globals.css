@@ -12,7 +12,7 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-heading: var(--font-display);
+  --font-heading: var(--font-sans);
   --font-display:
     "Barlow Condensed", "Geist Variable", ui-sans-serif, system-ui, sans-serif;
   --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;

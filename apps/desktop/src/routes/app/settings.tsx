@@ -121,9 +121,9 @@ function SettingsPage() {
         <CardContent>
           <div className="flex items-center justify-between gap-4">
             <div className="space-y-0.5">
-              <Label htmlFor="autostart">Open at sign-in</Label>
+              <Label htmlFor="autostart">Start at startup</Label>
               <p className="text-xs text-muted-foreground">
-                Launch Tunnet when you sign in to Windows.
+                Launch Tunnet automatically when Windows starts.
               </p>
             </div>
             <Switch
@@ -197,67 +197,73 @@ function SettingsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-2">
-          <ElevatedConfirm
-            title="Start Tunnet?"
-            description="Windows may ask for permission to start the Tunnet background service."
-            confirmLabel="Start"
-            disabled={busy || !!service?.active}
-            onConfirm={async () => {
-              setBusy(true);
-              try {
-                await api.serviceStart();
-                toast.success("Service started");
-                await refreshAll();
-              } catch (err) {
-                toast.error(err instanceof Error ? err.message : String(err));
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            Start
-          </ElevatedConfirm>
-          <ElevatedConfirm
-            title="Stop Tunnet?"
-            description="Tunnet will stop until you start it again. Windows may ask for permission."
-            confirmLabel="Stop"
-            destructive
-            disabled={busy || !service?.active}
-            onConfirm={async () => {
-              setBusy(true);
-              try {
-                await api.serviceStop();
-                toast.success("Service stopped");
-                await refreshAll();
-              } catch (err) {
-                toast.error(err instanceof Error ? err.message : String(err));
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            Stop
-          </ElevatedConfirm>
-          <ElevatedConfirm
-            title="Restart Tunnet?"
-            description="Windows may ask for permission to restart the background service."
-            confirmLabel="Restart"
-            disabled={busy || !service?.installed}
-            onConfirm={async () => {
-              setBusy(true);
-              try {
-                await api.serviceRestart();
-                toast.success("Service restarted");
-                await refreshAll();
-              } catch (err) {
-                toast.error(err instanceof Error ? err.message : String(err));
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            Restart
-          </ElevatedConfirm>
+          {!service?.active ? (
+            <ElevatedConfirm
+              title="Start Tunnet?"
+              description="Windows may ask for permission to start the Tunnet background service."
+              confirmLabel="Start"
+              disabled={busy}
+              onConfirm={async () => {
+                setBusy(true);
+                try {
+                  await api.serviceStart();
+                  toast.success("Service started");
+                  await refreshAll();
+                } catch (err) {
+                  toast.error(err instanceof Error ? err.message : String(err));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Start
+            </ElevatedConfirm>
+          ) : null}
+          {service?.active ? (
+            <ElevatedConfirm
+              title="Stop Tunnet?"
+              description="Tunnet will stop until you start it again. Windows may ask for permission."
+              confirmLabel="Stop"
+              destructive
+              disabled={busy}
+              onConfirm={async () => {
+                setBusy(true);
+                try {
+                  await api.serviceStop();
+                  toast.success("Service stopped");
+                  await refreshAll();
+                } catch (err) {
+                  toast.error(err instanceof Error ? err.message : String(err));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Stop
+            </ElevatedConfirm>
+          ) : null}
+          {service?.installed ? (
+            <ElevatedConfirm
+              title="Restart Tunnet?"
+              description="Windows may ask for permission to restart the background service."
+              confirmLabel="Restart"
+              disabled={busy}
+              onConfirm={async () => {
+                setBusy(true);
+                try {
+                  await api.serviceRestart();
+                  toast.success("Service restarted");
+                  await refreshAll();
+                } catch (err) {
+                  toast.error(err instanceof Error ? err.message : String(err));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Restart
+            </ElevatedConfirm>
+          ) : null}
         </CardContent>
       </Card>
 
