@@ -14,14 +14,7 @@ import { ElevatedConfirm } from "@/components/ElevatedConfirm";
 import { api } from "@/lib/invoke";
 import { Route as rootRoute } from "./__root";
 
-const STEPS = [
-  "Checking",
-  "Elevating",
-  "Downloading",
-  "Installing",
-  "Starting",
-  "Waiting for API",
-] as const;
+const STEPS = ["Starting", "Waiting for API"] as const;
 
 type InstallStep = (typeof STEPS)[number];
 
@@ -59,24 +52,14 @@ function InstallPage() {
   async function install() {
     setBusy(true);
     setError(null);
-    setStep("Checking");
+    setStep("Starting");
 
     try {
-      setStep("Elevating");
-      await api.serviceInstallAndStart();
-      setStep("Starting");
-      toast.success("Install requested. Waiting for daemon…");
+      await api.serviceStart();
+      toast.success("Service started");
     } catch (err) {
-      try {
-        setStep("Downloading");
-        const result = await api.installDaemonFromGithub();
-        setStep("Installing");
-        toast.message(result.message);
-        setStep("Starting");
-      } catch (inner) {
-        setError(inner instanceof Error ? inner.message : String(inner ?? err));
-        setStep(null);
-      }
+      setError(err instanceof Error ? err.message : String(err));
+      setStep(null);
     } finally {
       setBusy(false);
     }
@@ -88,16 +71,15 @@ function InstallPage() {
         <CardHeader>
           <CardTitle className="text-2xl">Tunnet</CardTitle>
           <CardDescription>
-            Tunnet runs as a system service on your machine. The desktop app
-            connects to the local daemon - it does not replace the service after
-            install.
+            Tunnet runs as a system service. The desktop app connects to that
+            service; it does not install a second copy of Core.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           {step ? (
             <div className="space-y-3">
               <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Install progress</span>
+                <span className="text-muted-foreground">Progress</span>
                 <span className="font-medium">{step}</span>
               </div>
               <Progress value={progress} />
@@ -123,12 +105,12 @@ function InstallPage() {
           <div className="flex flex-wrap gap-2">
             <ElevatedConfirm
               title="Administrator permission required"
-              description="Installing the Tunnet daemon requires elevated privileges. Windows will show a UAC prompt to install the system service."
-              confirmLabel="Install"
+              description="Windows will ask for permission to install and start the Tunnet service."
+              confirmLabel="Start"
               onConfirm={install}
               disabled={busy}
             >
-              {busy ? "Installing…" : "Install daemon"}
+              {busy ? "Starting…" : "Start service"}
             </ElevatedConfirm>
             <Button variant="outline" onClick={() => void api.openReleases()}>
               Open releases

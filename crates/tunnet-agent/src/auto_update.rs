@@ -1,11 +1,12 @@
-use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tunnet_core::{StatePaths, TunnetConfig};
 
-use crate::cmds_update::{UpdateOutcome, apply_service_reload, apply_update_quiet};
+#[cfg(not(windows))]
+use crate::cmds_update::apply_service_reload;
 
 const DEFAULT_HEALTH_SECS: u64 = 30;
 
@@ -15,6 +16,7 @@ struct PendingUpdate {
     installed_at_unix: jiff::Timestamp,
     from_version: String,
     to_version: String,
+    api_version: u32,
     health_window_secs: u64,
     boots: u32,
 }
@@ -28,6 +30,14 @@ pub fn on_agent_start(paths: &StatePaths) -> Result<()> {
     let mut pending: PendingUpdate =
         serde_json::from_slice(&std::fs::read(&pending_path).context("read update pending")?)
             .context("parse update pending")?;
+
+    if pending.to_version != env!("CARGO_PKG_VERSION")
+        || pending.api_version != tunnet_common::local_api::API_VERSION
+    {
+        tracing::error!(expected = %pending.to_version, running = env!("CARGO_PKG_VERSION"), "activated Core unit failed version/API verification; rolling back");
+        rollback(paths, &pending)?;
+        return Ok(());
+    }
 
     let elapsed = jiff::Timestamp::now()
         .duration_since(pending.installed_at_unix)
@@ -47,7 +57,7 @@ pub fn on_agent_start(paths: &StatePaths) -> Result<()> {
             to = %pending.to_version,
             "new version unstable within health window; reverting"
         );
-        revert_to_previous(paths, &pending)?;
+        rollback(paths, &pending)?;
         return Ok(());
     }
 
@@ -68,97 +78,10 @@ pub fn on_agent_start(paths: &StatePaths) -> Result<()> {
                 to = %pending_clone.to_version,
                 "auto-update healthy; previous binary discarded"
             );
+            crate::core_update::publish_complete().await;
         }
     });
 
-    Ok(())
-}
-
-pub fn spawn(paths: StatePaths, store: Option<tunnet_core::EffectiveConfigStore>) {
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(60)).await;
-        loop {
-            let (enabled, interval_hours, health) = if let Some(store) = &store {
-                let eff = store.load();
-                (
-                    eff.effective.auto_update_enabled.value,
-                    eff.effective.auto_update_check_interval_hours.value,
-                    TunnetConfig::try_load(&paths)
-                        .ok()
-                        .flatten()
-                        .unwrap_or_default()
-                        .update
-                        .health_window_secs
-                        .max(1),
-                )
-            } else {
-                let cfg = TunnetConfig::try_load(&paths)
-                    .ok()
-                    .flatten()
-                    .unwrap_or_default();
-                (
-                    cfg.update.enabled.unwrap_or(false),
-                    cfg.update.check_interval_hours.unwrap_or(6),
-                    cfg.update.health_window_secs.max(1),
-                )
-            };
-
-            if enabled && let Err(e) = check_once(&paths, health).await {
-                tracing::warn!(?e, "auto-update check failed");
-            }
-
-            let sleep_secs = if enabled {
-                interval_hours.max(1) * 3600
-            } else {
-                3600 // re-check whether it was enabled
-            };
-            tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
-        }
-    });
-}
-
-async fn check_once(paths: &StatePaths, health_window_secs: u64) -> Result<()> {
-    if paths.update_pending_file().exists() {
-        tracing::debug!("auto-update: pending health window; skip check");
-        return Ok(());
-    }
-
-    let prev = paths.update_previous_bin();
-    let outcome = tokio::task::spawn_blocking(move || apply_update_quiet(Some(prev.as_path())))
-        .await
-        .context("auto-update join")??;
-
-    match outcome {
-        UpdateOutcome::UpToDate { version } => {
-            tracing::debug!(%version, "auto-update: already current");
-            Ok(())
-        }
-        UpdateOutcome::Updated {
-            from_version,
-            to_version,
-        } => {
-            tracing::info!(%from_version, %to_version, "auto-update: binary replaced");
-            stage_pending(paths, &from_version, &to_version, health_window_secs)?;
-            apply_service_reload(false)?;
-            Ok(())
-        }
-    }
-}
-
-fn stage_pending(paths: &StatePaths, from: &str, to: &str, health_window_secs: u64) -> Result<()> {
-    std::fs::create_dir_all(paths.update_dir())?;
-    let pending = PendingUpdate {
-        installed_at_unix: jiff::Timestamp::now(),
-        from_version: from.to_string(),
-        to_version: to.to_string(),
-        health_window_secs: if health_window_secs == 0 {
-            DEFAULT_HEALTH_SECS
-        } else {
-            health_window_secs
-        },
-        boots: 0,
-    };
-    write_pending(paths, &pending)?;
     Ok(())
 }
 
@@ -174,62 +97,96 @@ fn mark_update_success(paths: &StatePaths, pending: &PendingUpdate) -> Result<()
         return Ok(());
     }
     let _ = std::fs::remove_file(&pending_path);
-    let prev = paths.update_previous_bin();
+    let prev = paths.update_previous_dir();
     if prev.exists() {
-        let _ = std::fs::remove_file(&prev);
+        let _ = std::fs::remove_dir_all(&prev);
     }
     Ok(())
 }
 
-fn revert_to_previous(paths: &StatePaths, pending: &PendingUpdate) -> Result<()> {
-    let prev = paths.update_previous_bin();
-    if !prev.exists() {
-        tracing::error!("cannot revert: previous binary missing");
-        let _ = std::fs::remove_file(paths.update_pending_file());
-        return Ok(());
-    }
-
-    let exe = std::env::current_exe().context("current_exe")?;
-    let tmp = exe.with_extension("reverting");
-    std::fs::copy(&prev, &tmp).context("copy previous binary to temp")?;
-    replace_exe(&tmp, &exe)?;
-    let _ = std::fs::remove_file(&prev);
-    let _ = std::fs::remove_file(paths.update_pending_file());
-
-    tracing::warn!(
-        restored = %pending.from_version,
-        rejected = %pending.to_version,
-        "reverted auto-update; restarting service"
-    );
-    let _ = apply_service_reload(true);
-    Ok(())
-}
-
-fn replace_exe(src: &Path, dest: &Path) -> Result<()> {
+fn rollback(paths: &StatePaths, pending: &PendingUpdate) -> Result<()> {
     #[cfg(windows)]
     {
-        let bak = dest.with_extension("bad");
-        let _ = std::fs::remove_file(&bak);
-        if dest.exists() {
-            std::fs::rename(dest, &bak).context("rename bad binary aside")?;
-        }
-        std::fs::rename(src, dest).or_else(|_| {
-            std::fs::copy(src, dest)
-                .map(|_| ())
-                .context("copy restored binary")
-        })?;
-        let _ = std::fs::remove_file(&bak);
-        let _ = std::fs::remove_file(src);
+        let _ = pending;
+        crate::core_update::schedule_rollback(paths)?;
         Ok(())
     }
     #[cfg(not(windows))]
     {
-        std::fs::rename(src, dest).or_else(|_| {
-            std::fs::copy(src, dest)?;
-            std::fs::remove_file(src)?;
-            Ok(())
-        })
+        revert_to_previous(paths, Some(pending))
     }
+}
+
+pub fn revert_to_previous_worker(paths: &StatePaths) -> Result<()> {
+    revert_to_previous(paths, None)
+}
+
+fn revert_to_previous(paths: &StatePaths, pending: Option<&PendingUpdate>) -> Result<()> {
+    let previous = paths.update_previous_dir();
+    if !previous.exists() {
+        tracing::error!("cannot roll back Core update: previous installation unit missing");
+        let _ = std::fs::remove_file(paths.update_pending_file());
+        return Ok(());
+    }
+
+    #[cfg(windows)]
+    let install = tunnet_service::installed_bin_dir(None);
+    #[cfg(not(windows))]
+    let install = std::env::current_exe()?
+        .parent()
+        .context("current_exe has no parent")?
+        .to_path_buf();
+    restore_unit(&previous, &install, core_unit_names())?;
+    let _ = std::fs::remove_dir_all(&previous);
+    let _ = std::fs::remove_file(paths.update_pending_file());
+
+    if let Some(pending) = pending {
+        tracing::warn!(restored = %pending.from_version, rejected = %pending.to_version, "reverted Core update; restarting service");
+    } else {
+        tracing::warn!("reverted Core update; restarting service");
+    }
+    #[cfg(windows)]
+    let _ = tunnet_service::start(None);
+    #[cfg(not(windows))]
+    let _ = apply_service_reload(true);
+    Ok(())
+}
+
+fn restore_unit(
+    previous: &std::path::Path,
+    install: &std::path::Path,
+    names: &[&str],
+) -> Result<()> {
+    for name in names {
+        let source = previous.join(name);
+        if source.is_file() {
+            replace_file(&source, &install.join(name))?;
+        }
+    }
+    Ok(())
+}
+
+fn replace_file(src: &std::path::Path, dest: &std::path::Path) -> Result<()> {
+    let staged = dest.with_extension("rollback");
+    let rejected = dest.with_extension("rejected");
+    let _ = std::fs::remove_file(&staged);
+    let _ = std::fs::remove_file(&rejected);
+    std::fs::copy(src, &staged)?;
+    if dest.exists() {
+        std::fs::rename(dest, &rejected)?;
+    }
+    std::fs::rename(staged, dest)?;
+    let _ = std::fs::remove_file(rejected);
+    Ok(())
+}
+
+#[cfg(windows)]
+fn core_unit_names() -> &'static [&'static str] {
+    &["tunnet.exe", "tunnetd.exe", "wintun.dll"]
+}
+#[cfg(not(windows))]
+fn core_unit_names() -> &'static [&'static str] {
+    &["tunnet", "tunnetd"]
 }
 
 fn write_pending(paths: &StatePaths, pending: &PendingUpdate) -> Result<()> {
@@ -237,4 +194,100 @@ fn write_pending(paths: &StatePaths, pending: &PendingUpdate) -> Result<()> {
     let json = serde_json::to_vec_pretty(pending)?;
     std::fs::write(paths.update_pending_file(), json)?;
     Ok(())
+}
+
+pub fn stage_pending(
+    paths: &StatePaths,
+    from: &str,
+    to: &str,
+    health_window_secs: u64,
+) -> Result<()> {
+    std::fs::create_dir_all(paths.update_dir())?;
+    write_pending(
+        paths,
+        &PendingUpdate {
+            installed_at_unix: jiff::Timestamp::now(),
+            from_version: from.into(),
+            to_version: to.into(),
+            api_version: crate::core_update::SUPPORTED_API_VERSION,
+            health_window_secs: if health_window_secs == 0 {
+                DEFAULT_HEALTH_SECS
+            } else {
+                health_window_secs
+            },
+            boots: 0,
+        },
+    )
+}
+
+pub fn spawn(
+    paths: StatePaths,
+    store: Option<tunnet_core::EffectiveConfigStore>,
+    updater: Arc<crate::core_update::CoreUpdater>,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        loop {
+            let (enabled, interval_hours) = if let Some(store) = &store {
+                let effective = store.load();
+                (
+                    effective.effective.auto_update_enabled.value,
+                    effective.effective.auto_update_check_interval_hours.value,
+                )
+            } else {
+                let config = TunnetConfig::try_load(&paths)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                (
+                    config.update.enabled.unwrap_or(false),
+                    config.update.check_interval_hours.unwrap_or(6),
+                )
+            };
+            if enabled && !paths.update_pending_file().exists() {
+                match updater.check().await {
+                    Ok(status)
+                        if status.phase == tunnet_common::local_api::CoreUpdatePhase::Available =>
+                    {
+                        if let Err(error) = updater.stage_and_activate(false).await {
+                            tracing::warn!(?error, "automatic Core update failed");
+                        }
+                    }
+                    Err(error) => tracing::warn!(?error, "automatic Core update check failed"),
+                    _ => {}
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(if enabled {
+                interval_hours.max(1) * 3600
+            } else {
+                3600
+            }))
+            .await;
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rollback_restores_the_complete_previous_unit() {
+        let temp = tempfile::tempdir().unwrap();
+        let previous = temp.path().join("previous");
+        let install = temp.path().join("bin");
+        std::fs::create_dir_all(&previous).unwrap();
+        std::fs::create_dir_all(&install).unwrap();
+        for name in ["tunnet", "tunnetd", "wintun.dll"] {
+            std::fs::write(previous.join(name), format!("old-{name}")).unwrap();
+            std::fs::write(install.join(name), format!("new-{name}")).unwrap();
+        }
+        restore_unit(&previous, &install, &["tunnet", "tunnetd", "wintun.dll"]).unwrap();
+        for name in ["tunnet", "tunnetd", "wintun.dll"] {
+            assert_eq!(
+                std::fs::read_to_string(install.join(name)).unwrap(),
+                format!("old-{name}")
+            );
+        }
+    }
 }

@@ -48,9 +48,26 @@ export interface DaemonProbeResult {
   meta?: MetaInfo;
 }
 
-export interface InstallResult {
-  message: string;
-  opened_releases: boolean;
+export type CoreUpdatePhase =
+  | "idle"
+  | "checking"
+  | "available"
+  | "downloading"
+  | "verifying"
+  | "staged"
+  | "activating"
+  | "health_check"
+  | "complete"
+  | "error"
+  | "rollback";
+export interface CoreUpdateStatus {
+  phase: CoreUpdatePhase;
+  current_version: string;
+  available_version?: string;
+  api_version: number;
+  downloaded: number;
+  total?: number;
+  error?: string;
 }
 
 export const api = {
@@ -132,12 +149,12 @@ export const api = {
   serviceStart: () => invoke<OkResponse>("service_start"),
   serviceStop: () => invoke<OkResponse>("service_stop"),
   serviceRestart: () => invoke<OkResponse>("service_restart"),
-  serviceInstallAndStart: () => invoke<OkResponse>("service_install_and_start"),
-  openUrl: (url: string) => invoke<void>("open_url", { url }),
+  openUrl: (url: string) => invoke<void>("open_external_url", { url }),
   openReleases: () => invoke<void>("open_releases"),
   eventsSubscribe: () => invoke<void>("events_subscribe"),
-  installDaemonFromGithub: () =>
-    invoke<InstallResult>("install_daemon_from_github"),
+  coreUpdateStatus: () => invoke<CoreUpdateStatus>("core_update_status"),
+  coreUpdateCheck: () => invoke<CoreUpdateStatus>("core_update_check"),
+  coreUpdateInstall: () => invoke<CoreUpdateStatus>("core_update_install"),
 };
 
 export type { LocalEvent };

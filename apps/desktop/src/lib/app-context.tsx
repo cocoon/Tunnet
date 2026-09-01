@@ -55,6 +55,8 @@ function formatEventLabel(event: LocalEvent): string {
       return "Control plane disconnected";
     case "update_available":
       return `Update available: ${event.version}`;
+    case "core_update_changed":
+      return `Core update: ${event.status.phase.replace(/_/g, " ")}`;
     default:
       return "Event";
   }

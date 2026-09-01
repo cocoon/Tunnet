@@ -8,7 +8,7 @@
   GitHub attestation, installs binaries, and registers the Windows service.
 
 .EXAMPLE
-  irm https://github.com/tunnetio/Tunnet/releases/latest/download/install.ps1 | iex
+  irm https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.ps1 | iex
 #>
 [CmdletBinding()]
 param(
@@ -52,18 +52,18 @@ function Get-Arch {
 }
 
 function Get-LatestTag([string]$Repository) {
-    $uri = "https://api.github.com/repos/$Repository/releases/latest"
+    $uri = "https://github.com/$Repository/releases/download/core-latest/daemon-latest.json"
     $headers = @{ "User-Agent" = "tunnet-install/1.0" }
     try {
-        $release = Invoke-RestMethod -Uri $uri -Headers $headers
+        $manifest = Invoke-RestMethod -Uri $uri -Headers $headers
     }
     catch {
-        Die "could not reach GitHub API: $($_.Exception.Message)"
+        Die "could not read the core-latest channel: $($_.Exception.Message)"
     }
-    if (-not $release.tag_name) {
-        Die "could not resolve latest release tag"
+    if (-not $manifest.version) {
+        Die "could not resolve latest Core version"
     }
-    return [string]$release.tag_name
+    return "v$($manifest.version)"
 }
 
 function Get-Sha256([string]$Path) {
@@ -83,7 +83,7 @@ $arch = Get-Arch
 $target = "$arch-pc-windows-msvc"
 
 if (-not $Version) {
-    Write-Info "Resolving latest release…"
+    Write-Info "Resolving latest Core release…"
     $Version = Get-LatestTag -Repository $Repo
 }
 

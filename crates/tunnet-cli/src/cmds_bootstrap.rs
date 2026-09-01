@@ -5,11 +5,13 @@ use std::collections::HashMap;
 use anyhow::Context;
 use clap::Args;
 use tunnet_common::local_api::{
-    AuthLoginRequest, DeviceExpiryRequest, DeviceLabelDeleteRequest, DeviceLabelRequest,
-    DeviceTagAddRequest, DeviceTagRemoveRequest, LocalEnrollRequest, UpdateRequest,
+    AuthLoginRequest, CoreUpdatePhase, CoreUpdateStatus, DeviceExpiryRequest,
+    DeviceLabelDeleteRequest, DeviceLabelRequest, DeviceTagAddRequest, DeviceTagRemoveRequest,
+    LocalEnrollRequest, UpdateRequest,
 };
 
 use crate::cmds::ipc_or_err;
+use tunnet_client::TunnetClient;
 
 #[derive(Args, Debug)]
 pub struct EnrollArgs {
@@ -175,16 +177,90 @@ pub async fn run_update(
     args: crate::cmds_update::UpdateArgs,
     state_dir: Option<&str>,
 ) -> anyhow::Result<()> {
+    if args.check {
+        println!("{}", check_core_update(state_dir).await?);
+        return Ok(());
+    }
+
+    tunnet_service::ensure_admin()?;
     let client = ipc_or_err(state_dir).await?;
     let body = UpdateRequest {
-        check: args.check,
         force: args.force,
         restart: args.restart,
         version: args.version,
     };
     let resp = client.update(&body).await?;
-    println!("{}", resp.message);
+    println!("{}", format_update_status(&resp));
     Ok(())
+}
+
+async fn check_core_update(state_dir: Option<&str>) -> anyhow::Result<String> {
+    if tunnet_client::endpoint_reachable(TunnetClient::connect().path()).await {
+        let client = ipc_or_err(state_dir).await?;
+        return Ok(format_update_status(&client.update_check().await?));
+    }
+
+    let current = env!("CARGO_PKG_VERSION");
+    let (_, manifest) =
+        tunnet_update::fetch_manifest(concat!("tunnet/", env!("CARGO_PKG_VERSION")))
+            .await
+            .context("check the Core update channel")?;
+    let current_v = semver::Version::parse(current)?;
+    let target = semver::Version::parse(manifest.version.trim_start_matches('v'))?;
+    if target > current_v {
+        Ok(format!(
+            "Update available: v{current} -> v{}",
+            manifest.version.trim_start_matches('v')
+        ))
+    } else {
+        Ok(format!("Tunnet Core is up to date (v{current})"))
+    }
+}
+
+fn format_update_status(status: &CoreUpdateStatus) -> String {
+    if let Some(error) = &status.error {
+        return format!("Tunnet Core update failed: {error}");
+    }
+    match status.phase {
+        CoreUpdatePhase::Idle => match &status.available_version {
+            Some(version) => format!(
+                "Update available: v{} -> v{version}",
+                status.current_version
+            ),
+            None => format!("Tunnet Core is up to date (v{})", status.current_version),
+        },
+        CoreUpdatePhase::Checking => "Checking for Tunnet Core updates…".into(),
+        CoreUpdatePhase::Available => match &status.available_version {
+            Some(version) => format!(
+                "Update available: v{} -> v{version}",
+                status.current_version
+            ),
+            None => format!("Tunnet Core is up to date (v{})", status.current_version),
+        },
+        CoreUpdatePhase::Downloading => match (&status.available_version, status.total) {
+            (Some(version), Some(total)) => format!(
+                "Downloading Tunnet Core v{version} ({}/{} bytes)…",
+                status.downloaded, total
+            ),
+            (Some(version), None) => format!("Downloading Tunnet Core v{version}…"),
+            _ => "Downloading Tunnet Core…".into(),
+        },
+        CoreUpdatePhase::Verifying => "Verifying the Tunnet Core update…".into(),
+        CoreUpdatePhase::Staged | CoreUpdatePhase::Activating => match &status.available_version {
+            Some(version) => {
+                format!("Update staged. The service will restart onto v{version} shortly.")
+            }
+            None => "Update staged. The service will restart shortly.".into(),
+        },
+        CoreUpdatePhase::HealthCheck => {
+            "Verifying that the new Tunnet Core version is healthy…".into()
+        }
+        CoreUpdatePhase::Complete => {
+            format!("Updated Tunnet Core to v{}", status.current_version)
+        }
+        CoreUpdatePhase::Error => "Tunnet Core update failed.".into(),
+        CoreUpdatePhase::Rollback => "Rolling Tunnet Core back to the previous version…".into(),
+    }
 }
 
 pub async fn device_labels_set(pairs: &[String], state_dir: Option<&str>) -> anyhow::Result<()> {
@@ -278,4 +354,39 @@ fn parse_label_pairs(pairs: &[String]) -> anyhow::Result<HashMap<String, String>
         out.insert(k.to_string(), v.to_string());
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(phase: CoreUpdatePhase) -> CoreUpdateStatus {
+        CoreUpdateStatus {
+            phase,
+            current_version: "0.4.0".into(),
+            available_version: Some("0.5.0".into()),
+            api_version: tunnet_common::local_api::API_VERSION,
+            downloaded: 0,
+            total: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn update_status_is_a_sentence() {
+        let idle = CoreUpdateStatus {
+            available_version: None,
+            ..status(CoreUpdatePhase::Idle)
+        };
+        assert_eq!(
+            format_update_status(&idle),
+            "Tunnet Core is up to date (v0.4.0)"
+        );
+        assert!(format_update_status(&status(CoreUpdatePhase::Activating)).contains("0.5.0"));
+        let failed = CoreUpdateStatus {
+            error: Some("checksum mismatch".into()),
+            ..status(CoreUpdatePhase::Error)
+        };
+        assert!(format_update_status(&failed).contains("checksum mismatch"));
+    }
 }

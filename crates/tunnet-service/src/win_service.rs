@@ -37,7 +37,7 @@ pub fn ensure_wintun_present(state_dir: Option<&str>) -> anyhow::Result<()> {
     }
     anyhow::bail!(
         "wintun.dll not found (looked for {} and {}).\n\
-         Reinstall Tunnet or run `tunnet service install` to restore bundled binaries.",
+         Reinstall Tunnet or run `tunnet service start` to restore bundled binaries.",
         staged.display(),
         beside.display()
     );
@@ -141,7 +141,7 @@ pub fn probe() -> Probe {
 
 pub fn start_and_wait() -> anyhow::Result<()> {
     let service = open_service_admin(ServiceAccess::QUERY_STATUS | ServiceAccess::START)
-        .context("open tunnet service (is it installed? run `tunnet service install`)")?;
+        .context("open tunnet service (is it installed? run `tunnet service start`)")?;
     let status = service
         .query_status()
         .context("query tunnet service status")?;

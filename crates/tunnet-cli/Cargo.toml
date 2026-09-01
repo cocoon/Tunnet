@@ -25,6 +25,8 @@ dotenvy.workspace = true
 reqwest = { workspace = true, default-features = false, features = ["json", "rustls"] }
 uuid = { workspace = true, features = ["serde", "v4"] }
 tunnet-core = { version = "0.8.0", path = "../tunnet-core" }
+tunnet-update = { version = "0.8.0", path = "../tunnet-update" }
+semver.workspace = true
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61", features = [

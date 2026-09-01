@@ -125,7 +125,11 @@ export type LocalEvent =
   | { type: "transfer_completed"; id: string }
   | { type: "control_connected" }
   | { type: "control_disconnected" }
-  | { type: "update_available"; version: string };
+  | { type: "update_available"; version: string }
+  | {
+      type: "core_update_changed";
+      status: import("./invoke").CoreUpdateStatus;
+    };
 
 export type PingEvent =
   | ({ type: "probe" } & PingProbe)
@@ -199,7 +203,6 @@ export interface AuthLoginRequest {
 }
 
 export interface UpdateRequest {
-  check?: boolean;
   force?: boolean;
   restart?: boolean;
   version?: string;

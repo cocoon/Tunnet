@@ -1,0 +1,17 @@
+[package]
+name = "tunnet-update"
+version.workspace = true
+edition.workspace = true
+license = "MPL-2.0"
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+hex.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls"] }
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sigstore-verify.workspace = true
+tunnet-common.workspace = true

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Tunnet installer - download from GitHub Releases, verify, install.
 # Usage:
-#   curl -fsSL https://github.com/tunnetio/Tunnet/releases/latest/download/install.sh | sh
+#   curl -fsSL https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.sh | sh
 #
 # Environment:
 #   TUNNET_REPO          Override repository (default: tunnetio/Tunnet)
@@ -52,7 +52,7 @@ Tunnet installer
 Usage: install.sh [options]
 
 Options:
-  --version <tag>   Install a specific release (e.g. v1.0.0 or 1.0.0). Default: latest
+  --version <tag>   Install a specific Core release (e.g. v1.0.0). Default: core-latest channel
   --install-dir <d> Binary install directory (default: ${INSTALL_DIR})
   --no-service      Skip systemd / launchd service unit
   --no-verify       Skip attestation verification
@@ -159,15 +159,16 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 resolve_latest_tag() {
-  $FETCH "${GITHUB_API}/repos/${REPO}/releases/latest" \
-    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-    | head -n 1
+  manifest="$($FETCH "${GITHUB_DOWNLOAD}/${REPO}/releases/download/core-latest/daemon-latest.json")"
+  version="$(printf '%s' "$manifest" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  [ -n "$version" ] || return 1
+  printf 'v%s\n' "$version"
 }
 
 if [ -z "$VERSION" ]; then
-  info "Resolving latest release…"
-  VERSION="$(resolve_latest_tag)" || die "could not reach GitHub API"
-  [ -n "$VERSION" ] || die "could not resolve latest release tag"
+  info "Resolving latest Core release…"
+  VERSION="$(resolve_latest_tag)" || die "could not read the core-latest channel"
+  [ -n "$VERSION" ] || die "could not resolve latest Core version"
 fi
 
 case "$VERSION" in

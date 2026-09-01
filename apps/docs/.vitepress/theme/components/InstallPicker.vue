@@ -22,11 +22,11 @@ const copied = ref(false);
 
 const commands: Record<Platform, string> = {
   linux:
-    "curl -fsSL https://github.com/tunnetio/Tunnet/releases/latest/download/install.sh | sh",
+    "curl -fsSL https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.sh | sh",
   macos:
-    "curl -fsSL https://github.com/tunnetio/Tunnet/releases/latest/download/install.sh | sh",
+    "curl -fsSL https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.sh | sh",
   windows:
-    "irm https://github.com/tunnetio/Tunnet/releases/latest/download/install.ps1 | iex",
+    "irm https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.ps1 | iex",
 };
 
 const shellLabel = computed(() =>

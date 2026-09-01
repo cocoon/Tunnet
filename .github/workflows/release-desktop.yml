@@ -1,0 +1,109 @@
+name: Release Desktop
+
+on:
+  push:
+    tags:
+      - "desktop-v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing Desktop tag (desktop-vX.Y.Z)"
+        required: true
+        type: string
+
+concurrency:
+  group: release-desktop-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  RUST_TOOLCHAIN: "1.97"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - id: resolve
+        shell: bash
+        run: echo "tag=${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.resolve.outputs.tag }}
+      - id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.resolve.outputs.tag }}"
+          [[ "$tag" =~ ^desktop-v([0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?)$ ]] || { echo "::error::invalid Desktop tag $tag"; exit 1; }
+          version="${tag#desktop-v}"
+          cargo="$(sed -n 's/^version = "\([^"]*\)"/\1/p' apps/desktop/src-tauri/Cargo.toml | head -1)"
+          package="$(jq -r .version apps/desktop/package.json)"
+          config="$(jq -r .version apps/desktop/src-tauri/tauri.conf.json)"
+          [ "$version" = "$cargo" ] && [ "$version" = "$package" ] && [ "$version" = "$config" ] || {
+            echo "::error::Desktop tag and version sources differ: tag=$version cargo=$cargo package=$package config=$config"
+            exit 1
+          }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build-and-release:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+      - run: bun install --frozen-lockfile
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ needs.validate.outputs.tag }}
+          releaseName: Tunnet Desktop v__VERSION__
+          releaseBody: "Tunnet Desktop release. The background service is distributed and updated separately through Tunnet Core releases."
+          releaseDraft: false
+          generateReleaseNotes: true
+          updaterJsonPreferNsis: true
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+          releaseAssetNamePattern: Tunnet_Desktop_[version]_[arch][setup].[ext]
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+  promote-desktop-channel:
+    needs: [validate, build-and-release]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Fetch immutable updater metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download "${{ needs.validate.outputs.tag }}" --repo "${{ github.repository }}" --pattern latest.json --dir channel
+          gh release download "${{ needs.validate.outputs.tag }}" --repo "${{ github.repository }}" --pattern '*.exe' --pattern '*.exe.sig' --dir channel
+          jq -e --arg version "${{ needs.validate.outputs.version }}" '.version == $version and .platforms["windows-x86_64"].url and .platforms["windows-x86_64"].signature' channel/latest.json >/dev/null
+      - name: Promote only after the immutable release is complete
+        shell: bash
+        run: |
+          gh release view desktop-latest --repo "${{ github.repository }}" >/dev/null 2>&1 || gh release create desktop-latest --repo "${{ github.repository }}" --title "Tunnet Desktop latest" --notes "Stable Tunnet Desktop updater channel."
+          gh release upload desktop-latest channel/latest.json channel/*.exe channel/*.exe.sig --repo "${{ github.repository }}" --clobber

@@ -96,12 +96,12 @@ Honest caveat: Tailscale and Cloudflare are more mature in enterprise polish and
 
 ```bash
 # Linux / macOS
-curl -fsSL https://github.com/tunnetio/Tunnet/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.sh | sh
 ```
 
 ```powershell
 # Windows (PowerShell as Administrator)
-irm https://github.com/tunnetio/Tunnet/releases/latest/download/install.ps1 | iex
+irm https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.ps1 | iex
 ```
 
 ## License

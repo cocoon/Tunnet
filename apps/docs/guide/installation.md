@@ -29,7 +29,7 @@ Agent config lands in `tunnet.toml` next to sealed secrets in the state director
 Pin a version:
 
 ```bash
-curl -fsSL https://github.com/tunnetio/Tunnet/releases/latest/download/install.sh | sh -s -- --version v0.3.0
+curl -fsSL https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.sh | sh -s -- --version v0.3.0
 ```
 
 ```powershell
@@ -40,7 +40,7 @@ curl -fsSL https://github.com/tunnetio/Tunnet/releases/latest/download/install.s
 Skip the service unit:
 
 ```bash
-curl -fsSL https://github.com/tunnetio/Tunnet/releases/latest/download/install.sh | sh -s -- --no-service
+curl -fsSL https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.sh | sh -s -- --no-service
 ```
 
 ```powershell
@@ -50,10 +50,11 @@ curl -fsSL https://github.com/tunnetio/Tunnet/releases/latest/download/install.s
 ## Updating
 
 ```bash
+tunnet update --check
 sudo tunnet update
 ```
 
-On Linux this reloads the agent gracefully by default. Pass `--restart` for a full service restart. Use `tunnet update --check` to only look for a newer release.
+`tunnet update --check` does not need root. Installing the update does (`sudo` on Linux/macOS, an elevated prompt on Windows). The daemon must be running for the install step.
 
 For unattended upgrades, enable `[update]` in `tunnet.toml` (see [tunnet update](/cli/update)).
 

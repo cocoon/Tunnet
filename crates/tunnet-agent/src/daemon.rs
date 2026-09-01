@@ -180,8 +180,11 @@ async fn start_idle_bootstrap(
 
     use tunnet_core::local_api::{BootstrapApiState, spawn_bootstrap_api};
 
-    let bootstrap = Arc::new(crate::api_bootstrap::AgentBootstrapOps::new(paths.clone()));
     let (events_tx, _) = tokio::sync::broadcast::channel(256);
+    let bootstrap = Arc::new(crate::api_bootstrap::AgentBootstrapOps::new(
+        paths.clone(),
+        events_tx.clone(),
+    ));
     let handle = spawn_bootstrap_api(BootstrapApiState {
         bootstrap,
         daemon_version: env!("CARGO_PKG_VERSION").to_string(),

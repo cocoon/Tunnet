@@ -15,4 +15,4 @@ tunnet service status      # Show service status
 
 ## Notes
 
-`tunnet service install` creates the appropriate service configuration for your OS. After installation, the agent runs as a background daemon and starts automatically on boot.
+`tunnet service start` writes the service unit if it is missing, then starts the daemon. `tunnet service install` only writes the unit. After the service is running, the agent starts automatically on boot.

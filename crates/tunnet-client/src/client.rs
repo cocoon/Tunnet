@@ -10,22 +10,22 @@ use hyper_util::rt::TokioIo;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tunnet_common::local_api::{
-    ApiError, ApiErrorCode, AuthLoginRequest, DataPlaneStatus, DeviceExpiryRequest,
-    DeviceLabelDeleteRequest, DeviceLabelPatchRequest, DeviceLabelRequest, DeviceTagAddRequest,
-    DeviceTagRemoveRequest, DiagInfo, DirectConnectContactRequest, DirectConnectPendingResponse,
-    DirectConnectRequest, DirectContactResponse, DirectFirewallAddRequest,
-    DirectFirewallPendingResponse, DirectFirewallResponse, DirectInviteRequest,
-    DirectInviteResponse, DirectKeepAliveRequest, DirectNetworkRequest, DirectOverrideIpRequest,
-    DirectPendingResponse, DirectPolicyResponse, DirectPolicySetRequest, DnsStatusInfo,
-    JsonPayload, LocalEnrollRequest, LocalEvent, MetaInfo, NetcheckInfo, NetworkCreateRequest,
-    NetworkJoinRequest, NetworkLeaveRequest, NetworkSummary, NetworkUpgradeRequest,
-    NetworksResponse, NodeSummary, OkResponse, PeersResponse, PingEvent, PolicyOpRequest,
-    PostureCheckRequest, ResetRequest, RouteAddRequest, RouteAddedResponse, RoutesInfo,
-    SendAcceptRequest, SendConfigInfo, SendFileRequest, SendRejectRequest, SendSetConfigRequest,
-    ServeInfo, ServeStartRequest, ServesResponse, SshAuthPollRequest, SshAuthPollResponse,
-    SshCastResponse, SshRecordingsResponse, SshSessionsResponse, TransferInfo, TransfersResponse,
-    TunnelInfo, TunnelStartRequest, TunnelsResponse, UpdateRequest, ValidateConfigRequest,
-    format_api_error,
+    ApiError, ApiErrorCode, AuthLoginRequest, CoreUpdateStatus, DataPlaneStatus,
+    DeviceExpiryRequest, DeviceLabelDeleteRequest, DeviceLabelPatchRequest, DeviceLabelRequest,
+    DeviceTagAddRequest, DeviceTagRemoveRequest, DiagInfo, DirectConnectContactRequest,
+    DirectConnectPendingResponse, DirectConnectRequest, DirectContactResponse,
+    DirectFirewallAddRequest, DirectFirewallPendingResponse, DirectFirewallResponse,
+    DirectInviteRequest, DirectInviteResponse, DirectKeepAliveRequest, DirectNetworkRequest,
+    DirectOverrideIpRequest, DirectPendingResponse, DirectPolicyResponse, DirectPolicySetRequest,
+    DnsStatusInfo, JsonPayload, LocalEnrollRequest, LocalEvent, MetaInfo, NetcheckInfo,
+    NetworkCreateRequest, NetworkJoinRequest, NetworkLeaveRequest, NetworkSummary,
+    NetworkUpgradeRequest, NetworksResponse, NodeSummary, OkResponse, PeersResponse, PingEvent,
+    PolicyOpRequest, PostureCheckRequest, ResetRequest, RouteAddRequest, RouteAddedResponse,
+    RoutesInfo, SendAcceptRequest, SendConfigInfo, SendFileRequest, SendRejectRequest,
+    SendSetConfigRequest, ServeInfo, ServeStartRequest, ServesResponse, SshAuthPollRequest,
+    SshAuthPollResponse, SshCastResponse, SshRecordingsResponse, SshSessionsResponse, TransferInfo,
+    TransfersResponse, TunnelInfo, TunnelStartRequest, TunnelsResponse, UpdateRequest,
+    ValidateConfigRequest, format_api_error,
 };
 
 use crate::transport::{self, default_api_path};
@@ -627,8 +627,16 @@ impl TunnetClient {
         self.post_json("/v1/auth/logout", &EmptyBody {}).await
     }
 
-    pub async fn update(&self, body: &UpdateRequest) -> anyhow::Result<OkResponse> {
+    pub async fn update(&self, body: &UpdateRequest) -> anyhow::Result<CoreUpdateStatus> {
         self.post_json("/v1/update", body).await
+    }
+
+    pub async fn update_check(&self) -> anyhow::Result<CoreUpdateStatus> {
+        self.get_json("/v1/update").await
+    }
+
+    pub async fn update_status(&self) -> anyhow::Result<CoreUpdateStatus> {
+        self.update_check().await
     }
 
     // -----------------------------------------------------------------------

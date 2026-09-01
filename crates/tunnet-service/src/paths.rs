@@ -53,15 +53,52 @@ pub fn installed_daemon_exe(state_dir: Option<&str>) -> PathBuf {
     installed_bin_dir(state_dir).join(daemon_name())
 }
 
+fn path_is_release(path: &Path) -> bool {
+    path.components().any(|c| c.as_os_str() == "release")
+}
+
+fn newest_workspace_daemon(start: &Path, name: &str) -> Option<PathBuf> {
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    let mut consider = |path: PathBuf| {
+        if !path.is_file() {
+            return;
+        }
+        let Ok(modified) = std::fs::metadata(&path).and_then(|m| m.modified()) else {
+            return;
+        };
+        let take = match &best {
+            None => true,
+            Some((best_time, best_path)) => {
+                modified > *best_time
+                    || (modified == *best_time
+                        && path_is_release(&path)
+                        && !path_is_release(best_path))
+            }
+        };
+        if take {
+            best = Some((modified, path));
+        }
+    };
+
+    consider(start.join(name));
+    for ancestor in start.ancestors() {
+        for profile in ["debug", "release"] {
+            consider(ancestor.join("target").join(profile).join(name));
+        }
+    }
+    best.map(|(_, path)| path)
+}
+
 pub fn resolve_daemon_exe() -> anyhow::Result<PathBuf> {
     let name = daemon_name();
     if let Ok(current) = std::env::current_exe()
         && let Some(dir) = current.parent()
+        && let Some(found) = newest_workspace_daemon(dir, name)
     {
-        let beside = dir.join(name);
-        if beside.is_file() {
-            return Ok(beside);
-        }
+        return Ok(found);
+    }
+    if let Some(path) = find_on_path(name) {
+        return Ok(path);
     }
     #[cfg(windows)]
     {
@@ -69,9 +106,6 @@ pub fn resolve_daemon_exe() -> anyhow::Result<PathBuf> {
         if staged.is_file() {
             return Ok(staged);
         }
-    }
-    if let Some(path) = find_on_path(name) {
-        return Ok(path);
     }
     anyhow::bail!("could not find {name}; place it next to tunnet or on PATH")
 }
@@ -211,7 +245,65 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::system_state_dir;
+    use std::path::PathBuf;
+
+    use super::{newest_workspace_daemon, system_state_dir};
+
+    fn test_root() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "tunnet-ws-daemon-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    fn daemon_name_for_tests() -> &'static str {
+        if cfg!(windows) {
+            "tunnetd.exe"
+        } else {
+            "tunnetd"
+        }
+    }
+
+    #[test]
+    fn workspace_daemon_is_found_from_nested_desktop_target() {
+        let root = test_root();
+        let name = daemon_name_for_tests();
+        let daemon = root.join("target").join("debug").join(name);
+        std::fs::create_dir_all(daemon.parent().unwrap()).unwrap();
+        std::fs::write(&daemon, b"daemon").unwrap();
+        let desktop_dir = root
+            .join("apps")
+            .join("desktop")
+            .join("src-tauri")
+            .join("target")
+            .join("debug");
+        std::fs::create_dir_all(&desktop_dir).unwrap();
+        let found = newest_workspace_daemon(&desktop_dir, name);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(found.as_deref(), Some(daemon.as_path()));
+    }
+
+    #[test]
+    fn newer_release_tunnetd_wins_over_stale_debug_sibling() {
+        let root = test_root();
+        let name = daemon_name_for_tests();
+        let debug_dir = root.join("target").join("debug");
+        let release_dir = root.join("target").join("release");
+        std::fs::create_dir_all(&debug_dir).unwrap();
+        std::fs::create_dir_all(&release_dir).unwrap();
+        let debug = debug_dir.join(name);
+        let release = release_dir.join(name);
+        std::fs::write(&debug, b"old").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        std::fs::write(&release, b"new").unwrap();
+        let found = newest_workspace_daemon(&debug_dir, name);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(found.as_deref(), Some(release.as_path()));
+    }
 
     #[test]
     fn system_dir_matches_platform() {

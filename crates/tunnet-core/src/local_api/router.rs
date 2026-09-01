@@ -143,7 +143,7 @@ pub fn app(state: ApiState) -> Router {
         .route("/v1/config/validate", post(validate_config))
         .route("/v1/auth/login", post(auth_login))
         .route("/v1/auth/logout", post(auth_logout))
-        .route("/v1/update", post(update))
+        .route("/v1/update", get(update_check).post(update))
         .route("/v1/device/labels", post(device_set_labels))
         .route("/v1/device/labels/patch", post(device_patch_labels))
         .route("/v1/device/labels/delete", post(device_delete_label))
@@ -266,11 +266,19 @@ async fn auth_logout(
     Ok(Json(state.bootstrap.auth_logout().await?))
 }
 
+async fn update_check(
+    Extension(peer): Extension<PeerIdentity>,
+    State(state): State<ApiState>,
+) -> ApiResult<Json<tunnet_common::local_api::CoreUpdateStatus>> {
+    peer.require_cap(STATUS_READ)?;
+    Ok(Json(state.bootstrap.update_check().await?))
+}
+
 async fn update(
     Extension(peer): Extension<PeerIdentity>,
     State(state): State<ApiState>,
     Json(body): Json<UpdateRequest>,
-) -> ApiResult<Json<OkResponse>> {
+) -> ApiResult<Json<tunnet_common::local_api::CoreUpdateStatus>> {
     peer.require_elevated()?;
     Ok(Json(state.bootstrap.update(body).await?))
 }

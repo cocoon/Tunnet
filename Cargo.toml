@@ -9,6 +9,7 @@ members = [
   "crates/tunnet-agent",
   "crates/tunnet-cli",
   "crates/tunnet-service",
+  "crates/tunnet-update",
   "crates/tunnet-edge",
   "crates/tunnet-relay",
   "crates/tunnet-node-napi",
@@ -131,6 +132,7 @@ os_info = "3"
 whoami = "2"
 rusqlite = { version = "0.39", features = ["bundled"] }
 zip = "8.6.0"
+sigstore-verify = { version = "0.11.0", default-features = false, features = ["rustls", "tuf"] }
 
 # napi-rs
 napi = { version = "3", features = [
@@ -146,8 +148,8 @@ napi-build = "2"
 tunnet-common = { version = "0.8.0", path = "crates/tunnet-common" }
 tunnet-core = { version = "0.8.0", path = "crates/tunnet-core" }
 tunnet-client = { version = "0.8.0", path = "crates/tunnet-client" }
-tunnet-cli = { version = "0.8.0", path = "crates/tunnet-cli" }
 tunnet-service = { version = "0.8.0", path = "crates/tunnet-service" }
+tunnet-update = { version = "0.8.0", path = "crates/tunnet-update" }
 tunnet-posture = { version = "0.8.0", path = "crates/tunnet-posture" }
 tunnet-policy-engine = { version = "0.8.0", path = "crates/tunnet-policy-engine" }
 tunnet-audit = { version = "0.8.0", path = "crates/tunnet-audit" }

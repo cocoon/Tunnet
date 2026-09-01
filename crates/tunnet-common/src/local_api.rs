@@ -289,6 +289,9 @@ pub enum LocalEvent {
     UpdateAvailable {
         version: String,
     },
+    CoreUpdateChanged {
+        status: CoreUpdateStatus,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -473,13 +476,43 @@ pub struct AuthLoginRequest {
 #[serde(rename_all = "snake_case")]
 pub struct UpdateRequest {
     #[serde(default)]
-    pub check: bool,
-    #[serde(default)]
     pub force: bool,
     #[serde(default)]
     pub restart: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CoreUpdatePhase {
+    Idle,
+    Checking,
+    Available,
+    Downloading,
+    Verifying,
+    Staged,
+    Activating,
+    HealthCheck,
+    Complete,
+    Error,
+    Rollback,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct CoreUpdateStatus {
+    pub phase: CoreUpdatePhase,
+    pub current_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_version: Option<String>,
+    pub api_version: u32,
+    #[serde(default)]
+    pub downloaded: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

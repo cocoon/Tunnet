@@ -25,6 +25,7 @@ permissions:
   contents: write
   id-token: write
   attestations: write
+  artifact-metadata: write
 
 env:
   RUST_TOOLCHAIN: "1.97"
@@ -246,104 +247,6 @@ jobs:
             tunnet-${{ needs.validate.outputs.version }}-${{ matrix.target }}.*
           if-no-files-found: error
 
-  build-desktop-windows:
-    name: Desktop - Windows NSIS
-    needs: [validate, build-binaries]
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.validate.outputs.tag }}
-
-      - uses: oven-sh/setup-bun@v2
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          targets: x86_64-pc-windows-msvc
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: binaries-x86_64-pc-windows-msvc
-          path: headless-artifact
-
-      - name: Stage sidecar binaries
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${{ needs.validate.outputs.version }}"
-          target="x86_64-pc-windows-msvc"
-          triple="x86_64-pc-windows-msvc"
-          dest="apps/desktop/src-tauri/binaries"
-          mkdir -p "$dest"
-
-          archive=""
-          for candidate in \
-            "headless-artifact/tunnet-headless-${version}-${target}.zip" \
-            "headless-artifact/tunnet-${version}-${target}.zip"
-          do
-            if [ -f "$candidate" ]; then
-              archive="$candidate"
-              break
-            fi
-          done
-          [ -n "$archive" ] || { echo "::error::headless Windows archive not found"; exit 1; }
-
-          unzip -q "$archive" -d headless-artifact
-          extracted=""
-          for dir in \
-            "headless-artifact/tunnet-headless-${version}-${target}" \
-            "headless-artifact/tunnet-${version}-${target}"
-          do
-            if [ -d "$dir" ]; then
-              extracted="$dir"
-              break
-            fi
-          done
-          [ -n "$extracted" ] || { echo "::error::unexpected archive layout"; exit 1; }
-
-          cp "$extracted/tunnet.exe" "$dest/tunnet-${triple}.exe"
-          cp "$extracted/tunnetd.exe" "$dest/tunnetd-${triple}.exe"
-          if [ ! -f "$extracted/wintun.dll" ]; then
-            echo "::error::wintun.dll missing from Windows release archive"
-            exit 1
-          fi
-          cp "$extracted/wintun.dll" "$dest/wintun.dll"
-
-          node <<'NODE'
-          const fs = require("fs");
-          const confPath = "apps/desktop/src-tauri/tauri.conf.json";
-          const conf = JSON.parse(fs.readFileSync(confPath, "utf8"));
-          conf.bundle = conf.bundle || {};
-          conf.bundle.externalBin = ["binaries/tunnet", "binaries/tunnetd"];
-          conf.bundle.resources = ["binaries/wintun.dll"];
-          conf.bundle.artifactName = "Tunnet_x64-setup.exe";
-          fs.writeFileSync(confPath, JSON.stringify(conf, null, 2) + "\n");
-          NODE
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Build NSIS installer
-        working-directory: apps/desktop
-        env:
-          TAURI_CI: true
-        run: bun run tauri build
-
-      - name: Collect NSIS installer
-        shell: bash
-        run: |
-          mkdir -p nsis-out
-          find . -path '*/bundle/nsis/*.exe' -print -exec cp {} nsis-out/ \;
-          ls -la nsis-out/
-
-      - name: Upload desktop installer
-        uses: actions/upload-artifact@v7
-        with:
-          name: desktop-windows-nsis
-          path: nsis-out/*.exe
-          if-no-files-found: error
-
   package-installers:
     name: Package install scripts
     needs: [validate]
@@ -371,8 +274,8 @@ jobs:
           if-no-files-found: error
 
   github-release:
-    name: GitHub Release (draft)
-    needs: [validate, build-binaries, build-desktop-windows, package-installers]
+    name: GitHub Release
+    needs: [validate, build-binaries, package-installers, attest]
     if: needs.validate.outputs.dry-run != 'true'
     runs-on: [ubuntu-latest]
     steps:
@@ -386,11 +289,6 @@ jobs:
           pattern: binaries-*
           path: artifacts
           merge-multiple: true
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: desktop-windows-nsis
-          path: artifacts
 
       - uses: actions/download-artifact@v8
         with:
@@ -408,18 +306,15 @@ jobs:
             echo "### Linux / macOS (headless agent)"
             echo ""
             echo '```bash'
-            echo "curl -fsSL https://github.com/${repo}/releases/latest/download/install.sh | sh"
+            echo "curl -fsSL https://github.com/${repo}/releases/download/core-latest/install.sh | sh"
             echo '```'
             echo ""
             echo "### Windows (PowerShell as Administrator)"
             echo ""
             echo '```powershell'
-            echo "irm https://github.com/${repo}/releases/latest/download/install.ps1 | iex"
+            echo "irm https://github.com/${repo}/releases/download/core-latest/install.ps1 | iex"
             echo '```'
             echo ""
-            echo "### Windows Desktop"
-            echo ""
-            echo "Download the \`Tunnet_x64-setup.exe\` installer from the assets below."
           } > release-notes.md
 
       - uses: softprops/action-gh-release@v3
@@ -427,20 +322,19 @@ jobs:
           tag_name: ${{ needs.validate.outputs.tag }}
           name: Tunnet ${{ needs.validate.outputs.tag }}
           body_path: release-notes.md
-          draft: true
+          draft: false
           prerelease: ${{ needs.validate.outputs.prerelease == 'true' }}
           generate_release_notes: true
           files: |
             artifacts/*.tar.gz
             artifacts/*.zip
             artifacts/*.sha256
-            artifacts/*.exe
             artifacts/install.sh
             artifacts/install.ps1
 
   attest:
-    name: Attestation
-    needs: [validate, build-binaries, github-release]
+    name: Attest Core release assets
+    needs: [validate, build-binaries, package-installers]
     if: needs.validate.outputs.dry-run != 'true'
     runs-on: [ubuntu-latest]
     steps:
@@ -450,8 +344,61 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: installers
+          path: artifacts
+
       - uses: actions/attest@v4
         with:
-          subject-path: |
-            artifacts/*.tar.gz
-            artifacts/*.zip
+          subject-path: artifacts/*
+
+  promote-core-channel:
+    name: Promote core-latest
+    needs: [validate, github-release, attest, package-installers]
+    if: needs.validate.outputs.dry-run != 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: binaries-*
+          path: artifacts
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: installers
+          path: channel
+
+      - name: Generate Core channel manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.validate.outputs.version }}"
+          artifacts_json="$(python - "$version" <<'PY'
+          import glob, hashlib, json, os, sys
+          version = sys.argv[1]
+          prefix = f"tunnet-headless-{version}-"
+          items = []
+          for path in sorted(glob.glob(f"artifacts/{prefix}*.tar.gz") + glob.glob(f"artifacts/{prefix}*.zip")):
+              name = os.path.basename(path)
+              target = name[len(prefix):].removesuffix(".tar.gz").removesuffix(".zip")
+              items.append({"target": target, "sha256": hashlib.sha256(open(path, "rb").read()).hexdigest()})
+          if not items: raise SystemExit("no Core archives found")
+          print(json.dumps(items, separators=(",", ":")))
+          PY
+          )"
+          api_version="$(sed -n 's/^pub const API_VERSION: u32 = \([0-9][0-9]*\);/\1/p' crates/tunnet-common/src/local_api.rs)"
+          node scripts/generate-daemon-manifest.mjs "$version" "$api_version" "$artifacts_json" "${{ github.repository }}" > channel/daemon-latest.json
+
+      - name: Promote only after immutable release and attestations succeeded
+        shell: bash
+        run: |
+          gh release view core-latest >/dev/null 2>&1 || gh release create core-latest --title "Tunnet Core latest" --notes "Stable Tunnet Core update channel. Assets point to immutable vX.Y.Z releases."
+          gh release upload core-latest channel/daemon-latest.json channel/install.sh channel/install.ps1 --clobber

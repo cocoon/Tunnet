@@ -110,6 +110,7 @@ impl PeerIdentity {
     pub fn require_elevated(&self) -> Result<(), ApiError> {
         self.require_cap(LIFECYCLE)
     }
+
 }
 
 fn elevated_required_message() -> &'static str {
@@ -268,5 +269,27 @@ fn windows_peer_identity(
             elevated,
             same_user,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standard_user_can_read_but_cannot_install_updates() {
+        let peer = PeerIdentity {
+            #[cfg(unix)]
+            uid: 1000,
+            #[cfg(unix)]
+            gid: 1000,
+            #[cfg(unix)]
+            pid: 1,
+            elevated: false,
+            same_user: false,
+        };
+
+        assert!(peer.require_cap(STATUS_READ).is_ok());
+        assert!(peer.require_elevated().is_err());
     }
 }

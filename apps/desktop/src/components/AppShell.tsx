@@ -1,5 +1,16 @@
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@tunnet/ui/components/alert-dialog";
 import { Badge } from "@tunnet/ui/components/badge";
+import { Button } from "@tunnet/ui/components/button";
 import {
   Select,
   SelectContent,
@@ -26,7 +37,9 @@ import {
 } from "@tunnet/ui/components/sidebar";
 import {
   Activity,
+  Download,
   LayoutDashboard,
+  RotateCw,
   Server,
   Settings,
   Share2,
@@ -34,8 +47,10 @@ import {
   Terminal,
 } from "lucide-react";
 import { motion } from "motion/react";
+import { useState } from "react";
 import { CopyButton } from "@/components/CopyButton";
 import { useApp } from "@/lib/app-context";
+import { useDesktopUpdate } from "@/lib/desktop-update-context";
 import { useDirectNetwork } from "@/lib/direct-network-context";
 import type { NetworkSummary } from "@/lib/types";
 
@@ -82,6 +97,8 @@ export function AppShell() {
   const { node, meta, error } = useApp();
   const { networks, setNetworkId, activeNetwork } = useDirectNetwork();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const desktopUpdate = useDesktopUpdate();
+  const [restartDialog, setRestartDialog] = useState(false);
 
   const network = activeNetworkForMode(node, activeNetwork);
   const isDirect = meta?.mode === "direct" || node?.mode === "direct";
@@ -185,7 +202,80 @@ export function AppShell() {
               <CopyButton value={network.ip} label="Address" />
             </div>
           ) : null}
+          {desktopUpdate.phase === "available" ||
+          desktopUpdate.phase === "downloading" ||
+          desktopUpdate.phase === "ready" ? (
+            <div className="relative size-8 shrink-0">
+              {desktopUpdate.phase === "downloading" ? (
+                <svg
+                  className="pointer-events-none absolute inset-0 -rotate-90"
+                  viewBox="0 0 32 32"
+                  aria-hidden="true"
+                >
+                  <circle
+                    cx="16"
+                    cy="16"
+                    r="14.5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    className="text-border"
+                  />
+                  <circle
+                    cx="16"
+                    cy="16"
+                    r="14.5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    pathLength="1"
+                    strokeDasharray="1"
+                    strokeDashoffset={1 - desktopUpdate.progress}
+                    className="text-primary transition-[stroke-dashoffset]"
+                  />
+                </svg>
+              ) : null}
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                className="absolute inset-0 m-auto"
+                disabled={desktopUpdate.phase === "downloading"}
+                aria-label={
+                  desktopUpdate.phase === "ready"
+                    ? "Restart and install Desktop update"
+                    : "Download Desktop update"
+                }
+                onClick={() =>
+                  desktopUpdate.phase === "ready"
+                    ? setRestartDialog(true)
+                    : void desktopUpdate.download()
+                }
+              >
+                {desktopUpdate.phase === "ready" ? <RotateCw /> : <Download />}
+              </Button>
+            </div>
+          ) : null}
         </header>
+        <AlertDialog open={restartDialog} onOpenChange={setRestartDialog}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                Restart and update Tunnet Desktop?
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                The update is downloaded. Tunnet Desktop will exit, install it,
+                and restart. The background service will keep running.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Later</AlertDialogCancel>
+              <AlertDialogAction onClick={() => void desktopUpdate.install()}>
+                Restart and install
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
         {error ? (
           <div className="shrink-0 border-b border-destructive/20 bg-destructive/5 px-4 py-2 text-sm text-destructive">
             {error}

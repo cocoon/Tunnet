@@ -13,9 +13,10 @@ use tauri::{
 use tauri_plugin_opener::OpenerExt;
 use tunnet_client::{TunnetClient, endpoint_reachable};
 use tunnet_common::local_api::{
-    DataPlaneStatus, DiagInfo, DirectFirewallAddRequest, DirectFirewallRemoveRequest,
-    DirectInviteRequest, DirectInviteResponse, DirectPeerRequest, DirectPendingResponse,
-    DnsStatusInfo, LocalEnrollRequest, LocalEvent, MetaInfo, NetcheckInfo, NetworkCreateRequest,
+    CoreUpdateStatus, DataPlaneStatus, DiagInfo,
+    DirectFirewallAddRequest, DirectFirewallRemoveRequest, DirectInviteRequest,
+    DirectInviteResponse, DirectPeerRequest, DirectPendingResponse, DnsStatusInfo,
+    LocalEnrollRequest, LocalEvent, MetaInfo, NetcheckInfo, NetworkCreateRequest,
     NetworkJoinRequest, NetworkLeaveRequest, NetworksResponse, NodeSummary, OkResponse,
     PeersResponse, ResetRequest, RoutesInfo, SendFileRequest, ServeInfo, ServeStartRequest,
     ServesResponse, SshRecordingsResponse, SshSessionsResponse, TransferInfo, TransfersResponse,
@@ -457,12 +458,7 @@ async fn service_restart() -> Result<OkResponse, String> {
 }
 
 #[tauri::command]
-async fn service_install_and_start() -> Result<OkResponse, String> {
-    elevated_rpc::run_elevated_op(elevated_rpc::ElevatedOp::ServiceInstallAndStart).await
-}
-
-#[tauri::command]
-fn open_url(app: AppHandle, url: String) -> Result<(), String> {
+fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|e| e.to_string())
@@ -472,7 +468,7 @@ fn open_url(app: AppHandle, url: String) -> Result<(), String> {
 fn open_releases(app: AppHandle) -> Result<(), String> {
     app.opener()
         .open_url(
-            "https://github.com/tunnetio/Tunnet/releases/latest",
+            "https://github.com/tunnetio/Tunnet/releases/tag/core-latest",
             None::<&str>,
         )
         .map_err(|e| e.to_string())
@@ -505,273 +501,22 @@ async fn events_subscribe(app: AppHandle, state: State<'_, DesktopState>) -> Res
     Ok(())
 }
 
-#[derive(Serialize)]
-struct InstallResult {
-    message: String,
-    opened_releases: bool,
-}
-
-#[cfg(windows)]
-fn service_bin_dir() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("TUNNET_INSTALL_DIR") {
-        return std::path::PathBuf::from(dir);
-    }
-    tunnet_service::installed_bin_dir(None)
-}
-
-fn find_file_recursive(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
-    let direct = dir.join(name);
-    if direct.is_file() {
-        return Some(direct);
-    }
-    let entries = std::fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir()
-            && let Some(found) = find_file_recursive(&path, name)
-        {
-            return Some(found);
-        }
-    }
-    None
-}
-
-#[cfg(windows)]
-fn append_machine_path(dir: &std::path::Path) -> Result<(), String> {
-    use winreg::enums::KEY_READ;
-    use winreg::enums::KEY_WRITE;
-
-    let dir_str = dir.to_string_lossy();
-    let env = winreg::HKLM
-        .open_subkey_with_flags(
-            "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
-            KEY_READ | KEY_WRITE,
-        )
-        .map_err(|e| format!("open machine PATH: {e}"))?;
-
-    let current: String = env.get_value("Path").unwrap_or_default();
-    let already_present = current
-        .split(';')
-        .any(|entry| entry.eq_ignore_ascii_case(dir_str.as_ref()));
-    if already_present {
-        return Ok(());
-    }
-
-    let new_path = if current.is_empty() {
-        dir_str.to_string()
-    } else {
-        format!("{};{}", current, dir_str)
-    };
-    env.set_value("Path", &new_path)
-        .map_err(|e| format!("set machine PATH: {e}"))?;
-
-    let process_path = std::env::var("Path").unwrap_or_default();
-    if !process_path
-        .split(';')
-        .any(|entry| entry.eq_ignore_ascii_case(dir_str.as_ref()))
-    {
-        unsafe {
-            std::env::set_var("Path", format!("{};{}", dir_str, process_path));
-        }
-    }
-
-    Ok(())
-}
-
-/// Register SCM against the staged daemon in `install_dir` (ProgramData bin).
-/// Runs `tunnet.exe service install|start` from that directory so staging and
-/// PathName stay unified.
-#[cfg(windows)]
-fn install_service_from_dir(install_dir: &std::path::Path) -> Result<(), String> {
-    let tunnet = install_dir.join("tunnet.exe");
-    if !tunnet.is_file() {
-        return Err(format!("tunnet.exe not found in {}", install_dir.display()));
-    }
-    let daemon = install_dir.join("tunnetd.exe");
-    if !daemon.is_file() {
-        return Err(format!(
-            "tunnetd.exe not found in {}",
-            install_dir.display()
-        ));
-    }
-
-    // Prefer elevated_rpc path when called from Tauri commands; this helper is
-    // used from install_daemon_from_github which may already be elevated.
-    if !tunnet_service::is_admin() {
-        return Err("administrator required to install the Tunnet service".into());
-    }
-
-    let install = std::process::Command::new(&tunnet)
-        .args(["service", "install"])
-        .current_dir(install_dir)
-        .status()
-        .map_err(|e| e.to_string())?;
-    if !install.success() {
-        return Err("service install failed".into());
-    }
-
-    let start = std::process::Command::new(&tunnet)
-        .args(["service", "start"])
-        .current_dir(install_dir)
-        .status()
-        .map_err(|e| e.to_string())?;
-    if !start.success() {
-        return Err("service start failed".into());
-    }
-
-    Ok(())
-}
-
-#[cfg(windows)]
-fn copy_release_binaries(
-    extract_root: &std::path::Path,
-    install_dir: &std::path::Path,
-) -> Result<(), String> {
-    std::fs::create_dir_all(install_dir).map_err(|e| e.to_string())?;
-
-    let mut copied_daemon = false;
-    for name in ["tunnet.exe", "tunnetd.exe", "wintun.dll"] {
-        if let Some(src) = find_file_recursive(extract_root, name) {
-            let dst = install_dir.join(name);
-            std::fs::copy(&src, &dst).map_err(|e| format!("copy {name}: {e}"))?;
-            if name == "tunnetd.exe" {
-                copied_daemon = true;
-            }
-        }
-    }
-
-    if !copied_daemon {
-        return Err("tunnetd.exe not found in release archive".into());
-    }
-
-    Ok(())
+#[tauri::command]
+async fn core_update_status(state: State<'_, DesktopState>) -> Result<CoreUpdateStatus, String> {
+    with_client(&state, |client| async move { client.update_status().await }).await
 }
 
 #[tauri::command]
-async fn install_daemon_from_github(app: AppHandle) -> Result<InstallResult, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("tunnet-desktop")
-        .build()
-        .map_err(|e| e.to_string())?;
+async fn core_update_check(state: State<'_, DesktopState>) -> Result<CoreUpdateStatus, String> {
+    with_client(&state, |client| async move { client.update_check().await }).await
+}
 
-    let release: serde_json::Value = client
-        .get("https://api.github.com/repos/tunnetio/Tunnet/releases/latest")
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .json()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let assets = release
-        .get("assets")
-        .and_then(|a| a.as_array())
-        .ok_or_else(|| "no release assets found".to_string())?;
-
-    let asset = assets
-        .iter()
-        .find(|asset| {
-            let name = asset
-                .get("name")
-                .and_then(|n| n.as_str())
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            name.contains("windows")
-                && (name.contains("x86_64") || name.contains("x64"))
-                && name.ends_with(".zip")
-        })
-        .ok_or_else(|| "no Windows x86_64 zip asset found".to_string())?;
-
-    let download_url = asset
-        .get("browser_download_url")
-        .and_then(|u| u.as_str())
-        .ok_or_else(|| "missing download URL".to_string())?;
-
-    let bytes = client
-        .get(download_url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .bytes()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let temp_dir = std::env::temp_dir().join("tunnet-install");
-    let _ = std::fs::remove_dir_all(&temp_dir);
-    std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
-
-    let zip_path = temp_dir.join("tunnet-headless.zip");
-    std::fs::write(&zip_path, &bytes).map_err(|e| e.to_string())?;
-
-    let file = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-    archive
-        .extract_unwrapped_root_dir(&temp_dir, zip::read::root_dir_common_filter)
-        .map_err(|e| e.to_string())?;
-
-    #[cfg(windows)]
-    {
-        // Stage into %ProgramData%\tunnet\bin - the only active daemon location.
-        let install_dir = service_bin_dir();
-        let _ = tunnet_service::stop(None);
-        copy_release_binaries(&temp_dir, &install_dir)?;
-
-        let elevated =
-            elevated_rpc::run_elevated_op(elevated_rpc::ElevatedOp::InstallServiceFromDir {
-                dir: install_dir.display().to_string(),
-            })
-            .await;
-        match elevated {
-            Ok(_) => {
-                let _ = append_machine_path(&install_dir);
-                return Ok(InstallResult {
-                    message: format!(
-                        "Installed to {} and started the Tunnet service",
-                        install_dir.display()
-                    ),
-                    opened_releases: false,
-                });
-            }
-            Err(_) => {
-                // Fall through: try direct install if already admin, else open releases.
-                if tunnet_service::is_admin() && install_service_from_dir(&install_dir).is_ok() {
-                    let _ = append_machine_path(&install_dir);
-                    return Ok(InstallResult {
-                        message: format!(
-                            "Installed to {} and started the Tunnet service",
-                            install_dir.display()
-                        ),
-                        opened_releases: false,
-                    });
-                }
-            }
-        }
-    }
-
-    #[cfg(not(windows))]
-    {
-        let install_result = (|| -> Result<(), String> {
-            tunnet_service::ensure_admin().map_err(|e| e.to_string())?;
-            tunnet_service::install(None).map_err(|e| e.to_string())?;
-            tunnet_service::start(None).map_err(|e| e.to_string())
-        })();
-
-        if install_result.is_ok() {
-            return Ok(InstallResult {
-                message: "Daemon installed and started".into(),
-                opened_releases: false,
-            });
-        }
-    }
-
-    let _ = open_releases(app.clone());
-    Ok(InstallResult {
-        message: format!(
-            "Downloaded release to {}. Service install needs admin - opened releases page.",
-            temp_dir.display()
-        ),
-        opened_releases: true,
-    })
+#[tauri::command]
+async fn core_update_install(
+    state: State<'_, DesktopState>,
+) -> Result<tunnet_common::local_api::CoreUpdateStatus, String> {
+    elevated_rpc::run_elevated_op(elevated_rpc::ElevatedOp::CoreUpdateInstall).await?;
+    with_client(&state, |client| async move { client.update_status().await }).await
 }
 
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -888,15 +633,18 @@ pub fn run() {
             service_start,
             service_stop,
             service_restart,
-            service_install_and_start,
-            open_url,
+            open_external_url,
             open_releases,
             events_subscribe,
-            install_daemon_from_github,
+            core_update_status,
+            core_update_check,
+            core_update_install,
         ])
         .setup(|app| {
             #[cfg(desktop)]
             {
+                app.handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())?;
                 app.handle().plugin(tauri_plugin_autostart::init(
                     tauri_plugin_autostart::MacosLauncher::LaunchAgent,
                     None::<Vec<&str>>,

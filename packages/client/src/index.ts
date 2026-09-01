@@ -96,6 +96,7 @@ export {
   type TunnelStartRequest,
   type TunnelsResponse,
   TunnetApiError,
+  type CoreUpdateStatus,
   type UpdateRequest,
   type ValidateConfigRequest,
 } from "./types";

@@ -14,6 +14,7 @@ tunnet-common.workspace = true
 tunnet-core.workspace = true
 tunnet-client.workspace = true
 tunnet-service.workspace = true
+tunnet-update.workspace = true
 tunnet-posture.workspace = true
 tunnet-policy-engine.workspace = true
 
@@ -36,7 +37,6 @@ base64.workspace = true
 jiff.workspace = true
 uuid.workspace = true
 rand.workspace = true
-ed25519-dalek.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 ipnet.workspace = true
@@ -44,6 +44,8 @@ netdev.workspace = true
 sha2.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
+semver.workspace = true
+zip.workspace = true
 
 iroh.workspace = true
 iroh-gossip.workspace = true
@@ -54,7 +56,6 @@ russh.workspace = true
 russh-sftp.workspace = true
 async-trait.workspace = true
 rusqlite.workspace = true
-self_update = { version = "1.0.0-rc.6", default-features = false, features = ["github", "archive-tar", "compression-tar-gz", "archive-zip", "compression-zip-deflate", "rustls", "reqwest", "progress-bar", "checksums"] }
 tokio-util = { workspace = true, features = ["rt"] }
 
 [target.'cfg(unix)'.dependencies]
@@ -72,3 +73,4 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 rstest.workspace = true
+tempfile = "3"

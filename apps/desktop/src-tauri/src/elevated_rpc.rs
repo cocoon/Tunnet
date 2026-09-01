@@ -26,8 +26,7 @@ pub enum ElevatedOp {
     ServiceStart,
     ServiceStop,
     ServiceRestart,
-    ServiceInstallAndStart,
-    InstallServiceFromDir { dir: String },
+    CoreUpdateInstall,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -120,19 +119,16 @@ async fn execute(op: ElevatedOp) -> anyhow::Result<OkResponse> {
                 message: "Service restarted".into(),
             })
         }
-        ElevatedOp::ServiceInstallAndStart => {
-            // Stage sidecars beside this desktop exe into %ProgramData%\tunnet\bin,
-            // register SCM against that path, then start.
-            tunnet_service::install(None)?;
-            tunnet_service::start(None)?;
+        ElevatedOp::CoreUpdateInstall => {
+            TunnetClient::connect()
+                .update(&tunnet_common::local_api::UpdateRequest {
+                    force: false,
+                    restart: false,
+                    version: None,
+                })
+                .await?;
             Ok(OkResponse {
-                message: "Service installed and started".into(),
-            })
-        }
-        ElevatedOp::InstallServiceFromDir { dir } => {
-            install_service_from_bin_dir(Path::new(&dir))?;
-            Ok(OkResponse {
-                message: format!("Service installed and started from {dir}"),
+                message: "Tunnet Core update started".into(),
             })
         }
         ElevatedOp::NetworkCreate { body } => TunnetClient::connect().network_create(&body).await,
@@ -143,34 +139,6 @@ async fn execute(op: ElevatedOp) -> anyhow::Result<OkResponse> {
         // daemon mid-request if we called TunnetClient::reset().
         ElevatedOp::Reset { body } => reset_device(body).await,
     }
-}
-
-fn install_service_from_bin_dir(install_dir: &Path) -> anyhow::Result<()> {
-    let tunnet = install_dir.join("tunnet.exe");
-    if !tunnet.is_file() {
-        anyhow::bail!("tunnet.exe not found in {}", install_dir.display());
-    }
-    let daemon = install_dir.join("tunnetd.exe");
-    if !daemon.is_file() {
-        anyhow::bail!("tunnetd.exe not found in {}", install_dir.display());
-    }
-
-    let install = std::process::Command::new(&tunnet)
-        .args(["service", "install"])
-        .current_dir(install_dir)
-        .status()?;
-    if !install.success() {
-        anyhow::bail!("service install failed");
-    }
-
-    let start = std::process::Command::new(&tunnet)
-        .args(["service", "start"])
-        .current_dir(install_dir)
-        .status()?;
-    if !start.success() {
-        anyhow::bail!("service start failed");
-    }
-    Ok(())
 }
 
 async fn reset_device(body: ResetRequest) -> anyhow::Result<OkResponse> {

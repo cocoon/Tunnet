@@ -7,6 +7,7 @@ mod cmds_device;
 mod cmds_direct;
 mod cmds_login;
 mod cmds_update;
+mod core_update;
 mod daemon;
 mod dataplane;
 mod dgram_pump;
@@ -42,6 +43,15 @@ use clap::Parser;
 
 fn main() {
     ensure_rustls_crypto_provider();
+
+    match crate::core_update::maybe_run_activation_worker() {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("Core update activation failed: {error:#}");
+            exit_with(1);
+        }
+    }
 
     #[cfg(windows)]
     if std::env::args().any(|a| a == "--service") {

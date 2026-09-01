@@ -45,6 +45,13 @@ export const Route = createRootRoute({
         href: appCss,
       },
     ],
+    scripts: [
+      {
+        src: "https://track.orielhaim.com/api/script.js",
+        "data-site-id": "37f0761a0482",
+        defer: true,
+      },
+    ],
   }),
   shellComponent: RootDocument,
 });

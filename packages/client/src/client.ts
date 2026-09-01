@@ -69,6 +69,7 @@ import type {
   TunnelInfo,
   TunnelStartRequest,
   TunnelsResponse,
+  CoreUpdateStatus,
   UpdateRequest,
   ValidateConfigRequest,
 } from "./types";
@@ -587,7 +588,11 @@ export class TunnetClient {
     });
   }
 
-  update(body: UpdateRequest): Promise<OkResponse> {
+  updateCheck(): Promise<CoreUpdateStatus> {
+    return readApiJson(this.path, "/v1/update");
+  }
+
+  update(body: UpdateRequest): Promise<CoreUpdateStatus> {
     return readApiJson(this.path, "/v1/update", { method: "POST", body });
   }
 

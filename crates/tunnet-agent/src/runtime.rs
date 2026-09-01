@@ -186,7 +186,6 @@ pub async fn run(
     if let Err(e) = crate::auto_update::on_agent_start(&node.paths) {
         tracing::warn!(?e, "auto-update pending check failed");
     }
-    crate::auto_update::spawn(node.paths.clone(), Some(config_store.clone()));
 
     // Request configured self tags from control plane (best-effort).
     if !is_direct && !agent_cfg.tags.self_tags.is_empty() {
@@ -263,9 +262,10 @@ pub async fn run(
     // should not wait on that work.
     let peer_dns_active = Arc::new(AtomicBool::new(false));
     let (data_plane, cmd_rx) = DataPlaneHandle::new(8);
-    let bootstrap: Arc<dyn tunnet_core::local_api::BootstrapOps> =
-        Arc::new(crate::api_bootstrap::AgentBootstrapOps::new(paths.clone()));
     let (events_tx, _) = tokio::sync::broadcast::channel(256);
+    let bootstrap: Arc<dyn tunnet_core::local_api::BootstrapOps> = Arc::new(
+        crate::api_bootstrap::AgentBootstrapOps::new(paths.clone(), events_tx.clone()),
+    );
     let api_state = Arc::new(LocalApiState {
         node: node.clone(),
         hostname: hostname.clone(),
@@ -293,6 +293,11 @@ pub async fn run(
     let _api_task = spawn_local_api(api_state.clone())
         .await
         .context("start Local Management API")?;
+    crate::auto_update::spawn(
+        node.paths.clone(),
+        Some(config_store.clone()),
+        crate::core_update::CoreUpdater::shared(node.paths.clone(), api_state.events.clone()),
+    );
     if let Some(tx) = on_ready.take() {
         let _ = tx.send(());
     }

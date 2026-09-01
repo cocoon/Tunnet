@@ -1,41 +1,21 @@
 # tunnet update
 
-Upgrade the installed `tunnet` binary from GitHub Releases.
+`tunnet update --check` reads the Core channel and does not need admin. `tunnet update` downloads, verifies, and activates Core and needs `sudo` on Linux/macOS or an elevated prompt on Windows.
+
+Desktop has its own channel (`desktop-latest`). Core installers and `tunnet update` use `core-latest`.
 
 ```bash
-sudo tunnet update
+curl -fsSL https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.sh | sh
 ```
 
-On Linux this downloads the new release and reloads the service gracefully. Pass `--restart` for a full restart. On Windows the service always restarts.
-
-## Options
-
-| Flag | Description |
-|------|-------------|
-| `--check` | Only report whether a newer release exists |
-| `--force` | Reinstall even when already on the latest version |
-| `--restart` | Hard-restart the service after installing |
-| `--version <tag>` | Install a specific release (e.g. `v0.3.1`) |
-
-```bash
-tunnet update --check
-sudo tunnet update --version v0.3.1
-sudo tunnet update --restart
+```powershell
+irm https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.ps1 | iex
 ```
+
+After Core is running, later Core updates go through the agent.
 
 Check the current version with `tunnet --version`.
 
 ## Automatic updates
 
-Enable periodic checks in [`tunnet.toml`](/guide/configuration):
-
-```toml
-[update]
-enabled = true
-check-interval-hours = 6
-health-window-secs = 30
-```
-
-When enabled, the running agent polls GitHub Releases on the configured interval and applies updates itself. After installing a new binary it keeps the previous one under `update/tunnet.prev`. If the new process exits or restarts again within `health-window-secs`, Tunnet reverts to the previous binary.
-
-Manual `tunnet update` and automatic `[update]` share the same download path; only the trigger differs.
+Headless auto-update uses the same Core channel, including attestation/digest checks, a health window, and rollback of the Core files together.

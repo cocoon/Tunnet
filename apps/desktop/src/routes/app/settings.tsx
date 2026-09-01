@@ -1,4 +1,5 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
+import { listen } from "@tauri-apps/api/event";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { Button } from "@tunnet/ui/components/button";
 import {
@@ -16,8 +17,10 @@ import { toast } from "sonner";
 import { CapabilityGate } from "@/components/CapabilityGate";
 import { ElevatedConfirm } from "@/components/ElevatedConfirm";
 import { useApp } from "@/lib/app-context";
+import { useDesktopUpdate } from "@/lib/desktop-update-context";
 import { useDirectNetwork } from "@/lib/direct-network-context";
-import { api } from "@/lib/invoke";
+import { api, type CoreUpdateStatus } from "@/lib/invoke";
+import type { LocalEvent } from "@/lib/types";
 import { appRoute } from "../app";
 
 export const Route = createRoute({
@@ -33,11 +36,32 @@ function SettingsPage() {
   const [autostart, setAutostart] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
   const [busy, setBusy] = useState(false);
+  const desktopUpdate = useDesktopUpdate();
+  const [coreUpdate, setCoreUpdate] = useState<CoreUpdateStatus | null>(null);
+  const [coreStatusLoaded, setCoreStatusLoaded] = useState(false);
 
   useEffect(() => {
     void isEnabled()
       .then(setAutostart)
       .catch(() => setAutostart(false));
+  }, []);
+
+  useEffect(() => {
+    void api
+      .coreUpdateStatus()
+      .then(setCoreUpdate)
+      .catch(() => undefined)
+      .finally(() => setCoreStatusLoaded(true));
+    const unlisten = listen<LocalEvent>(
+      "tunnet://local-event",
+      ({ payload }) => {
+        if (payload.type === "core_update_changed")
+          setCoreUpdate(payload.status);
+      },
+    );
+    return () => {
+      void unlisten.then((stop) => stop());
+    };
   }, []);
 
   async function toggleAutostart(checked: boolean) {
@@ -105,6 +129,68 @@ function SettingsPage() {
 
   const agentVersion = node?.daemon_version ?? meta?.daemon_version;
 
+  function coreUpdateLabel(status: CoreUpdateStatus | null): string {
+    if (!coreStatusLoaded) return "…";
+    if (!status) {
+      return service?.active
+        ? "Can't reach Local API"
+        : "Service is not running";
+    }
+    const percent =
+      status.total != null && status.total > 0
+        ? ` · ${Math.round((status.downloaded / status.total) * 100)}%`
+        : "";
+    const extra = status.error ? ` · ${status.error}` : "";
+    switch (status.phase) {
+      case "checking":
+        return "Checking for updates";
+      case "available":
+        return status.available_version
+          ? `Version ${status.available_version} is available`
+          : "An update is available";
+      case "downloading":
+        return `Downloading${percent}${extra}`;
+      case "verifying":
+        return `Verifying${extra}`;
+      case "staged":
+        return "Staged";
+      case "activating":
+        return "Activating";
+      case "health_check":
+        return "Health check";
+      case "complete":
+        return "Complete";
+      case "rollback":
+        return `Rolling back${extra}`;
+      case "error":
+        return status.error ?? "Update failed";
+      case "idle":
+        return status.available_version
+          ? `Version ${status.available_version} is available`
+          : "Up to date";
+    }
+  }
+
+  async function checkDaemonUpdate() {
+    try {
+      setCoreUpdate(await api.coreUpdateCheck());
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+      void api.coreUpdateStatus().then(setCoreUpdate);
+    }
+  }
+
+  async function installDaemonUpdate() {
+    try {
+      const result = await api.coreUpdateInstall();
+      setCoreUpdate(result);
+      toast.success("Core update started");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+      void api.coreUpdateStatus().then(setCoreUpdate);
+    }
+  }
+
   return (
     <div className="mx-auto w-full max-w-xl space-y-6">
       <div>
@@ -113,6 +199,84 @@ function SettingsPage() {
           Preferences and connection controls for this device.
         </p>
       </div>
+
+      <Card className="shadow-none">
+        <CardHeader>
+          <CardTitle>Updates</CardTitle>
+          <CardDescription>
+            Desktop updates itself. Core updates itself; Check and Update talk
+            to the running service.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div className="space-y-2">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium">Tunnet Desktop</p>
+                <p className="text-xs text-muted-foreground">
+                  Version {desktopUpdate.currentVersion}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {desktopUpdate.phase === "available"
+                    ? `Version ${desktopUpdate.availableVersion} is available`
+                    : desktopUpdate.phase === "ready"
+                      ? `Version ${desktopUpdate.availableVersion} is downloaded and ready`
+                      : desktopUpdate.phase === "downloading"
+                        ? `Downloading ${Math.round(desktopUpdate.progress * 100)}%`
+                        : desktopUpdate.phase === "checking"
+                          ? "Checking for updates"
+                          : (desktopUpdate.error ?? "Up to date")}
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={
+                  desktopUpdate.phase === "checking" ||
+                  desktopUpdate.phase === "downloading" ||
+                  desktopUpdate.phase === "installing"
+                }
+                onClick={() => void desktopUpdate.checkForUpdate()}
+              >
+                Check for updates
+              </Button>
+            </div>
+          </div>
+          <Separator />
+          <div className="space-y-2">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium">Background service</p>
+                <p className="text-xs text-muted-foreground">
+                  Version {agentVersion ?? "not installed"} · Local API v
+                  {meta?.api_version ?? "-"}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {coreUpdateLabel(coreUpdate)}
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={
+                    coreUpdate?.phase === "checking" ||
+                    coreUpdate?.phase === "downloading"
+                  }
+                  onClick={() => void checkDaemonUpdate()}
+                >
+                  Check
+                </Button>
+                {coreUpdate?.phase === "available" ? (
+                  <Button size="sm" onClick={() => void installDaemonUpdate()}>
+                    Update
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card className="shadow-none">
         <CardHeader>
@@ -266,10 +430,6 @@ function SettingsPage() {
           ) : null}
         </CardContent>
       </Card>
-
-      <p className="px-1 text-xs text-muted-foreground">
-        Tunnet agent {agentVersion || "-"}
-      </p>
     </div>
   );
 }

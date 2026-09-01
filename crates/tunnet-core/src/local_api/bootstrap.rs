@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use tunnet_common::local_api::{
-    ApiError, AuthLoginRequest, DeviceExpiryRequest, DeviceLabelDeleteRequest,
+    ApiError, AuthLoginRequest, CoreUpdateStatus, DeviceExpiryRequest, DeviceLabelDeleteRequest,
     DeviceLabelPatchRequest, DeviceLabelRequest, DeviceTagAddRequest, DeviceTagRemoveRequest,
     JsonPayload, LocalEnrollRequest, NetworkCreateRequest, NetworkJoinRequest, NetworkLeaveRequest,
     NetworkUpgradeRequest, OkResponse, PolicyOpRequest, PostureCheckRequest, ResetRequest,
@@ -23,7 +23,8 @@ pub trait BootstrapOps: Send + Sync {
     async fn validate_config(&self, req: ValidateConfigRequest) -> Result<OkResponse, ApiError>;
     async fn auth_login(&self, req: AuthLoginRequest) -> Result<OkResponse, ApiError>;
     async fn auth_logout(&self) -> Result<OkResponse, ApiError>;
-    async fn update(&self, req: UpdateRequest) -> Result<OkResponse, ApiError>;
+    async fn update_check(&self) -> Result<CoreUpdateStatus, ApiError>;
+    async fn update(&self, req: UpdateRequest) -> Result<CoreUpdateStatus, ApiError>;
     async fn device_set_labels(&self, req: DeviceLabelRequest) -> Result<OkResponse, ApiError>;
     async fn device_patch_labels(
         &self,

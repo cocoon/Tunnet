@@ -64,7 +64,7 @@ impl StatePaths {
     pub fn secrets_meta_file(&self) -> PathBuf {
         self.dir.join("state.enc.meta")
     }
-    /// Auto-update pending marker + previous binary live under this dir.
+    /// Core update staging, pending marker, and multi-file rollback unit.
     pub fn update_dir(&self) -> PathBuf {
         self.dir.join("update")
     }
@@ -73,6 +73,12 @@ impl StatePaths {
     }
     pub fn update_previous_bin(&self) -> PathBuf {
         self.update_dir().join("tunnet.prev")
+    }
+    pub fn update_previous_dir(&self) -> PathBuf {
+        self.update_dir().join("previous")
+    }
+    pub fn update_staging_dir(&self) -> PathBuf {
+        self.update_dir().join("staged")
     }
     /// Per-network iroh-docs store root.
     pub fn docs_dir(&self, network_id: Uuid) -> PathBuf {

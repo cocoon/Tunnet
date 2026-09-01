@@ -187,11 +187,6 @@ pub fn start(state_dir: Option<&str>) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     {
         if !is_root() {
-            if !unit_path().exists() {
-                anyhow::bail!(
-                    "service unit not installed. Run:\n  sudo tunnet service install\n  sudo tunnet service start"
-                );
-            }
             anyhow::bail!("starting the system service needs root: sudo tunnet service start");
         }
         println!("Starting tunnet service…");
@@ -209,9 +204,7 @@ pub fn start(state_dir: Option<&str>) -> anyhow::Result<()> {
                 println!("LaunchDaemon not found; installing…");
                 install_inner(state_dir, false)?;
             } else {
-                anyhow::bail!(
-                    "service not installed. Run:\n  sudo tunnet service install\n  sudo tunnet service start"
-                );
+                anyhow::bail!("starting the service needs root: sudo tunnet service start");
             }
         } else if is_root() {
             install_inner(state_dir, false)?;
@@ -232,9 +225,7 @@ pub fn start(state_dir: Option<&str>) -> anyhow::Result<()> {
     {
         win_service::ensure_elevated()?;
         install_inner(state_dir, false).map_err(|e| {
-            anyhow::anyhow!(
-                "{e:#}\nRun an elevated Command Prompt: tunnet service install && tunnet service start"
-            )
+            anyhow::anyhow!("{e:#}\nRun an elevated Command Prompt: tunnet service start")
         })?;
         println!("Starting tunnet service…");
         win_service::ensure_wintun_present(state_dir)?;
@@ -309,7 +300,6 @@ pub fn restart(state_dir: Option<&str>) -> anyhow::Result<()> {
     {
         win_service::ensure_elevated()?;
         println!("Restarting tunnet service…");
-        // Restage binary + PathName before bringing the service back.
         install_inner(state_dir, false)?;
         win_service::ensure_wintun_present(state_dir)?;
         if win_service::probe().active {
@@ -396,9 +386,19 @@ pub fn probe() -> ServiceProbe {
 pub fn status() -> anyhow::Result<()> {
     let p = probe();
     if !p.installed {
-        println!("not-installed");
+        println!("Tunnet service is not installed.");
+        #[cfg(windows)]
+        println!("Start it with `tunnet service start`");
+        #[cfg(not(windows))]
+        println!("Start it with `sudo tunnet service start`");
+    } else if p.active {
+        println!("running ({})", p.state);
     } else {
-        println!("{}", p.state);
+        println!("installed, not running ({})", p.state);
+        #[cfg(windows)]
+        println!("Start it with `tunnet service start`.");
+        #[cfg(not(windows))]
+        println!("Start it with `sudo tunnet service start`.");
     }
     Ok(())
 }

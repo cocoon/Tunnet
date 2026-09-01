@@ -16,8 +16,8 @@ import { Panel } from "#/components/shared/panel";
 
 type Platform = "windows" | "linux" | "macos";
 
-const RELEASES_BASE =
-  "https://github.com/tunnetio/Tunnet/releases/latest/download";
+const CORE_CHANNEL =
+  "https://github.com/tunnetio/Tunnet/releases/download/core-latest";
 
 const PLATFORMS: {
   id: Platform;
@@ -36,21 +36,21 @@ const PLATFORMS: {
     id: "windows",
     label: "Windows",
     Icon: FaWindows,
-    command: `irm ${RELEASES_BASE}/install.ps1 | iex`,
-    scriptUrl: `${RELEASES_BASE}/install.ps1`,
+    command: `irm ${CORE_CHANNEL}/install.ps1 | iex`,
+    scriptUrl: `${CORE_CHANNEL}/install.ps1`,
     note: "Requires Administrator",
     gui: {
       available: true,
-      file: "Tunnet_x64-setup.exe",
-      url: `${RELEASES_BASE}/Tunnet_x64-setup.exe`,
+      file: "Tunnet Desktop",
+      url: "https://github.com/tunnetio/Tunnet/releases/tag/desktop-latest",
     },
   },
   {
     id: "linux",
     label: "Linux",
     Icon: FaLinux,
-    command: `curl -fsSL ${RELEASES_BASE}/install.sh | sh`,
-    scriptUrl: `${RELEASES_BASE}/install.sh`,
+    command: `curl -fsSL ${CORE_CHANNEL}/install.sh | sh`,
+    scriptUrl: `${CORE_CHANNEL}/install.sh`,
     note: "Requires root",
     gui: { available: false },
   },
@@ -58,8 +58,8 @@ const PLATFORMS: {
     id: "macos",
     label: "macOS",
     Icon: FaApple,
-    command: `curl -fsSL ${RELEASES_BASE}/install.sh | sh`,
-    scriptUrl: `${RELEASES_BASE}/install.sh`,
+    command: `curl -fsSL ${CORE_CHANNEL}/install.sh | sh`,
+    scriptUrl: `${CORE_CHANNEL}/install.sh`,
     note: "Requires admin",
     gui: { available: false },
   },
@@ -247,7 +247,7 @@ export function DownloadPage(): ReactNode {
 
             <p className="l1-reveal mt-10 text-center">
               <a
-                href="https://github.com/tunnetio/Tunnet/releases/latest"
+                href="https://github.com/tunnetio/Tunnet/releases"
                 target="_blank"
                 rel="noreferrer"
                 className="l1-readout text-[var(--l1-muted-2)] underline decoration-[var(--l1-steel-strong)] underline-offset-4 transition-colors hover:text-[var(--l1-copper)]"

@@ -198,8 +198,30 @@ export interface AuthLoginRequest {
   management_url?: string;
 }
 
+export type CoreUpdatePhase =
+  | "idle"
+  | "checking"
+  | "available"
+  | "downloading"
+  | "verifying"
+  | "staged"
+  | "activating"
+  | "health_check"
+  | "complete"
+  | "error"
+  | "rollback";
+
+export interface CoreUpdateStatus {
+  phase: CoreUpdatePhase;
+  current_version: string;
+  available_version?: string;
+  api_version: number;
+  downloaded: number;
+  total?: number;
+  error?: string;
+}
+
 export interface UpdateRequest {
-  check?: boolean;
   force?: boolean;
   restart?: boolean;
   version?: string;

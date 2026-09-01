@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use tunnet_common::local_api::{
-    ApiError, AuthLoginRequest, DeviceExpiryRequest, DeviceLabelDeleteRequest,
+    ApiError, AuthLoginRequest, CoreUpdateStatus, DeviceExpiryRequest, DeviceLabelDeleteRequest,
     DeviceLabelPatchRequest, DeviceLabelRequest, DeviceTagAddRequest, DeviceTagRemoveRequest,
     JsonPayload, LocalEnrollRequest, NetworkCreateRequest, NetworkJoinRequest, NetworkLeaveRequest,
     NetworkUpgradeRequest, OkResponse, PolicyOpRequest, PostureCheckRequest, ResetRequest,
@@ -23,11 +23,16 @@ use tunnet_posture::{
 
 pub struct AgentBootstrapOps {
     paths: StatePaths,
+    updater: std::sync::Arc<crate::core_update::CoreUpdater>,
 }
 
 impl AgentBootstrapOps {
-    pub fn new(paths: StatePaths) -> Self {
-        Self { paths }
+    pub fn new(
+        paths: StatePaths,
+        events: tokio::sync::broadcast::Sender<tunnet_common::local_api::LocalEvent>,
+    ) -> Self {
+        let updater = crate::core_update::CoreUpdater::shared(paths.clone(), events);
+        Self { paths, updater }
     }
 
     fn state_dir(&self) -> Option<String> {
@@ -233,19 +238,20 @@ impl BootstrapOps for AgentBootstrapOps {
         Ok(ok("logged out"))
     }
 
-    async fn update(&self, req: UpdateRequest) -> Result<OkResponse, ApiError> {
-        let args = crate::cmds_update::UpdateArgs {
-            check: req.check,
-            force: req.force,
-            restart: req.restart,
-            version: req.version,
-        };
-        crate::cmds_update::run(args).await.map_err(map_error)?;
-        Ok(ok(if req.check {
-            "update check complete"
-        } else {
-            "update complete"
-        }))
+    async fn update_check(&self) -> Result<CoreUpdateStatus, ApiError> {
+        self.updater.check().await.map_err(map_error)
+    }
+
+    async fn update(&self, req: UpdateRequest) -> Result<CoreUpdateStatus, ApiError> {
+        if req.version.is_some() {
+            return Err(map_error(
+                "specific Core versions are not accepted by the stable update channel",
+            ));
+        }
+        self.updater
+            .stage_and_activate(req.force)
+            .await
+            .map_err(map_error)
     }
 
     async fn device_set_labels(&self, req: DeviceLabelRequest) -> Result<OkResponse, ApiError> {
