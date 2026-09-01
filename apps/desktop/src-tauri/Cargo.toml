@@ -1,6 +1,6 @@
 [package]
 name = "tunnet-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Tunnet Desktop"
 authors = ["orielhaim"]
 edition.workspace = true

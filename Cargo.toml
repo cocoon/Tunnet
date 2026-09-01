@@ -24,7 +24,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.97"
 license = "MPL-2.0"
@@ -145,15 +145,15 @@ napi-derive = "3"
 napi-build = "2"
 
 # Local
-tunnet-common = { version = "0.8.0", path = "crates/tunnet-common" }
-tunnet-core = { version = "0.8.0", path = "crates/tunnet-core" }
-tunnet-client = { version = "0.8.0", path = "crates/tunnet-client" }
-tunnet-service = { version = "0.8.0", path = "crates/tunnet-service" }
-tunnet-update = { version = "0.8.0", path = "crates/tunnet-update" }
-tunnet-posture = { version = "0.8.0", path = "crates/tunnet-posture" }
-tunnet-policy-engine = { version = "0.8.0", path = "crates/tunnet-policy-engine" }
-tunnet-audit = { version = "0.8.0", path = "crates/tunnet-audit" }
-tunnet-license = { version = "0.8.0", path = "crates/tunnet-license" }
+tunnet-common = { version = "0.9.0", path = "crates/tunnet-common" }
+tunnet-core = { version = "0.9.0", path = "crates/tunnet-core" }
+tunnet-client = { version = "0.9.0", path = "crates/tunnet-client" }
+tunnet-service = { version = "0.9.0", path = "crates/tunnet-service" }
+tunnet-update = { version = "0.9.0", path = "crates/tunnet-update" }
+tunnet-posture = { version = "0.9.0", path = "crates/tunnet-posture" }
+tunnet-policy-engine = { version = "0.9.0", path = "crates/tunnet-policy-engine" }
+tunnet-audit = { version = "0.9.0", path = "crates/tunnet-audit" }
+tunnet-license = { version = "0.9.0", path = "crates/tunnet-license" }
 yaml_serde = "0.10.7"
 hcl-rs = "0.19"
 
