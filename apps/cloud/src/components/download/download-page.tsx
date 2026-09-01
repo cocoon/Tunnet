@@ -16,8 +16,7 @@ import { Panel } from "#/components/shared/panel";
 
 type Platform = "windows" | "linux" | "macos";
 
-const CORE_CHANNEL =
-  "https://github.com/tunnetio/Tunnet/releases/download/core-latest";
+const GET = "https://get.tunnet.io";
 
 const PLATFORMS: {
   id: Platform;
@@ -36,21 +35,21 @@ const PLATFORMS: {
     id: "windows",
     label: "Windows",
     Icon: FaWindows,
-    command: `irm ${CORE_CHANNEL}/install.ps1 | iex`,
-    scriptUrl: `${CORE_CHANNEL}/install.ps1`,
+    command: `irm ${GET}/windows | iex`,
+    scriptUrl: `${GET}/windows`,
     note: "Requires Administrator",
     gui: {
       available: true,
       file: "Tunnet Desktop",
-      url: "https://github.com/tunnetio/Tunnet/releases/tag/desktop-latest",
+      url: `${GET}/desktop/windows`,
     },
   },
   {
     id: "linux",
     label: "Linux",
     Icon: FaLinux,
-    command: `curl -fsSL ${CORE_CHANNEL}/install.sh | sh`,
-    scriptUrl: `${CORE_CHANNEL}/install.sh`,
+    command: `curl -fsSL ${GET}/linux | sh`,
+    scriptUrl: `${GET}/linux`,
     note: "Requires root",
     gui: { available: false },
   },
@@ -58,8 +57,8 @@ const PLATFORMS: {
     id: "macos",
     label: "macOS",
     Icon: FaApple,
-    command: `curl -fsSL ${CORE_CHANNEL}/install.sh | sh`,
-    scriptUrl: `${CORE_CHANNEL}/install.sh`,
+    command: `curl -fsSL ${GET}/macos | sh`,
+    scriptUrl: `${GET}/macos`,
     note: "Requires admin",
     gui: { available: false },
   },

@@ -5,11 +5,11 @@
 Desktop has its own channel (`desktop-latest`). Core installers and `tunnet update` use `core-latest`.
 
 ```bash
-curl -fsSL https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.sh | sh
+curl -fsSL https://get.tunnet.io | sh
 ```
 
 ```powershell
-irm https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.ps1 | iex
+irm https://get.tunnet.io | iex
 ```
 
 After Core is running, later Core updates go through the agent.

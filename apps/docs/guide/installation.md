@@ -29,21 +29,22 @@ Agent config lands in `tunnet.toml` next to sealed secrets in the state director
 Pin a version:
 
 ```bash
-curl -fsSL https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.sh | sh -s -- --version v0.3.0
+curl -fsSL https://get.tunnet.io/linux | sh -s -- --version v0.3.0
 ```
 
 ```powershell
-# Download install.ps1 from the latest release, then:
+irm https://get.tunnet.io/windows -OutFile install.ps1
 .\install.ps1 -Version v0.3.0
 ```
 
 Skip the service unit:
 
 ```bash
-curl -fsSL https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.sh | sh -s -- --no-service
+curl -fsSL https://get.tunnet.io/linux | sh -s -- --no-service
 ```
 
 ```powershell
+irm https://get.tunnet.io/windows -OutFile install.ps1
 .\install.ps1 -NoService
 ```
 

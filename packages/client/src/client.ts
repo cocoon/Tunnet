@@ -9,6 +9,7 @@ import {
 } from "./transport";
 import type {
   AuthLoginRequest,
+  CoreUpdateStatus,
   DataPlaneStatus,
   DeviceExpiryRequest,
   DeviceLabelDeleteRequest,
@@ -69,7 +70,6 @@ import type {
   TunnelInfo,
   TunnelStartRequest,
   TunnelsResponse,
-  CoreUpdateStatus,
   UpdateRequest,
   ValidateConfigRequest,
 } from "./types";

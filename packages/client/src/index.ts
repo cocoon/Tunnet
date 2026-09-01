@@ -12,6 +12,7 @@ export {
   type ApiErrorCode,
   type AuthLoginRequest,
   type ControlPlaneStatusInfo,
+  type CoreUpdateStatus,
   type DataPlaneStatus,
   type DeviceExpiryRequest,
   type DeviceLabelDeleteRequest,
@@ -96,7 +97,6 @@ export {
   type TunnelStartRequest,
   type TunnelsResponse,
   TunnetApiError,
-  type CoreUpdateStatus,
   type UpdateRequest,
   type ValidateConfigRequest,
 } from "./types";

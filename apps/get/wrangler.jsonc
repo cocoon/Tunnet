@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tunnet-get",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "minify": true,
+  "routes": [
+    {
+      "pattern": "get.tunnet.io",
+      "custom_domain": true
+    }
+  ]
+}

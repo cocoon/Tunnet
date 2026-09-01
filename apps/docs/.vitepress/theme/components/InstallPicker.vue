@@ -21,12 +21,9 @@ const selected = ref<Platform>("linux");
 const copied = ref(false);
 
 const commands: Record<Platform, string> = {
-  linux:
-    "curl -fsSL https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.sh | sh",
-  macos:
-    "curl -fsSL https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.sh | sh",
-  windows:
-    "irm https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.ps1 | iex",
+  linux: "curl -fsSL https://get.tunnet.io/linux | sh",
+  macos: "curl -fsSL https://get.tunnet.io/macos | sh",
+  windows: "irm https://get.tunnet.io/windows | iex",
 };
 
 const shellLabel = computed(() =>
