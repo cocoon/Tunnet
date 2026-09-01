@@ -26,7 +26,6 @@ permissions:
   id-token: write
 
 env:
-  RUST_TOOLCHAIN: "1.97"
   CARGO_TERM_COLOR: always
   APP_NAME: tunnet-node
   MACOSX_DEPLOYMENT_TARGET: "10.13"
@@ -122,7 +121,6 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
 
       - uses: actions/cache@v6
@@ -134,7 +132,7 @@ jobs:
             ~/.napi-rs
             .cargo-cache
             target/
-          key: sdk-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          key: sdk-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: sdk-${{ matrix.target }}-
 
       - uses: mlugg/setup-zig@v2

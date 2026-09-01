@@ -28,7 +28,6 @@ permissions:
   artifact-metadata: write
 
 env:
-  RUST_TOOLCHAIN: "1.97"
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -113,7 +112,6 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
 
       - uses: actions/cache@v6
@@ -123,7 +121,7 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: bin-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          key: bin-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: bin-${{ matrix.target }}-
 
       - name: Install cross
