@@ -89,6 +89,20 @@ app.get("/install", (c) => {
   return redirectCli(c.req.raw);
 });
 
+app.get("/desktop", (c) => {
+  return redirectDesktop(c.req.raw);
+});
+
+app.get("/desktop/:platform", (c) => {
+  const platform = parsePlatform(c.req.param("platform"));
+
+  if (!platform) {
+    return c.notFound();
+  }
+
+  return redirectDesktop(c.req.raw, platform);
+});
+
 app.get("/:platform{windows|win|linux|macos|mac|darwin}", (c) => {
   return redirectCli(c.req.raw, c.req.param("platform"));
 });
@@ -111,20 +125,6 @@ app.get("/install/:platform", (c) => {
   }
 
   return c.redirect(cliUrl(platform), 302);
-});
-
-app.get("/desktop", (c) => {
-  return redirectDesktop(c.req.raw);
-});
-
-app.get("/desktop/:platform", (c) => {
-  const platform = parsePlatform(c.req.param("platform"));
-
-  if (!platform) {
-    return c.notFound();
-  }
-
-  return redirectDesktop(c.req.raw, platform);
 });
 
 app.notFound((c) => {
