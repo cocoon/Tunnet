@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use russh::server::{Auth, Handler, Msg, Session};
+use russh::server::{Auth, ChannelOpenHandle, Handler, Msg, Session};
 use russh::{Channel, ChannelId, MethodKind, MethodSet, Pty};
 use tunnet_common::policy::{SshAction, SshEvalCtx, SshPolicyRule, evaluate_ssh};
 use tunnet_common::ws::ClientMsg;
@@ -515,10 +515,12 @@ impl Handler for SshHandler {
     async fn channel_open_session(
         &mut self,
         channel: Channel<Msg>,
+        reply: ChannelOpenHandle,
         _session: &mut Session,
-    ) -> Result<bool, Self::Error> {
+    ) -> Result<(), Self::Error> {
         self.channels.insert(channel.id(), channel);
-        Ok(true)
+        reply.accept().await;
+        Ok(())
     }
 
     async fn pty_request(
