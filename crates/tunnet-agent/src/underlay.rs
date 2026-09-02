@@ -67,11 +67,6 @@ impl UnderlayInfo {
     }
 }
 
-/// IPv4 default gateway of the underlay, if any.
-pub fn default_gateway_v4() -> Option<Ipv4Addr> {
-    UnderlayInfo::discover().and_then(|u| u.gateway_v4())
-}
-
 /// Underlay interface name used for NAT MASQUERADE.
 pub fn default_uplink_name() -> Option<String> {
     UnderlayInfo::discover().map(|u| u.interface_name)

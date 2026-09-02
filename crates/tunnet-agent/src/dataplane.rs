@@ -169,7 +169,9 @@ async fn bring_down(
     live.outbound.abort();
     ingress.abort_all();
     tunnel_pool.close_all().await;
-    crate::system_routes::unapply(routes);
+    if let Err(e) = crate::system_routes::unapply(routes).await {
+        tracing::warn!(error = %e, "route teardown failed");
+    }
     crate::forward::teardown_exit_nat();
     drop(live.dns_guard);
     peer_dns_active.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -229,15 +231,18 @@ async fn bring_up(
 
     let (remote_subnets, device_profile, has_exit) =
         route_snapshot(node, cfg.is_direct, cfg.network_id);
-    if !cfg.is_direct {
-        crate::system_routes::apply(
+    if !cfg.is_direct
+        && let Err(e) = crate::system_routes::apply(
             routes,
             &cfg.ifname,
             &device_profile,
             &remote_subnets,
             has_exit,
             &cfg.underlay_hosts,
-        );
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "route reconcile on dataplane up failed");
     }
     crate::forward::ensure_exit_nat(node.routes.is_exit_node());
 

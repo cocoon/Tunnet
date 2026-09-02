@@ -68,7 +68,7 @@ pub async fn run(
     let config_store = tunnet_core::EffectiveConfigStore::new();
     let _ = config_store.recompute(&agent_cfg, Default::default());
 
-    let route_reconciler = crate::system_routes::RouteReconciler::new();
+    let route_reconciler = crate::system_routes::RouteReconciler::new()?;
     let underlay_hosts = {
         let mut hosts = Vec::new();
         if let Ok(managed) = persisted.require_managed() {
@@ -112,14 +112,24 @@ pub async fn run(
                 .map(|r| r.cidr)
                 .collect();
             let has_exit = m.device_profile.exit_node_endpoint_id.is_some();
-            crate::system_routes::apply(
-                &reconciler,
-                &ifname,
-                &m.device_profile,
-                &remote_subnets,
-                has_exit,
-                &underlay,
-            );
+            let reconciler = reconciler.clone();
+            let ifname = ifname.clone();
+            let profile = m.device_profile.clone();
+            let underlay = underlay.clone();
+            tokio::spawn(async move {
+                if let Err(e) = crate::system_routes::apply(
+                    &reconciler,
+                    &ifname,
+                    &profile,
+                    &remote_subnets,
+                    has_exit,
+                    &underlay,
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, "route reconcile on membership failed");
+                }
+            });
             let advertise_exit = m.exit_nodes.iter().any(|e| e.endpoint_id == self_hex);
             crate::forward::ensure_exit_nat(advertise_exit);
         }));
@@ -487,7 +497,7 @@ pub async fn run(
             .filter(|r| r.via_endpoint_id != node.identity.endpoint_id_hex())
             .map(|r| r.cidr)
             .collect();
-        crate::system_routes::apply(
+        if let Err(e) = crate::system_routes::apply(
             &route_reconciler,
             &args.ifname,
             &membership_snap.device_profile,
@@ -497,7 +507,11 @@ pub async fn run(
                 .exit_node_endpoint_id
                 .is_some(),
             &underlay_hosts,
-        );
+        )
+        .await
+        {
+            tracing::warn!(error = %e, "initial route reconcile failed");
+        }
     }
 
     crate::metrics::spawn_listeners(metrics.clone(), &args.metrics_bind, assigned_ipv4);
