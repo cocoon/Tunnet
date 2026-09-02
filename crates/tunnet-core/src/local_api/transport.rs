@@ -51,6 +51,24 @@ pub fn unix_api_candidates() -> Vec<PathBuf> {
     paths
 }
 
+/// Sticky world-writable dirs already allow traversal; do not loosen them.
+#[cfg(unix)]
+fn should_chmod_api_parent(parent: &Path) -> bool {
+    parent != Path::new("/") && parent != Path::new("/tmp") && parent != Path::new("/var/tmp")
+}
+
+/// Local users must reach the socket. Capability checks use SO_PEERCRED.
+#[cfg(unix)]
+fn apply_unix_api_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Some(parent) = path.parent()
+        && should_chmod_api_parent(parent)
+    {
+        let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755));
+    }
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666));
+}
+
 /// Path used when *binding* the listener (single socket).
 #[cfg(unix)]
 fn unix_bind_path() -> PathBuf {
@@ -113,8 +131,6 @@ impl ApiListener {
         let path = default_api_path();
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-
             if path.exists() {
                 let _ = std::fs::remove_file(&path);
             }
@@ -122,7 +138,7 @@ impl ApiListener {
                 std::fs::create_dir_all(parent)?;
             }
             let unix = tokio::net::UnixListener::bind(&path)?;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660));
+            apply_unix_api_permissions(&path);
             tracing::info!(path = %path.display(), "Local API listening (unix)");
             Ok((
                 Self {
@@ -397,5 +413,30 @@ impl ClientStream {
                 (Box::new(r), Box::new(w))
             }
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn tmp_parents_are_left_alone() {
+        assert!(!should_chmod_api_parent(Path::new("/tmp")));
+        assert!(!should_chmod_api_parent(Path::new("/var/tmp")));
+        assert!(should_chmod_api_parent(Path::new("/run/tunnet")));
+    }
+
+    #[test]
+    fn socket_and_runtime_dir_are_world_reachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("tunnetd.sock");
+        std::fs::write(&sock, []).unwrap();
+        apply_unix_api_permissions(&sock);
+        let sock_mode = std::fs::metadata(&sock).unwrap().permissions().mode() & 0o777;
+        let dir_mode = std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(sock_mode, 0o666);
+        assert_eq!(dir_mode, 0o755);
     }
 }
