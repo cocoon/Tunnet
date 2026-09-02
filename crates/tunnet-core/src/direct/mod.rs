@@ -60,9 +60,10 @@ pub use firewall::{
 #[cfg(feature = "direct")]
 pub use grants::{
     EpochRecord, Genesis, MemberRole, NetworkGrant, Revocation, SignedMemberRecord,
-    decrypt_content, encrypt_content, generate_coordinator_keypair, sign_epoch, sign_genesis,
-    sign_grant, sign_member_record, sign_revocation, signing_key_from_hex, verify_epoch,
-    verify_genesis, verify_grant, verify_member_record, verify_revocation, verifying_key_from_hex,
+    decrypt_content, encrypt_content, generate_coordinator_keypair, grant_expiry, sign_epoch,
+    sign_genesis, sign_grant, sign_member_record, sign_revocation, signing_key_from_hex,
+    verify_epoch, verify_genesis, verify_grant, verify_member_record, verify_revocation,
+    verifying_key_from_hex,
 };
 #[cfg(feature = "direct")]
 pub use invite::{InviteCode, decode_invite, encode_invite};

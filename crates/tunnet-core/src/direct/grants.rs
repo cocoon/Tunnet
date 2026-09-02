@@ -6,7 +6,7 @@ use aes_gcm::aead::{Aead, Generate};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use anyhow::{Context, bail};
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
-use jiff::Timestamp;
+use jiff::{Span, Timestamp};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -131,6 +131,27 @@ fn grant_sign_payload(grant: &NetworkGrant) -> anyhow::Result<Vec<u8>> {
         expires_at: grant.expires_at,
         content_key: &grant.content_key,
     })?)
+}
+
+/// How long a coordinator-issued grant stays valid: ten years.
+///
+/// Expressed in HOURS rather than days on purpose. [`Timestamp`] is an absolute
+/// instant with no calendar attached, so jiff rejects calendar units on it: a
+/// day is 23-25 hours across a DST boundary, which makes `days` meaningless
+/// without a time zone. `Span::new().days(3650)` therefore type-checks and then
+/// fails at RUNTIME with "operation can only be performed with units of hours
+/// or smaller", which is how it reached a release: it broke `tunnet create`
+/// entirely, since a coordinator cannot self-issue its grant.
+pub const GRANT_LIFETIME_HOURS: i32 = 3650 * 24;
+
+/// When a grant issued at `issued_at` expires.
+///
+/// The single place this is computed, so the calendar-unit trap above cannot be
+/// reintroduced by a third caller.
+pub fn grant_expiry(issued_at: Timestamp) -> anyhow::Result<Timestamp> {
+    issued_at
+        .checked_add(Span::new().hours(GRANT_LIFETIME_HOURS))
+        .context("grant expiry is outside the representable timestamp range")
 }
 
 pub fn sign_grant(sk: &SigningKey, mut grant: NetworkGrant) -> anyhow::Result<NetworkGrant> {
@@ -329,7 +350,43 @@ pub fn decrypt_content(content_key_hex: &str, ciphertext: &[u8]) -> anyhow::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jiff::Span;
+
+    /// Regression test for the bug that broke `tunnet create` in 0.9.x.
+    ///
+    /// The lifetime must be expressed in units a `Timestamp` accepts. Asserting
+    /// on the returned value is not enough on its own: the point is that this
+    /// does not return `Err`, which is exactly how the calendar-unit version
+    /// failed.
+    #[test]
+    fn grant_expiry_is_representable_on_an_absolute_timestamp() {
+        let now = Timestamp::now();
+        let expires = grant_expiry(now).expect("ten-year grant expiry must be computable");
+
+        assert!(expires > now, "a grant must expire after it is issued");
+
+        // Compared as elapsed seconds rather than through a `Span`, whose
+        // default largest unit for timestamps is seconds, so `get_hours()`
+        // reads 0 and would assert nothing.
+        let elapsed = expires.as_second() - now.as_second();
+        assert_eq!(
+            elapsed,
+            i64::from(GRANT_LIFETIME_HOURS) * 3600,
+            "grant lifetime drifted",
+        );
+    }
+
+    /// A day is not a unit an absolute instant can be shifted by. Pinning this
+    /// documents WHY the lifetime is stated in hours, so nobody "tidies" it
+    /// back into days.
+    #[test]
+    fn calendar_units_are_rejected_by_timestamp_arithmetic() {
+        let now = Timestamp::now();
+        assert!(
+            now.checked_add(Span::new().days(3650)).is_err(),
+            "jiff must still reject calendar units on Timestamp; if this now \
+             succeeds, the workaround in grant_expiry can be revisited",
+        );
+    }
 
     fn sample_grant(network_id: Uuid, endpoint_id: &str, role: MemberRole) -> NetworkGrant {
         let now = Timestamp::now();

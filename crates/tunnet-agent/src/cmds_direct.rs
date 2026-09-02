@@ -8,8 +8,8 @@ use tunnet_core::direct::admin::{PendingJoin, push_pending};
 use tunnet_core::direct::{
     AUTH_ALPN, AuthClientMode, ConnectivityOptions, ConnectivityProfile, DocsMembership,
     MemberRole, MembershipEntry, NetworkGrant, apply_connectivity, decode_invite, derive_ipv4,
-    endpoint_builder, generate_coordinator_keypair, load_approved, network_id_from_topic,
-    run_auth_client, save_approved, sign_grant, topic_from_name_secret,
+    endpoint_builder, generate_coordinator_keypair, grant_expiry, load_approved,
+    network_id_from_topic, run_auth_client, save_approved, sign_grant, topic_from_name_secret,
 };
 use tunnet_core::{
     AgentIdentity, DirectState, PersistedState, SealPolicy, StatePaths, load_agent, persist_agent,
@@ -254,6 +254,9 @@ pub async fn run_create(args: CreateArgs, state_dir: Option<&str>) -> anyhow::Re
     let assigned_ipv4 = derive_ipv4(&my_id, 0);
 
     let network_id_for_grant = network_id;
+    // One reading of the clock: two `now()` calls made `issued_at` and the base
+    // for `expires_at` disagree by however long the call took.
+    let issued_at = jiff::Timestamp::now();
     let self_grant = sign_grant(
         &coord_sk,
         NetworkGrant {
@@ -261,8 +264,8 @@ pub async fn run_create(args: CreateArgs, state_dir: Option<&str>) -> anyhow::Re
             endpoint_id: my_id.clone(),
             role: MemberRole::Coordinator,
             network_epoch: 0,
-            issued_at: jiff::Timestamp::now(),
-            expires_at: jiff::Timestamp::now().checked_add(jiff::Span::new().days(3650))?,
+            issued_at,
+            expires_at: grant_expiry(issued_at)?,
             content_key: content_key.clone(),
             sig: String::new(),
         },
