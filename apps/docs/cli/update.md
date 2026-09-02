@@ -2,7 +2,6 @@
 
 `tunnet update --check` reads the Core channel and does not need admin. `tunnet update` downloads, verifies, and activates Core and needs `sudo` on Linux/macOS or an elevated prompt on Windows.
 
-Desktop has its own channel (`desktop-latest`). Core installers and `tunnet update` use `core-latest`.
 
 ```bash
 curl -fsSL https://get.tunnet.io | sh

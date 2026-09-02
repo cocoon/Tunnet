@@ -108,33 +108,3 @@ jobs:
           uploadUpdaterSignatures: true
           releaseAssetNamePattern: Tunnet_Desktop_[version]_[arch][setup].[ext]
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
-
-  publish-latest:
-    needs: [validate, build-and-release]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      TAG: ${{ needs.validate.outputs.tag }}
-    steps:
-      - name: Publish the stable Desktop download assets
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir release-assets
-          gh release download "$TAG" --repo "${{ github.repository }}" \
-            --pattern "latest.json" \
-            --pattern "Tunnet_Desktop_*_x64-setup.exe" \
-            --dir release-assets
-          setup_path="$(find release-assets -maxdepth 1 -name 'Tunnet_Desktop_*_x64-setup.exe' -print -quit)"
-          [ -n "$setup_path" ] || { echo "::error::Desktop setup asset was not published"; exit 1; }
-          cp "$setup_path" release-assets/Tunnet_Desktop_x64-setup.exe
-          if gh release view desktop-latest --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            gh release edit desktop-latest --repo "${{ github.repository }}" --title "Tunnet Desktop latest" --prerelease
-          else
-            gh release create desktop-latest --repo "${{ github.repository }}" --verify-tag --title "Tunnet Desktop latest" --prerelease
-          fi
-          gh release upload desktop-latest --repo "${{ github.repository }}" --clobber \
-            release-assets/latest.json \
-            release-assets/Tunnet_Desktop_x64-setup.exe

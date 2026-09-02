@@ -44,9 +44,7 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFBNzMxOURDREMwNjEzRUYKUldUdkV3YmMzQmx6cWkvekRNb29oMnlWWng5Tm42bUViRWtvbXZUODhWUDhZTkJTT1FEa3FvcCsK",
-      "endpoints": [
-        "https://github.com/tunnetio/Tunnet/releases/download/desktop-latest/latest.json"
-      ],
+      "endpoints": ["https://get.tunnet.io/desktop/latest.json"],
       "windows": {
         "installMode": "passive"
       }
