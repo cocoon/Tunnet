@@ -116,11 +116,15 @@ pub async fn run(
             let ifname = ifname.clone();
             let profile = m.device_profile.clone();
             let underlay = underlay.clone();
+            let assigned_ipv4 = m.assigned_ipv4;
+            let prefix = m.prefix;
             tokio::spawn(async move {
                 if let Err(e) = crate::system_routes::apply(
                     &reconciler,
                     &ifname,
                     &profile,
+                    assigned_ipv4,
+                    prefix,
                     &remote_subnets,
                     has_exit,
                     &underlay,
@@ -501,6 +505,8 @@ pub async fn run(
             &route_reconciler,
             &args.ifname,
             &membership_snap.device_profile,
+            membership_snap.assigned_ipv4,
+            membership_snap.prefix,
             &remote_subnets,
             membership_snap
                 .device_profile

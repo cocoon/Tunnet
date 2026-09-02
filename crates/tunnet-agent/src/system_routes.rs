@@ -21,6 +21,17 @@ fn rfc1918_nets() -> [Ipv4Net; 3] {
     ]
 }
 
+fn mesh_cidr(ip: Ipv4Addr, prefix: u8) -> Option<Ipv4Net> {
+    Ipv4Net::new(ip, prefix).ok().map(|n| n.trunc())
+}
+
+fn dest_is_mesh_local(mesh: Option<Ipv4Net>, dest: Ipv4Net) -> bool {
+    let Some(mesh) = mesh else {
+        return false;
+    };
+    dest == mesh || mesh.contains(&dest.network()) || dest.contains(&mesh.network())
+}
+
 /// Logical desired route: TUN on-link vs underlay next-hop.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum RouteKind {
@@ -259,6 +270,9 @@ pub struct DesiredRoutes {
     pub ifname: String,
     pub tun_if_index: Option<u32>,
     pub profile: DeviceProfile,
+    /// Interface prefix (e.g. 10.7.0.0/24). Must stay on TUN; the OS often
+    /// installs this as a connected route that is not in `remote_subnets`.
+    pub mesh_cidr: Option<Ipv4Net>,
     pub remote_subnets: Vec<Ipv4Net>,
     pub has_exit: bool,
     pub underlay_hosts: Vec<Ipv4Addr>,
@@ -274,6 +288,9 @@ impl DesiredRoutes {
 
     fn kinds(&self, gateway: Option<Ipv4Addr>, allow_default: bool) -> BTreeSet<RouteKind> {
         let mut set = BTreeSet::new();
+        if let Some(mesh) = self.mesh_cidr {
+            set.insert(RouteKind::ViaTun(mesh));
+        }
         for cidr in &self.remote_subnets {
             set.insert(RouteKind::ViaTun(*cidr));
         }
@@ -479,6 +496,9 @@ impl RouteReconciler {
                 continue;
             }
             if tun_owned && !want.iter().any(|w| w.dest == k.dest && w.gateway.is_none()) {
+                if dest_is_mesh_local(desired.mesh_cidr, k.dest) {
+                    continue;
+                }
                 if !to_del.iter().any(|d| d.identity() == k.identity()) {
                     to_del.push(k.clone());
                 }
@@ -606,10 +626,13 @@ fn resolve_if_index(name: &str) -> Option<u32> {
         .map(|iface| iface.index)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn apply(
     reconciler: &RouteReconciler,
     ifname: &str,
     profile: &DeviceProfile,
+    assigned_ipv4: Ipv4Addr,
+    prefix: u8,
     remote_subnets: &[Ipv4Net],
     has_exit: bool,
     underlay_hosts: &[Ipv4Addr],
@@ -619,6 +642,7 @@ pub async fn apply(
             ifname: ifname.to_string(),
             tun_if_index: resolve_if_index(ifname),
             profile: profile.clone(),
+            mesh_cidr: mesh_cidr(assigned_ipv4, prefix),
             remote_subnets: remote_subnets.to_vec(),
             has_exit,
             underlay_hosts: underlay_hosts.to_vec(),
@@ -721,6 +745,7 @@ mod tests {
             ifname: "tun0".into(),
             tun_if_index: Some(9),
             profile: DeviceProfile::default(),
+            mesh_cidr: Some("10.99.0.0/24".parse().unwrap()),
             remote_subnets: vec!["10.99.0.0/24".parse().unwrap()],
             has_exit: false,
             underlay_hosts: vec![],
@@ -739,6 +764,7 @@ mod tests {
             ifname: "tun0".into(),
             tun_if_index: Some(9),
             profile,
+            mesh_cidr: None,
             remote_subnets: vec![],
             has_exit: true,
             underlay_hosts: vec!["1.2.3.4".parse().unwrap()],
@@ -1028,6 +1054,63 @@ mod tests {
         assert!(state.lock().unwrap().kernel.contains(&unrelated));
         r.clear().await.unwrap();
         assert!(state.lock().unwrap().kernel.contains(&unrelated));
+    }
+
+    #[tokio::test]
+    async fn empty_advertised_preserves_os_mesh_connected_route() {
+        let mesh = spec_tun("10.7.0.0/24", 9);
+        let host = spec_tun("10.7.0.2/32", 9);
+        let state = Arc::new(Mutex::new(MockState {
+            kernel: [mesh.clone(), host.clone()].into(),
+            ..Default::default()
+        }));
+        let r = reconciler(MockBackend {
+            state: state.clone(),
+        });
+        r.reconcile(&DesiredRoutes {
+            ifname: "tun0".into(),
+            tun_if_index: Some(9),
+            profile: DeviceProfile::default(),
+            mesh_cidr: Some("10.7.0.0/24".parse().unwrap()),
+            remote_subnets: vec![],
+            has_exit: false,
+            underlay_hosts: vec![],
+            underlay: Some(underlay()),
+        })
+        .await
+        .unwrap();
+        let kernel = state.lock().unwrap().kernel.clone();
+        assert!(kernel.contains(&mesh));
+        assert!(kernel.contains(&host));
+        assert!(state.lock().unwrap().delete_calls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mesh_cidr_is_installed_when_kernel_has_no_connected_route() {
+        let state = Arc::new(Mutex::new(MockState::default()));
+        let r = reconciler(MockBackend {
+            state: state.clone(),
+        });
+        r.reconcile(&DesiredRoutes {
+            ifname: "tun0".into(),
+            tun_if_index: Some(9),
+            profile: DeviceProfile::default(),
+            mesh_cidr: Some("10.7.0.0/24".parse().unwrap()),
+            remote_subnets: vec![],
+            has_exit: false,
+            underlay_hosts: vec![],
+            underlay: Some(underlay()),
+        })
+        .await
+        .unwrap();
+        assert!(
+            state
+                .lock()
+                .unwrap()
+                .kernel
+                .iter()
+                .any(|s| s.dest == "10.7.0.0/24".parse().unwrap())
+        );
     }
 
     #[test]

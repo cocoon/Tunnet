@@ -77,7 +77,16 @@ impl ConnectivityOptions {
         fallback: ConnectivityRelayFallback,
     ) -> Self {
         self.custom_relays = relays;
-        self.relay_fallback = fallback;
+        self.relay_fallback = if self.custom_relays.is_empty()
+            && fallback == ConnectivityRelayFallback::None
+        {
+            tracing::warn!(
+                "snapshot has no connectivity relays; using n0 so mesh peers can discover each other"
+            );
+            ConnectivityRelayFallback::N0
+        } else {
+            fallback
+        };
         self
     }
 }
@@ -113,11 +122,17 @@ fn apply_relay_mode(builder: Builder, opts: &ConnectivityOptions) -> Builder {
 
     match (opts.profile, opts.relay_fallback) {
         (ConnectivityProfile::TunnetManaged, ConnectivityRelayFallback::None) => {
+            tracing::warn!(
+                "managed endpoint has no connectivity relays; disabling iroh relay (peer dials will fail across NAT)"
+            );
             builder.relay_mode(RelayMode::Disabled)
         }
         (ConnectivityProfile::LanOnly, _) => builder,
         (_, ConnectivityRelayFallback::N0) => builder,
-        (_, ConnectivityRelayFallback::None) => builder.relay_mode(RelayMode::Disabled),
+        (_, ConnectivityRelayFallback::None) => {
+            tracing::warn!("iroh relays disabled by snapshot fallback");
+            builder.relay_mode(RelayMode::Disabled)
+        }
     }
 }
 
@@ -234,6 +249,16 @@ mod tests {
         }];
         let map = relay_map_from_configs(&relays).expect("parse");
         assert_eq!(map.len(), 1);
+    }
+
+    #[cfg(any(feature = "direct", feature = "managed"))]
+    #[test]
+    fn managed_empty_none_falls_back_to_n0() {
+        let opts = ConnectivityOptions::managed_default()
+            .with_snapshot_relays(vec![], ConnectivityRelayFallback::None);
+        assert!(opts.custom_relays.is_empty());
+        assert_eq!(opts.relay_fallback, ConnectivityRelayFallback::N0);
+        let _builder = endpoint_builder(&opts);
     }
 
     #[cfg(any(feature = "direct", feature = "managed"))]

@@ -236,6 +236,8 @@ async fn bring_up(
             routes,
             &cfg.ifname,
             &device_profile,
+            cfg.assigned_ipv4,
+            cfg.prefix,
             &remote_subnets,
             has_exit,
             &cfg.underlay_hosts,

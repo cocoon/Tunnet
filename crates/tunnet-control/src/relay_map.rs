@@ -36,7 +36,8 @@ pub fn license_tier() -> LicenseTier {
 
 /// Resolve deployment relay mode from env, with license-aware defaults.
 ///
-/// Defaults: Cloud → `custom` (fail-closed); Community/Enterprise → `n0`.
+/// Defaults: Cloud → `custom` (use n0 only while the custom list is empty);
+/// Community/Enterprise → `n0`.
 pub fn deployment_relay_mode() -> DeploymentRelayMode {
     match std::env::var("TUNNET_DEPLOYMENT_RELAY_MODE")
         .unwrap_or_default()
@@ -61,17 +62,15 @@ pub fn connectivity_relay_fallback(
 }
 
 pub fn connectivity_relay_fallback_for(
-    tier: LicenseTier,
+    _tier: LicenseTier,
     mode: DeploymentRelayMode,
     effective: &[ConnectivityRelayConfig],
 ) -> ConnectivityRelayFallback {
-    if tier == LicenseTier::Cloud {
-        return ConnectivityRelayFallback::None;
-    }
-
     match mode {
         DeploymentRelayMode::Disabled => ConnectivityRelayFallback::None,
+        // Custom relays present: stay on that map (Cloud fail-closed vs n0).
         DeploymentRelayMode::Custom if !effective.is_empty() => ConnectivityRelayFallback::None,
+        // Empty custom list: n0 so mesh discovery still works until relays are healthy.
         DeploymentRelayMode::Custom | DeploymentRelayMode::N0 => ConnectivityRelayFallback::N0,
     }
 }
@@ -197,7 +196,15 @@ mod tests {
     }
 
     #[test]
-    fn cloud_fallback_always_none() {
+    fn cloud_empty_custom_falls_back_to_n0() {
+        assert_eq!(
+            connectivity_relay_fallback_for(LicenseTier::Cloud, DeploymentRelayMode::N0, &[]),
+            ConnectivityRelayFallback::N0
+        );
+        assert_eq!(
+            connectivity_relay_fallback_for(LicenseTier::Cloud, DeploymentRelayMode::Custom, &[]),
+            ConnectivityRelayFallback::N0
+        );
         let relay = ConnectivityRelayConfig {
             url: "https://r.example".into(),
             region: None,
@@ -205,15 +212,15 @@ mod tests {
             metering: false,
         };
         assert_eq!(
-            connectivity_relay_fallback_for(LicenseTier::Cloud, DeploymentRelayMode::N0, &[]),
-            ConnectivityRelayFallback::None
-        );
-        assert_eq!(
             connectivity_relay_fallback_for(
                 LicenseTier::Cloud,
                 DeploymentRelayMode::Custom,
                 &[relay]
             ),
+            ConnectivityRelayFallback::None
+        );
+        assert_eq!(
+            connectivity_relay_fallback_for(LicenseTier::Cloud, DeploymentRelayMode::Disabled, &[]),
             ConnectivityRelayFallback::None
         );
     }

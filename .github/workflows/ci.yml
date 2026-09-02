@@ -20,6 +20,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      - name: Install mold
+        uses: rui314/setup-mold@v1
+        with:
+          make-default: false
+
       - name: Format
         run: cargo fmt --check
 

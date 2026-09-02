@@ -397,6 +397,19 @@ fn firewall_stats_for_network(
         .unwrap_or((None, None))
 }
 
+fn iroh_relay_status(endpoint: &iroh::Endpoint) -> String {
+    use iroh::Watcher;
+    let mut watcher = endpoint.home_relay_status();
+    let statuses = watcher.get();
+    if statuses.iter().any(|s| s.is_connected()) {
+        "connected".into()
+    } else if statuses.is_empty() {
+        "disabled".into()
+    } else {
+        "disconnected".into()
+    }
+}
+
 pub(crate) fn peer_summaries(
     state: &LocalApiState,
     network_id: Option<uuid::Uuid>,
@@ -467,11 +480,7 @@ pub(crate) fn build_network_summary(
                 format!("network {network_id} not found"),
             ));
         }
-        let relay_status = if state.tunnels.list().is_empty() {
-            "disconnected"
-        } else {
-            "connected"
-        };
+        let relay_status = iroh_relay_status(&state.node.endpoint);
         let (firewall_drops, conntrack_entries) = firewall_stats_for_network(state, network_id);
         return Ok(NetworkSummary {
             network_id: network_id.to_string(),
@@ -487,7 +496,7 @@ pub(crate) fn build_network_summary(
             dashboard_url: managed.dashboard_url.clone(),
             firewall_drops,
             conntrack_entries,
-            relay_status: relay_status.into(),
+            relay_status,
             expires_at,
             expires_in_secs,
             keep_alive: Some(pool.keep_alive_global()),
@@ -549,7 +558,7 @@ pub(crate) fn build_node_summary(state: &LocalApiState) -> NodeSummary {
                     dashboard_url: m.dashboard_url.clone(),
                     firewall_drops: None,
                     conntrack_entries: None,
-                    relay_status: "disconnected".into(),
+                    relay_status: iroh_relay_status(&state.node.endpoint),
                     expires_at: None,
                     expires_in_secs: None,
                     keep_alive: None,
