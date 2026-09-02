@@ -214,7 +214,11 @@ fn parse_protocol(proto: &str) -> Protocol {
         "tcp" => Protocol::Tcp,
         "udp" => Protocol::Udp,
         "icmp" => Protocol::Icmp,
-        _ => Protocol::Any,
+        "icmpv6" => Protocol::Icmpv6,
+        other => other
+            .parse::<u8>()
+            .map(Protocol::Other)
+            .unwrap_or(Protocol::Any),
     }
 }
 

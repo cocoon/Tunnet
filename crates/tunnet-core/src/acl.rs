@@ -7,6 +7,7 @@ use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use serde::Serialize;
+use tunnet_common::packet::{FragmentTable, Packet, ResolvedL4, TcpFlags};
 use tunnet_common::policy::{
     Action, Direction, EvalCtx, EvalReason, EvalVerdict, PolicyBundle, Protocol, evaluate_detailed,
 };
@@ -22,10 +23,10 @@ const UDP_TTL: Duration = Duration::from_secs(30);
 const ICMP_TTL: Duration = Duration::from_secs(10);
 const GC_INTERVAL: Duration = Duration::from_secs(10);
 
-const TCP_FIN: u8 = 0x01;
-const TCP_SYN: u8 = 0x02;
-const TCP_RST: u8 = 0x04;
-const TCP_ACK: u8 = 0x10;
+const TCP_FIN: u8 = TcpFlags::FIN;
+const TCP_SYN: u8 = TcpFlags::SYN;
+const TCP_RST: u8 = TcpFlags::RST;
+const TCP_ACK: u8 = TcpFlags::ACK;
 
 #[derive(Debug, Clone)]
 pub struct SelfIdentity {
@@ -97,6 +98,7 @@ pub struct AclEngine {
     pub src_posture_ok: Arc<ArcSwap<bool>>,
     deny_log: Arc<Mutex<VecDeque<AclDenyRecord>>>,
     conntrack: Arc<DashMap<FlowKey, FlowState>>,
+    fragments: Arc<Mutex<FragmentTable>>,
 }
 
 impl AclEngine {
@@ -123,6 +125,7 @@ impl AclEngine {
             src_posture_ok,
             deny_log: Arc::new(Mutex::new(VecDeque::with_capacity(DENY_LOG_CAP))),
             conntrack: Arc::new(DashMap::new()),
+            fragments: Arc::new(Mutex::new(FragmentTable::default())),
         };
         engine.spawn_gc();
         engine
@@ -151,6 +154,7 @@ impl AclEngine {
         self.bundle.store(Arc::new(b));
         self.stale.store(Arc::new(false));
         self.conntrack.clear();
+        self.fragments.lock().clear();
     }
 
     pub fn flush_conntrack(&self) {
@@ -188,100 +192,105 @@ impl AclEngine {
 
     pub fn allow_peer(&self, peer_endpoint_hex: &str, direction: Direction) -> bool {
         let peer = self.routes.lookup_endpoint(peer_endpoint_hex);
-        self.check(
-            peer.as_deref(),
+        let empty_tags: Vec<String> = Vec::new();
+        let self_id = self.self_id.load();
+        let bundle = self.bundle.load();
+        let posture_required = !bundle.default_src_posture.is_empty()
+            || bundle.rules.iter().any(|r| !r.src_posture.is_empty());
+        let src_posture_ok = if posture_required {
+            **self.src_posture_ok.load()
+        } else {
+            true
+        };
+        let ctx = EvalCtx {
+            self_endpoint_hex: &self_id.endpoint_hex,
+            self_ip: self_id.ip,
+            self_tags: &self_id.tags,
+            self_network: &self_id.network,
             peer_endpoint_hex,
-            None,
-            None,
-            None,
-            Protocol::Any,
-            direction,
-            None,
-        )
-        .action
-            == Action::Allow
+            peer_ip: peer.as_ref().map(|p| p.ip),
+            peer_tags: peer
+                .as_ref()
+                .map(|p| p.tags.as_slice())
+                .unwrap_or(&empty_tags),
+            peer_network: &self_id.network,
+            dst_port: None,
+            protocol: Protocol::Any,
+            src_posture_ok,
+        };
+        evaluate_detailed(&bundle, &ctx, direction).action == Action::Allow
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn allow_packet(
         &self,
         peer_endpoint_hex: &str,
-        peer_ip: Option<Ipv4Addr>,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
-        proto: Protocol,
         direction: Direction,
-        tcp_flags: Option<u8>,
+        packet: &Packet<'_>,
     ) -> bool {
-        let peer = self.routes.lookup_endpoint(peer_endpoint_hex);
-        let verdict = self.check(
-            peer.as_deref(),
-            peer_endpoint_hex,
-            peer_ip,
-            src_port,
-            dst_port,
-            proto,
-            direction,
-            tcp_flags,
-        );
-        verdict.action == Action::Allow
+        self.evaluate_packet(peer_endpoint_hex, direction, packet)
+            .action
+            == Action::Allow
     }
 
-    /// Like [`allow_packet`] but returns the full verdict for explain/debug.
-    #[allow(clippy::too_many_arguments)]
     pub fn evaluate_packet(
         &self,
         peer_endpoint_hex: &str,
-        peer_ip: Option<Ipv4Addr>,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
-        proto: Protocol,
         direction: Direction,
-        tcp_flags: Option<u8>,
+        packet: &Packet<'_>,
     ) -> EvalVerdict {
+        let Some(src) = packet.ip.v4_src() else {
+            return EvalVerdict {
+                action: Action::Deny,
+                reason: EvalReason::DefaultDeny,
+                rule_slug: None,
+                scope: None,
+            };
+        };
+        let Some(dst) = packet.ip.v4_dst() else {
+            return EvalVerdict {
+                action: Action::Deny,
+                reason: EvalReason::DefaultDeny,
+                rule_slug: None,
+                scope: None,
+            };
+        };
+        let Some(l4) = self.fragments.lock().resolve(packet) else {
+            return EvalVerdict {
+                action: Action::Deny,
+                reason: EvalReason::DefaultDeny,
+                rule_slug: None,
+                scope: None,
+            };
+        };
         let peer = self.routes.lookup_endpoint(peer_endpoint_hex);
-        self.check(
-            peer.as_deref(),
-            peer_endpoint_hex,
-            peer_ip,
-            src_port,
-            dst_port,
-            proto,
-            direction,
-            tcp_flags,
-        )
+        self.check(peer.as_deref(), peer_endpoint_hex, src, dst, direction, l4)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn check(
         &self,
         peer: Option<&PeerInfo>,
         peer_hex: &str,
-        peer_ip: Option<Ipv4Addr>,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
-        proto: Protocol,
+        src: Ipv4Addr,
+        dst: Ipv4Addr,
         direction: Direction,
-        tcp_flags: Option<u8>,
+        l4: ResolvedL4,
     ) -> EvalVerdict {
         let empty_tags: Vec<String> = Vec::new();
         let self_id = self.self_id.load();
         let bundle = self.bundle.load();
 
-        let flow_peer_ip = peer
-            .map(|p| p.ip)
-            .or(peer_ip)
-            .unwrap_or_else(|| synthetic_ip_from_hex(peer_hex));
+        let proto = l4.protocol;
+        let src_port = l4.src_port;
+        let dst_port = l4.dst_port;
+        let tcp_flags = l4.tcp_flags.map(|f| f.0).unwrap_or(0);
+        let peer_ip = match direction {
+            Direction::Outbound => Some(dst),
+            Direction::Inbound => Some(src),
+        };
 
         // 1) Established / return traffic via conntrack.
-        if let Some(key) = flow_key(
-            proto,
-            direction,
-            self_id.ip,
-            flow_peer_ip,
-            src_port,
-            dst_port,
-        ) && self.conntrack_allows(direction, key, tcp_flags.unwrap_or(0))
+        if let Some(key) = flow_key(proto, src, dst, src_port, dst_port)
+            && self.conntrack_allows(direction, key, tcp_flags)
         {
             return EvalVerdict {
                 action: Action::Allow,
@@ -304,7 +313,7 @@ impl AclEngine {
             self_tags: &self_id.tags,
             self_network: &self_id.network,
             peer_endpoint_hex: peer_hex,
-            peer_ip: peer_ip.or_else(|| peer.map(|p| p.ip)),
+            peer_ip,
             peer_tags: peer.map(|p| p.tags.as_slice()).unwrap_or(&empty_tags),
             peer_network: &self_id.network,
             dst_port,
@@ -338,15 +347,8 @@ impl AclEngine {
         }
 
         // 2) Policy allowed → open / refresh flow for return traffic.
-        if let Some(key) = flow_key(
-            proto,
-            direction,
-            self_id.ip,
-            flow_peer_ip,
-            src_port,
-            dst_port,
-        ) {
-            self.open_or_refresh_flow(key, proto, tcp_flags.unwrap_or(0));
+        if let Some(key) = flow_key(proto, src, dst, src_port, dst_port) {
+            self.open_or_refresh_flow(key, proto, tcp_flags);
         }
         verdict
     }
@@ -425,8 +427,8 @@ impl AclEngine {
                 }
             }
             Protocol::Udp => FlowPhase::Udp,
-            Protocol::Icmp => FlowPhase::Icmp,
-            Protocol::Any => return,
+            Protocol::Icmp | Protocol::Icmpv6 => FlowPhase::Icmp,
+            Protocol::Any | Protocol::Other(_) => return,
         };
 
         self.conntrack
@@ -490,55 +492,36 @@ fn proto_num(proto: Protocol) -> Option<u8> {
         Protocol::Tcp => Some(6),
         Protocol::Udp => Some(17),
         Protocol::Icmp => Some(1),
+        Protocol::Icmpv6 => Some(58),
+        Protocol::Other(n) => Some(n),
         Protocol::Any => None,
     }
 }
 
 fn flow_key(
     proto: Protocol,
-    direction: Direction,
-    self_ip: Ipv4Addr,
-    peer_ip: Ipv4Addr,
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
     src_port: Option<u16>,
     dst_port: Option<u16>,
 ) -> Option<FlowKey> {
     let proto = proto_num(proto)?;
     if proto == 1 {
-        // ICMP: bidirectional host-pair key (no echo id at this layer).
         return Some(FlowKey {
             proto,
-            src: self_ip.min(peer_ip),
-            sport: 0,
-            dst: self_ip.max(peer_ip),
+            src: src.min(dst),
+            sport: src_port.unwrap_or(0),
+            dst: src.max(dst),
             dport: 0,
         });
     }
-    let sport = src_port.unwrap_or(0);
-    let dport = dst_port.unwrap_or(0);
-    Some(match direction {
-        Direction::Outbound => FlowKey {
-            proto,
-            src: self_ip,
-            sport,
-            dst: peer_ip,
-            dport,
-        },
-        Direction::Inbound => FlowKey {
-            proto,
-            src: peer_ip,
-            sport,
-            dst: self_ip,
-            dport,
-        },
+    Some(FlowKey {
+        proto,
+        src,
+        sport: src_port.unwrap_or(0),
+        dst,
+        dport: dst_port.unwrap_or(0),
     })
-}
-
-fn synthetic_ip_from_hex(hex: &str) -> Ipv4Addr {
-    let mut h: u32 = 0x9e37_79b9;
-    for b in hex.as_bytes() {
-        h = h.wrapping_mul(0x0100_0193).wrapping_add(*b as u32);
-    }
-    Ipv4Addr::from(h)
 }
 
 fn is_expired(st: &FlowState, now: Instant) -> bool {
@@ -594,79 +577,65 @@ mod tests {
         }
     }
 
+    fn tcp_pkt(src: Ipv4Addr, dst: Ipv4Addr, sport: u16, dport: u16, flags: u8) -> Vec<u8> {
+        let mut b = etherparse::PacketBuilder::ipv4(src.octets(), dst.octets(), 64)
+            .tcp(sport, dport, 1, 1000);
+        if flags & TCP_SYN != 0 {
+            b = b.syn();
+        }
+        if flags & TCP_ACK != 0 {
+            b = b.ack(1);
+        }
+        let mut out = Vec::new();
+        b.write(&mut out, &[]).unwrap();
+        out
+    }
+
     #[test]
     fn outbound_allow_opens_flow_for_inbound_return() {
         let acl = test_engine(allow_tcp_80_bundle());
         let peer = "bb".repeat(32);
+        let self_ip = Ipv4Addr::new(100, 64, 0, 1);
         let peer_ip = Ipv4Addr::new(100, 64, 0, 2);
         let ephemeral = 52_000u16;
 
-        // Outbound SYN to port 80 matches the allow rule and opens conntrack.
-        assert!(acl.allow_packet(
-            &peer,
-            Some(peer_ip),
-            Some(ephemeral),
-            Some(80),
-            Protocol::Tcp,
-            Direction::Outbound,
-            Some(TCP_SYN),
-        ));
+        let out = tcp_pkt(self_ip, peer_ip, ephemeral, 80, TCP_SYN);
+        let pkt = tunnet_common::packet::parse(&out).unwrap();
+        assert!(acl.allow_packet(&peer, Direction::Outbound, &pkt));
 
-        assert!(acl.allow_packet(
-            &peer,
-            Some(peer_ip),
-            Some(80),
-            Some(ephemeral),
-            Protocol::Tcp,
-            Direction::Inbound,
-            Some(TCP_ACK | TCP_SYN),
-        ));
+        let ret = tcp_pkt(peer_ip, self_ip, 80, ephemeral, TCP_ACK | TCP_SYN);
+        let pkt = tunnet_common::packet::parse(&ret).unwrap();
+        assert!(acl.allow_packet(&peer, Direction::Inbound, &pkt));
     }
 
     #[test]
     fn inbound_ephemeral_denied_without_prior_outbound() {
         let acl = test_engine(allow_tcp_80_bundle());
         let peer = "bb".repeat(32);
+        let self_ip = Ipv4Addr::new(100, 64, 0, 1);
         let peer_ip = Ipv4Addr::new(100, 64, 0, 2);
 
-        assert!(!acl.allow_packet(
-            &peer,
-            Some(peer_ip),
-            Some(80),
-            Some(52_000),
-            Protocol::Tcp,
-            Direction::Inbound,
-            Some(TCP_ACK | TCP_SYN),
-        ));
+        let p = tcp_pkt(peer_ip, self_ip, 80, 52_000, TCP_ACK | TCP_SYN);
+        let pkt = tunnet_common::packet::parse(&p).unwrap();
+        assert!(!acl.allow_packet(&peer, Direction::Inbound, &pkt));
     }
 
     #[test]
     fn replace_bundle_flushes_conntrack() {
         let acl = test_engine(allow_tcp_80_bundle());
         let peer = "bb".repeat(32);
+        let self_ip = Ipv4Addr::new(100, 64, 0, 1);
         let peer_ip = Ipv4Addr::new(100, 64, 0, 2);
         let ephemeral = 52_000u16;
 
-        assert!(acl.allow_packet(
-            &peer,
-            Some(peer_ip),
-            Some(ephemeral),
-            Some(80),
-            Protocol::Tcp,
-            Direction::Outbound,
-            Some(TCP_SYN),
-        ));
+        let out = tcp_pkt(self_ip, peer_ip, ephemeral, 80, TCP_SYN);
+        let pkt = tunnet_common::packet::parse(&out).unwrap();
+        assert!(acl.allow_packet(&peer, Direction::Outbound, &pkt));
 
         acl.replace_bundle(allow_tcp_80_bundle());
 
-        assert!(!acl.allow_packet(
-            &peer,
-            Some(peer_ip),
-            Some(80),
-            Some(ephemeral),
-            Protocol::Tcp,
-            Direction::Inbound,
-            Some(TCP_ACK),
-        ));
+        let ret = tcp_pkt(peer_ip, self_ip, 80, ephemeral, TCP_ACK);
+        let pkt = tunnet_common::packet::parse(&ret).unwrap();
+        assert!(!acl.allow_packet(&peer, Direction::Inbound, &pkt));
     }
 }

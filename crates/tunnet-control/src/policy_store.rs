@@ -249,6 +249,7 @@ fn sign_bundle(
                 "tcp" => Some(Protocol::Tcp),
                 "udp" => Some(Protocol::Udp),
                 "icmp" => Some(Protocol::Icmp),
+                "icmpv6" => Some(Protocol::Icmpv6),
                 "any" => Some(Protocol::Any),
                 _ => None,
             }),

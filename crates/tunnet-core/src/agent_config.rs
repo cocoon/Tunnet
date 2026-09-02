@@ -538,12 +538,13 @@ impl TomlFirewallRule {
         }
         .to_string();
         let protocol = match r.protocol {
-            Protocol::Tcp => "tcp",
-            Protocol::Udp => "udp",
-            Protocol::Icmp => "icmp",
-            Protocol::Any => "any",
-        }
-        .to_string();
+            Protocol::Tcp => "tcp".to_string(),
+            Protocol::Udp => "udp".to_string(),
+            Protocol::Icmp => "icmp".to_string(),
+            Protocol::Icmpv6 => "icmpv6".to_string(),
+            Protocol::Any => "any".to_string(),
+            Protocol::Other(n) => n.to_string(),
+        };
         let ports: Vec<TomlPort> = r
             .ports
             .iter()
@@ -623,8 +624,12 @@ impl TomlFirewallRule {
             "tcp" => Protocol::Tcp,
             "udp" => Protocol::Udp,
             "icmp" => Protocol::Icmp,
+            "icmpv6" => Protocol::Icmpv6,
             "any" | "*" => Protocol::Any,
-            other => anyhow::bail!("invalid protocol {other}"),
+            other => other
+                .parse::<u8>()
+                .map(Protocol::Other)
+                .map_err(|_| anyhow::anyhow!("invalid protocol {other}"))?,
         };
         let mut ports = Vec::new();
         if let Some(p) = &self.port {

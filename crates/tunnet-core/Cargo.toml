@@ -33,6 +33,7 @@ local_api = [
 
 [dependencies]
 tunnet-common.workspace = true
+etherparse.workspace = true
 
 tokio.workspace = true
 tokio-util.workspace = true

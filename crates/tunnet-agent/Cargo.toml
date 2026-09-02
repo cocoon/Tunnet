@@ -50,6 +50,7 @@ zip.workspace = true
 iroh.workspace = true
 iroh-gossip.workspace = true
 iroh-blobs.workspace = true
+etherparse.workspace = true
 tun-rs.workspace = true
 portable-pty.workspace = true
 russh.workspace = true

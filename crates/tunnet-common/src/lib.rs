@@ -2,6 +2,7 @@ pub mod agent_policy;
 pub mod edge;
 pub mod ipv6;
 pub mod local_api;
+pub mod packet;
 pub mod policy;
 pub mod posture;
 pub mod recording;

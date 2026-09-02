@@ -258,6 +258,7 @@ async fn bring_up(
         node.acl.clone(),
         firewalls,
         metrics.clone(),
+        cfg.mtu,
     );
 
     *state.lock() = Some(LivePlane {
@@ -278,6 +279,7 @@ pub fn spawn_outbound(
     acl: AclEngine,
     firewalls: std::collections::HashMap<uuid::Uuid, tunnet_core::direct::FirewallEngine>,
     metrics: AgentMetrics,
+    mtu: u16,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(e) = run_outbound(crate::tun_io::OutboundDeps {
@@ -287,6 +289,7 @@ pub fn spawn_outbound(
             acl,
             firewalls,
             metrics,
+            mtu,
         })
         .await
         {

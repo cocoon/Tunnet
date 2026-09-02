@@ -528,6 +528,7 @@ pub async fn run(
         node.acl.clone(),
         outbound_firewalls,
         metrics.clone(),
+        mtu,
     );
 
     let initial = build_initial_plane(tun, dns_guard, outbound, &node, is_direct, network_id);

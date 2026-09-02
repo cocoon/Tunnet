@@ -1381,6 +1381,7 @@ pub(crate) fn direct_firewall_add(
         "tcp" => Protocol::Tcp,
         "udp" => Protocol::Udp,
         "icmp" => Protocol::Icmp,
+        "icmpv6" => Protocol::Icmpv6,
         "any" => Protocol::Any,
         _ => anyhow::bail!("protocol must be tcp|udp|icmp|any"),
     };

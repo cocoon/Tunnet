@@ -14,21 +14,22 @@ use parking_lot::Mutex;
 use tokio::sync::Notify;
 use tunnet_core::ConnPool;
 
-use crate::ip::ParsedIpv4;
 use crate::metrics::AgentMetrics;
-
-/// Typical packet quantum unit (~one TUN MTU).
-const Q: usize = 1280;
-const QUANTUM_LATENCY: usize = 8 * Q;
-const QUANTUM_NORMAL: usize = 4 * Q;
-const QUANTUM_BULK: usize = Q;
+use tunnet_common::packet::{Packet, TcpFlags, Transport};
 
 const CAP_LATENCY: usize = 64;
 const CAP_NORMAL: usize = 256;
 const CAP_BULK: usize = 512;
 
-/// Packets at or above this size are treated as bulk (simple heuristic).
-const BULK_SIZE_THRESHOLD: usize = 1200;
+/// Packet quantum is one configured TUN MTU.
+fn quanta(mtu: usize) -> (usize, usize, usize) {
+    (8 * mtu, 4 * mtu, mtu)
+}
+
+/// Packets at or above this fraction of MTU are treated as bulk.
+fn bulk_threshold(mtu: usize) -> usize {
+    mtu.saturating_sub(80).max(512)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
@@ -38,59 +39,64 @@ pub enum Class {
 }
 
 impl Class {
-    fn quantum(self) -> usize {
+    fn quantum(self, mtu: usize) -> usize {
+        let (lat, norm, bulk) = quanta(mtu);
         match self {
-            Self::Latency => QUANTUM_LATENCY,
-            Self::Normal => QUANTUM_NORMAL,
-            Self::Bulk => QUANTUM_BULK,
+            Self::Latency => lat,
+            Self::Normal => norm,
+            Self::Bulk => bulk,
         }
     }
 }
 
-/// Classify an IPv4 packet into a QoS class.
-pub fn classify(parsed: &ParsedIpv4, packet_len: usize) -> Class {
-    use tunnet_common::policy::Protocol;
-    match parsed.protocol {
-        Protocol::Icmp => Class::Latency,
-        Protocol::Tcp => {
-            let flags = parsed.tcp_flags.unwrap_or(0);
-            // SYN / FIN / RST
-            if flags & (0x02 | 0x01 | 0x04) != 0 {
+/// Classify using validated parser metadata (not backing-buffer length).
+pub fn classify(packet: &Packet<'_>, mtu: u16) -> Class {
+    let mtu = mtu.max(576) as usize;
+    let bulk = bulk_threshold(mtu);
+    let size = packet.wire_len;
+    match packet.transport {
+        Transport::Icmpv4 { .. } | Transport::Icmpv6 { .. } => Class::Latency,
+        Transport::Tcp {
+            flags,
+            payload_len,
+            src_port,
+            dst_port,
+            ..
+        } => {
+            if flags.0 & (TcpFlags::SYN | TcpFlags::FIN | TcpFlags::RST) != 0 {
                 return Class::Latency;
             }
-            // Pure ACK (ACK set, no payload).
-            if flags & 0x10 != 0 && parsed.l4_payload_len == 0 {
+            if flags.ack() && payload_len == 0 {
                 return Class::Latency;
             }
-            if is_dns(parsed) {
+            if src_port == 53 || dst_port == 53 {
                 return Class::Latency;
             }
-            if packet_len >= BULK_SIZE_THRESHOLD {
+            if size >= bulk {
                 return Class::Bulk;
             }
             Class::Normal
         }
-        Protocol::Udp => {
-            if is_dns(parsed) {
+        Transport::Udp {
+            src_port, dst_port, ..
+        } => {
+            if src_port == 53 || dst_port == 53 {
                 return Class::Latency;
             }
-            if packet_len >= BULK_SIZE_THRESHOLD {
-                return Class::Bulk;
+            if size >= bulk {
+                Class::Bulk
+            } else {
+                Class::Normal
             }
-            Class::Normal
         }
-        _ => {
-            if packet_len >= BULK_SIZE_THRESHOLD {
+        Transport::LaterFragment { .. } | Transport::Other { .. } => {
+            if size >= bulk {
                 Class::Bulk
             } else {
                 Class::Normal
             }
         }
     }
-}
-
-fn is_dns(parsed: &ParsedIpv4) -> bool {
-    matches!(parsed.dst_port, Some(53)) || matches!(parsed.src_port, Some(53))
 }
 
 struct PeerState {
@@ -178,14 +184,16 @@ pub struct OutboundScheduler {
     peers: Arc<DashMap<EndpointId, Arc<PeerState>>>,
     pool: ConnPool,
     metrics: AgentMetrics,
+    mtu: u16,
 }
 
 impl OutboundScheduler {
-    pub fn new(pool: ConnPool, metrics: AgentMetrics) -> Self {
+    pub fn new(pool: ConnPool, metrics: AgentMetrics, mtu: u16) -> Self {
         Self {
             peers: Arc::new(DashMap::new()),
             pool,
             metrics,
+            mtu: mtu.max(576),
         }
     }
 
@@ -209,8 +217,9 @@ impl OutboundScheduler {
             let pool = self.pool.clone();
             let metrics = self.metrics.clone();
             let peers = self.peers.clone();
+            let mtu = self.mtu;
             tokio::spawn(async move {
-                run_peer_sender(peer, state, pool, metrics).await;
+                run_peer_sender(peer, state, pool, metrics, mtu).await;
                 peers.remove(&peer);
             });
         } else {
@@ -224,6 +233,7 @@ async fn run_peer_sender(
     state: Arc<PeerState>,
     pool: ConnPool,
     metrics: AgentMetrics,
+    mtu: u16,
 ) {
     let mut deficit = [0usize; 3]; // latency, normal, bulk
     loop {
@@ -239,7 +249,7 @@ async fn run_peer_sender(
                     continue;
                 }
             }
-            deficit[idx] = deficit[idx].saturating_add(class.quantum());
+            deficit[idx] = deficit[idx].saturating_add(class.quantum(mtu as usize));
             loop {
                 let packet = {
                     let mut q = state.queue(class).lock();
@@ -318,7 +328,7 @@ fn drr_round_drain(
             deficit[idx] = 0;
             continue;
         }
-        deficit[idx] = deficit[idx].saturating_add(class.quantum());
+        deficit[idx] = deficit[idx].saturating_add(class.quantum(1280));
         while let Some(head) = q.front() {
             if head.len() > deficit[idx] {
                 break;
@@ -333,8 +343,6 @@ fn drr_round_drain(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rstest::rstest;
-    use tunnet_common::policy::Protocol;
 
     fn pkt(n: usize) -> Bytes {
         Bytes::from(vec![0u8; n])
@@ -381,27 +389,64 @@ mod tests {
         assert!(out.is_empty());
     }
 
-    #[rstest]
-    #[case::icmp(Protocol::Icmp, None, 0, 64, Class::Latency)]
-    #[case::dns(Protocol::Udp, Some(53), 32, 60, Class::Latency)]
-    #[case::large_udp(Protocol::Udp, Some(5201), 1_200, 1_228, Class::Bulk)]
-    #[case::ordinary_udp(Protocol::Udp, Some(443), 200, 228, Class::Normal)]
-    fn classifies_traffic(
-        #[case] protocol: Protocol,
-        #[case] dst_port: Option<u16>,
-        #[case] payload_len: usize,
-        #[case] packet_len: usize,
-        #[case] expected: Class,
-    ) {
-        let packet = ParsedIpv4 {
-            src: "10.0.0.1".parse().unwrap(),
-            dst: "10.0.0.2".parse().unwrap(),
-            protocol,
-            dst_port,
-            src_port: Some(40_000),
-            tcp_flags: None,
-            l4_payload_len: payload_len,
+    #[test]
+    fn classifies_from_validated_packets() {
+        let icmp = {
+            let b = etherparse::PacketBuilder::ipv4([10, 0, 0, 1], [10, 0, 0, 2], 64)
+                .icmpv4_echo_request(1, 1);
+            let mut o = Vec::new();
+            b.write(&mut o, &[]).unwrap();
+            o
         };
-        assert_eq!(classify(&packet, packet_len), expected);
+        let dns = {
+            let b =
+                etherparse::PacketBuilder::ipv4([10, 0, 0, 1], [10, 0, 0, 2], 64).udp(40000, 53);
+            let mut o = Vec::new();
+            b.write(&mut o, &[0; 32]).unwrap();
+            o
+        };
+        let large = {
+            let b =
+                etherparse::PacketBuilder::ipv4([10, 0, 0, 1], [10, 0, 0, 2], 64).udp(40000, 5201);
+            let mut o = Vec::new();
+            b.write(&mut o, &[0; 1200]).unwrap();
+            o
+        };
+        let ordinary = {
+            let b =
+                etherparse::PacketBuilder::ipv4([10, 0, 0, 1], [10, 0, 0, 2], 64).udp(40000, 443);
+            let mut o = Vec::new();
+            b.write(&mut o, &[0; 200]).unwrap();
+            o
+        };
+        assert_eq!(
+            classify(&tunnet_common::packet::parse(&icmp).unwrap(), 1280),
+            Class::Latency
+        );
+        assert_eq!(
+            classify(&tunnet_common::packet::parse(&dns).unwrap(), 1280),
+            Class::Latency
+        );
+        assert_eq!(
+            classify(&tunnet_common::packet::parse(&large).unwrap(), 1280),
+            Class::Bulk
+        );
+        assert_eq!(
+            classify(&tunnet_common::packet::parse(&ordinary).unwrap(), 1280),
+            Class::Normal
+        );
+
+        let mut padded = ordinary.clone();
+        padded.extend_from_slice(&[0u8; 2000]);
+        assert_eq!(
+            classify(&tunnet_common::packet::parse(&padded).unwrap(), 1280),
+            Class::Normal,
+            "trailing buffer must not change class"
+        );
+        assert_eq!(
+            classify(&tunnet_common::packet::parse(&large).unwrap(), 9000),
+            Class::Normal,
+            "configured MTU raises bulk threshold"
+        );
     }
 }

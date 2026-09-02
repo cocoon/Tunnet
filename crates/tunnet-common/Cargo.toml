@@ -24,7 +24,10 @@ ed25519-dalek.workspace = true
 jiff.workspace = true
 ipnet.workspace = true
 uuid.workspace = true
+etherparse.workspace = true
+bytes.workspace = true
 
 [dev-dependencies]
 rand.workspace = true
 rstest.workspace = true
+proptest = "1"

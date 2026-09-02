@@ -13,7 +13,6 @@ mod dataplane;
 mod dgram_pump;
 mod forward;
 mod ingress;
-mod ip;
 mod magic_dns;
 mod metrics;
 mod policy_api;

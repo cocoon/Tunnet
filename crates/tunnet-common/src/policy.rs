@@ -107,13 +107,52 @@ impl EvalVerdict {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
     Tcp,
     Udp,
     Icmp,
+    Icmpv6,
+    /// Policy wildcard. Never produced by the packet parser.
     Any,
+    /// Concrete IP protocol number that is not TCP/UDP/ICMP(v6).
+    Other(u8),
+}
+
+impl Protocol {
+    pub fn from_ip_number(n: u8) -> Self {
+        match n {
+            6 => Self::Tcp,
+            17 => Self::Udp,
+            1 => Self::Icmp,
+            58 => Self::Icmpv6,
+            other => Self::Other(other),
+        }
+    }
+
+    pub fn ip_number(self) -> Option<u8> {
+        match self {
+            Self::Tcp => Some(6),
+            Self::Udp => Some(17),
+            Self::Icmp => Some(1),
+            Self::Icmpv6 => Some(58),
+            Self::Any => None,
+            Self::Other(n) => Some(n),
+        }
+    }
+
+    /// `Any` / unset rule protocol matches everything; otherwise require equality.
+    pub fn matches_rule(self, rule: Option<Self>) -> bool {
+        match rule {
+            None | Some(Self::Any) => true,
+            Some(p) => p == self,
+        }
+    }
+
+    pub fn is_icmp(self) -> bool {
+        matches!(self, Self::Icmp | Self::Icmpv6)
+    }
 }
 
 /// Stable selector kinds for Policy-as-Code (IR + wire).
@@ -700,16 +739,17 @@ fn rule_matches_v6(r: &PolicyRule, ctx: &Ipv6EvalCtx<'_>, direction: Direction) 
 }
 
 fn proto_port_ok(r: &PolicyRule, protocol: Protocol, dst_port: Option<u16>) -> bool {
-    if let Some(proto) = r.protocol
-        && proto != Protocol::Any
-        && proto != protocol
-    {
+    if !protocol.matches_rule(r.protocol) {
         return false;
     }
     // ICMP has no L4 port; port-restricted rules must not silently fail to match
     // when the rule protocol is `any` / unset.
-    if protocol == Protocol::Icmp {
+    if protocol.is_icmp() {
         return true;
+    }
+    // Unknown IP protocols have no ports; they only match rules without a port list.
+    if matches!(protocol, Protocol::Other(_)) {
+        return r.ports.is_empty();
     }
     if !r.ports.is_empty() {
         match dst_port {
