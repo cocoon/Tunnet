@@ -1,30 +1,208 @@
 use anyhow::Context;
 use ed25519_dalek::SigningKey;
 use jiff::Timestamp;
-use reqwest::{Method, header::HeaderValue};
+use reqwest::{Method, Url, header::HeaderValue, redirect::Policy};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use tunnet_common::{
     EndpointSnapshot, EnrollRequest, EnrollResponse, HDR_ENDPOINT_ID, HDR_SIGNATURE, HDR_TIMESTAMP,
     PollRequest, RegisterRequest, signing,
 };
 
+const ALLOW_PRIVATE_CONTROL_ENDPOINTS: &str = "TUNNET_ALLOW_PRIVATE_CONTROL_ENDPOINTS";
+
+/// An outbound control-plane or management endpoint that cannot be redirected
+/// or resolved to a local network address unless the service operator opted in.
+#[derive(Clone)]
+struct ServiceEndpoint {
+    base: Url,
+    host: String,
+    resolved_addrs: Vec<SocketAddr>,
+}
+
+impl ServiceEndpoint {
+    fn parse(raw: &str) -> anyhow::Result<Self> {
+        Self::parse_with_private_endpoints_allowed(raw, private_endpoints_allowed())
+    }
+
+    fn parse_with_private_endpoints_allowed(
+        raw: &str,
+        private_endpoints_allowed: bool,
+    ) -> anyhow::Result<Self> {
+        let mut base = Url::parse(raw).context("invalid service endpoint URL")?;
+        if !matches!(base.scheme(), "http" | "https") {
+            anyhow::bail!("service endpoint must use http or https");
+        }
+        if !base.username().is_empty() || base.password().is_some() {
+            anyhow::bail!("service endpoint must not contain credentials");
+        }
+        if base.query().is_some() || base.fragment().is_some() {
+            anyhow::bail!("service endpoint must not contain a query or fragment");
+        }
+
+        let host = base
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("service endpoint must include a host"))?
+            .to_ascii_lowercase();
+        let port = base
+            .port_or_known_default()
+            .ok_or_else(|| anyhow::anyhow!("service endpoint has no known port"))?;
+        let resolved_addrs = (host.as_str(), port)
+            .to_socket_addrs()
+            .with_context(|| format!("resolve service endpoint {host}"))?
+            .collect::<Vec<_>>();
+        if resolved_addrs.is_empty() {
+            anyhow::bail!("service endpoint {host} did not resolve to an address");
+        }
+
+        if !private_endpoints_allowed
+            && resolved_addrs
+                .iter()
+                .any(|addr| is_private_or_local(addr.ip()))
+        {
+            anyhow::bail!(
+                "service endpoint {host} resolves to a private or local address; set {ALLOW_PRIVATE_CONTROL_ENDPOINTS}=1 only for an explicitly trusted self-hosted deployment"
+            );
+        }
+
+        if !base.path().ends_with('/') {
+            let path = format!("{}/", base.path());
+            base.set_path(&path);
+        }
+
+        Ok(Self {
+            base,
+            host,
+            resolved_addrs,
+        })
+    }
+
+    fn url(&self, path: &str) -> anyhow::Result<Url> {
+        self.base
+            .join(path)
+            .with_context(|| format!("build endpoint URL for {path}"))
+    }
+}
+
+fn private_endpoints_allowed() -> bool {
+    std::env::var(ALLOW_PRIVATE_CONTROL_ENDPOINTS)
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
+fn is_private_or_local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.octets()[0] == 0
+                || (ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]))
+                || (ip.octets()[0] == 198 && (18..20).contains(&ip.octets()[1]))
+                || (ip.octets()[0] == 192 && ip.octets()[1] == 0 && ip.octets()[2] == 0)
+                || (ip.octets()[0] == 192 && ip.octets()[1] == 0 && ip.octets()[2] == 2)
+                || (ip.octets()[0] == 198 && ip.octets()[1] == 51 && ip.octets()[2] == 100)
+                || (ip.octets()[0] == 203 && ip.octets()[1] == 0 && ip.octets()[2] == 113)
+                || ip.octets()[0] >= 240
+        }
+        IpAddr::V6(ip) => {
+            ip.to_ipv4_mapped()
+                .is_some_and(|ipv4| is_private_or_local(IpAddr::V4(ipv4)))
+                || ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || (ip.segments()[0] & 0xfe00 == 0xfc00)
+                || (ip.segments()[0] & 0xffc0 == 0xfe80)
+                || (ip.segments()[0] == 0x2001 && ip.segments()[1] == 0x0db8)
+        }
+    }
+}
+
+fn service_http_client(
+    endpoint: &ServiceEndpoint,
+    timeout: std::time::Duration,
+) -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .timeout(timeout)
+        .redirect(Policy::none())
+        .resolve_to_addrs(&endpoint.host, &endpoint.resolved_addrs)
+        .build()?)
+}
+
 pub struct UnauthedClient {
-    base: String,
+    endpoint: ServiceEndpoint,
     http: reqwest::Client,
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::*;
+
+    #[test]
+    fn unauthed_client_rejects_a_loopback_control_plane() {
+        assert!(UnauthedClient::new("http://127.0.0.1:8080".into()).is_err());
+    }
+
+    #[test]
+    fn management_client_rejects_a_link_local_address() {
+        assert!(ManagementClient::new("http://169.254.169.254".into()).is_err());
+    }
+
+    #[test]
+    fn clients_accept_a_public_https_endpoint() {
+        assert!(UnauthedClient::new("https://1.1.1.1".into()).is_ok());
+        assert!(ManagementClient::new("https://1.1.1.1/api".into()).is_ok());
+    }
+
+    #[test]
+    fn endpoint_rejects_credentials_and_redirectable_url_parts() {
+        assert!(UnauthedClient::new("https://token@example.com".into()).is_err());
+        assert!(UnauthedClient::new("https://example.com?next=/internal".into()).is_err());
+    }
+
+    #[test]
+    fn private_endpoint_opt_in_is_explicit() {
+        assert!(
+            ServiceEndpoint::parse_with_private_endpoints_allowed("http://127.0.0.1:8080", true,)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn private_address_detection_covers_ssrf_targets() {
+        for address in [
+            "10.0.0.1",
+            "127.0.0.1",
+            "169.254.169.254",
+            "192.0.2.1",
+            "100.64.0.1",
+            "[::1]",
+            "[fc00::1]",
+            "[fe80::1]",
+            "[::ffff:127.0.0.1]",
+        ] {
+            let address = address
+                .trim_matches(['[', ']'])
+                .parse()
+                .expect("test address is valid");
+            assert!(is_private_or_local(address), "{address}");
+        }
+    }
 }
 
 impl UnauthedClient {
     pub fn new(base: String) -> anyhow::Result<Self> {
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()?;
-        Ok(Self { base, http })
+        let endpoint = ServiceEndpoint::parse(&base)?;
+        let http = service_http_client(&endpoint, std::time::Duration::from_secs(15))?;
+        Ok(Self { endpoint, http })
     }
 
     pub async fn enroll(&self, req: EnrollRequest) -> anyhow::Result<EnrollResponse> {
-        let url = format!("{}/v1/enroll", self.base);
+        let url = self.endpoint.url("v1/enroll")?;
         let resp = self
             .http
-            .post(&url)
+            .post(url.clone())
             .json(&req)
             .send()
             .await
@@ -41,10 +219,10 @@ impl UnauthedClient {
         &self,
         req: tunnet_common::EnrollStatusRequest,
     ) -> anyhow::Result<tunnet_common::EnrollStatusResponse> {
-        let url = format!("{}/v1/enroll/status", self.base);
+        let url = self.endpoint.url("v1/enroll/status")?;
         let resp = self
             .http
-            .post(&url)
+            .post(url.clone())
             .json(&req)
             .send()
             .await
@@ -72,16 +250,15 @@ struct SdkRegisterApiResponse {
 }
 
 pub struct ManagementClient {
-    base: String,
+    endpoint: ServiceEndpoint,
     http: reqwest::Client,
 }
 
 impl ManagementClient {
     pub fn new(base: String) -> anyhow::Result<Self> {
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()?;
-        Ok(Self { base, http })
+        let endpoint = ServiceEndpoint::parse(&base)?;
+        let http = service_http_client(&endpoint, std::time::Duration::from_secs(15))?;
+        Ok(Self { endpoint, http })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -98,10 +275,9 @@ impl ManagementClient {
         expires_in: Option<&str>,
         tags: Option<&[String]>,
     ) -> anyhow::Result<EnrollResponse> {
-        let url = format!(
-            "{}/api/v1/organizations/{organization_id}/networks/{network_id}/sdk-nodes",
-            self.base.trim_end_matches('/')
-        );
+        let url = self.endpoint.url(&format!(
+            "api/v1/organizations/{organization_id}/networks/{network_id}/sdk-nodes"
+        ))?;
         let mut body = serde_json::json!({
             "endpointId": endpoint_id,
             "hostname": hostname,
@@ -126,7 +302,7 @@ impl ManagementClient {
         }
         let resp = self
             .http
-            .post(&url)
+            .post(url.clone())
             .bearer_auth(api_key)
             .json(&body)
             .send()
@@ -155,10 +331,9 @@ impl ManagementClient {
         organization_id: &str,
         items: &[(uuid::Uuid, &str)],
     ) -> anyhow::Result<u32> {
-        let url = format!(
-            "{}/api/v1/organizations/{organization_id}/sdk-nodes",
-            self.base.trim_end_matches('/')
-        );
+        let url = self
+            .endpoint
+            .url(&format!("api/v1/organizations/{organization_id}/sdk-nodes"))?;
         let body = serde_json::json!({
             "items": items.iter().map(|(network_id, endpoint_id)| {
                 serde_json::json!({
@@ -169,7 +344,7 @@ impl ManagementClient {
         });
         let resp = self
             .http
-            .delete(&url)
+            .delete(url.clone())
             .bearer_auth(api_key)
             .json(&body)
             .send()
@@ -186,8 +361,8 @@ impl ManagementClient {
 }
 
 pub struct SignedClient {
-    pub base: String,
-    pub http: reqwest::Client,
+    endpoint: ServiceEndpoint,
+    http: reqwest::Client,
     pub endpoint_id: String,
     pub signing_key: SigningKey,
 }
@@ -195,7 +370,7 @@ pub struct SignedClient {
 impl Clone for SignedClient {
     fn clone(&self) -> Self {
         Self {
-            base: self.base.clone(),
+            endpoint: self.endpoint.clone(),
             http: self.http.clone(),
             endpoint_id: self.endpoint_id.clone(),
             signing_key: self.signing_key.clone(),
@@ -205,11 +380,10 @@ impl Clone for SignedClient {
 
 impl SignedClient {
     pub fn new(base: String, endpoint_id: String, signing_key: SigningKey) -> anyhow::Result<Self> {
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()?;
+        let endpoint = ServiceEndpoint::parse(&base)?;
+        let http = service_http_client(&endpoint, std::time::Duration::from_secs(15))?;
         Ok(Self {
-            base,
+            endpoint,
             http,
             endpoint_id,
             signing_key,
@@ -223,11 +397,11 @@ impl SignedClient {
     }
 
     async fn do_get<T: serde::de::DeserializeOwned>(&self, path: &str) -> anyhow::Result<T> {
-        let url = format!("{}{}", self.base, path);
+        let url = self.endpoint.url(path.trim_start_matches('/'))?;
         let (ts, sig) = self.sign("GET", path, b"");
         let resp = self
             .http
-            .request(Method::GET, &url)
+            .request(Method::GET, url.clone())
             .header(HDR_ENDPOINT_ID, HeaderValue::from_str(&self.endpoint_id)?)
             .header(HDR_TIMESTAMP, HeaderValue::from_str(&ts.to_string())?)
             .header(HDR_SIGNATURE, HeaderValue::from_str(&sig)?)
@@ -246,12 +420,12 @@ impl SignedClient {
         path: &str,
         body: &(impl serde::Serialize + ?Sized),
     ) -> anyhow::Result<T> {
-        let url = format!("{}{}", self.base, path);
+        let url = self.endpoint.url(path.trim_start_matches('/'))?;
         let json = serde_json::to_vec(body)?;
         let (ts, sig) = self.sign("POST", path, &json);
         let resp = self
             .http
-            .request(Method::POST, &url)
+            .request(Method::POST, url.clone())
             .header(HDR_ENDPOINT_ID, HeaderValue::from_str(&self.endpoint_id)?)
             .header(HDR_TIMESTAMP, HeaderValue::from_str(&ts.to_string())?)
             .header(HDR_SIGNATURE, HeaderValue::from_str(&sig)?)
@@ -272,12 +446,12 @@ impl SignedClient {
         path: &str,
         body: &(impl serde::Serialize + ?Sized),
     ) -> anyhow::Result<T> {
-        let url = format!("{}{}", self.base, path);
+        let url = self.endpoint.url(path.trim_start_matches('/'))?;
         let json = serde_json::to_vec(body)?;
         let (ts, sig) = self.sign("PATCH", path, &json);
         let resp = self
             .http
-            .request(Method::PATCH, &url)
+            .request(Method::PATCH, url.clone())
             .header(HDR_ENDPOINT_ID, HeaderValue::from_str(&self.endpoint_id)?)
             .header(HDR_TIMESTAMP, HeaderValue::from_str(&ts.to_string())?)
             .header(HDR_SIGNATURE, HeaderValue::from_str(&sig)?)
@@ -431,14 +605,12 @@ impl SignedClient {
             "contentSha256": content_sha256,
         });
         // Large casts need a longer timeout than the default SignedClient.
-        let url = format!("{}/v1/ssh-recordings", self.base);
+        let url = self.endpoint.url("v1/ssh-recordings")?;
         let json = serde_json::to_vec(&body)?;
         let (ts, sig) = self.sign("POST", "/v1/ssh-recordings", &json);
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()?;
+        let http = service_http_client(&self.endpoint, std::time::Duration::from_secs(120))?;
         let resp = http
-            .request(Method::POST, &url)
+            .request(Method::POST, url.clone())
             .header(HDR_ENDPOINT_ID, HeaderValue::from_str(&self.endpoint_id)?)
             .header(HDR_TIMESTAMP, HeaderValue::from_str(&ts.to_string())?)
             .header(HDR_SIGNATURE, HeaderValue::from_str(&sig)?)
@@ -464,11 +636,11 @@ impl SignedClient {
             path.push_str(&format!("&status={s}"));
         }
         // Sign without query string (server uses uri.path()).
-        let url = format!("{}{}", self.base, path);
+        let url = self.endpoint.url(path.trim_start_matches('/'))?;
         let (ts, sig) = self.sign("GET", "/v1/ssh-sessions", b"");
         let resp = self
             .http
-            .request(Method::GET, &url)
+            .request(Method::GET, url.clone())
             .header(HDR_ENDPOINT_ID, HeaderValue::from_str(&self.endpoint_id)?)
             .header(HDR_TIMESTAMP, HeaderValue::from_str(&ts.to_string())?)
             .header(HDR_SIGNATURE, HeaderValue::from_str(&sig)?)
@@ -483,11 +655,13 @@ impl SignedClient {
     }
 
     pub async fn list_ssh_recordings(&self, limit: u32) -> anyhow::Result<serde_json::Value> {
-        let url = format!("{}/v1/ssh-recordings/list?limit={limit}", self.base);
+        let url = self
+            .endpoint
+            .url(&format!("v1/ssh-recordings/list?limit={limit}"))?;
         let (ts, sig) = self.sign("GET", "/v1/ssh-recordings/list", b"");
         let resp = self
             .http
-            .request(Method::GET, &url)
+            .request(Method::GET, url.clone())
             .header(HDR_ENDPOINT_ID, HeaderValue::from_str(&self.endpoint_id)?)
             .header(HDR_TIMESTAMP, HeaderValue::from_str(&ts.to_string())?)
             .header(HDR_SIGNATURE, HeaderValue::from_str(&sig)?)

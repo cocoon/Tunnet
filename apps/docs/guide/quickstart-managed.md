@@ -16,6 +16,7 @@ BETTER_AUTH_SECRET=a-long-random-string-at-least-32-characters
 DASHBOARD_URL=http://localhost:5173
 MANAGEMENT_URL=http://localhost:3000
 CONTROL_PLANE_URL=http://127.0.0.1:8080
+TUNNET_ALLOW_PRIVATE_CONTROL_ENDPOINTS=1
 TUNNET_SERVICE_SECRET=a-long-random-string-at-least-32-characters
 ```
 
