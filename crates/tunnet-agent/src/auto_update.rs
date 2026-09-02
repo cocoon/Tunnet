@@ -200,6 +200,7 @@ pub fn stage_pending(
     paths: &StatePaths,
     from: &str,
     to: &str,
+    target_api_version: u32,
     health_window_secs: u64,
 ) -> Result<()> {
     std::fs::create_dir_all(paths.update_dir())?;
@@ -209,7 +210,7 @@ pub fn stage_pending(
             installed_at_unix: jiff::Timestamp::now(),
             from_version: from.into(),
             to_version: to.into(),
-            api_version: crate::core_update::SUPPORTED_API_VERSION,
+            api_version: target_api_version,
             health_window_secs: if health_window_secs == 0 {
                 DEFAULT_HEALTH_SECS
             } else {
@@ -289,5 +290,19 @@ mod tests {
                 format!("old-{name}")
             );
         }
+    }
+
+    #[test]
+    fn pending_update_records_the_target_api_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = StatePaths::resolve(Some(temp.path().to_str().unwrap()));
+        let target_api_version = tunnet_common::local_api::API_VERSION + 1;
+
+        stage_pending(&paths, "1.2.3", "2.0.0", target_api_version, 30).unwrap();
+
+        let pending: PendingUpdate =
+            serde_json::from_slice(&std::fs::read(paths.update_pending_file()).unwrap()).unwrap();
+        assert_eq!(pending.to_version, "2.0.0");
+        assert_eq!(pending.api_version, target_api_version);
     }
 }

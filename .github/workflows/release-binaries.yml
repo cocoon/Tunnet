@@ -37,7 +37,6 @@ jobs:
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
-      prerelease: ${{ steps.meta.outputs.prerelease }}
       dry-run: ${{ steps.meta.outputs.dry-run }}
     steps:
       - name: Resolve tag
@@ -62,6 +61,10 @@ jobs:
         run: |
           tag="${{ steps.resolve.outputs.tag }}"
           tag="${tag#v}"
+          if ! echo "$tag" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Core release tags must match vX.Y.Z"
+            exit 1
+          fi
           cargo_version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 
           if [ "$tag" != "$cargo_version" ]; then
@@ -72,12 +75,6 @@ jobs:
           echo "tag=v${tag}" >> "$GITHUB_OUTPUT"
           echo "version=${tag}" >> "$GITHUB_OUTPUT"
           echo "dry-run=${{ steps.resolve.outputs.dry_run }}" >> "$GITHUB_OUTPUT"
-
-          if echo "$tag" | grep -qE '(alpha|beta|rc|dev|pre)'; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-          fi
 
   build-binaries:
     name: Binaries - ${{ matrix.target }}
@@ -245,9 +242,61 @@ jobs:
             install.ps1.sha256
           if-no-files-found: error
 
+  generate-release-metadata:
+    name: Generate Core release metadata
+    needs: [validate, build-binaries, package-installers]
+    runs-on: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: binaries-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate immutable Core manifest once
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.validate.outputs.version }}"
+          artifacts_json="$(python - "$version" <<'PY'
+          import glob, hashlib, json, os, sys
+          version = sys.argv[1]
+          prefix = f"tunnet-headless-{version}-"
+          items = []
+          for path in sorted(glob.glob(f"artifacts/{prefix}*.tar.gz") + glob.glob(f"artifacts/{prefix}*.zip")):
+              name = os.path.basename(path)
+              target = name[len(prefix):].removesuffix(".tar.gz").removesuffix(".zip")
+              items.append({"target": target, "sha256": hashlib.sha256(open(path, "rb").read()).hexdigest()})
+          if not items: raise SystemExit("no Core archives found")
+          print(json.dumps(items, separators=(",", ":")))
+          PY
+          )"
+          api_version="$(sed -n 's/^pub const API_VERSION: u32 = \([0-9][0-9]*\);/\1/p' crates/tunnet-common/src/local_api.rs)"
+          node scripts/generate-daemon-manifest.mjs "$version" "$api_version" "$artifacts_json" "${{ github.repository }}" > core-manifest.json
+          sha256sum core-manifest.json > core-manifest.json.sha256
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: core-release-metadata
+          path: |
+            core-manifest.json
+            core-manifest.json.sha256
+          if-no-files-found: error
+
   github-release:
     name: GitHub Release
-    needs: [validate, build-binaries, package-installers, attest]
+    needs:
+      [
+        validate,
+        build-binaries,
+        package-installers,
+        generate-release-metadata,
+        attest,
+      ]
     if: needs.validate.outputs.dry-run != 'true'
     runs-on: [ubuntu-latest]
     steps:
@@ -267,6 +316,11 @@ jobs:
           name: installers
           path: artifacts
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: core-release-metadata
+          path: artifacts
+
       - name: Generate release notes
         shell: bash
         run: |
@@ -275,16 +329,18 @@ jobs:
           {
             echo "## Installation"
             echo ""
+            echo "[https://get.tunnet.io](https://get.tunnet.io) detects the platform in a browser and resolves the latest published Core release."
+            echo ""
             echo "### Linux / macOS (headless agent)"
             echo ""
             echo '```bash'
-            echo "curl -fsSL https://github.com/${repo}/releases/download/core-latest/install.sh | sh"
+            echo "curl -fsSL https://get.tunnet.io | sh"
             echo '```'
             echo ""
             echo "### Windows (PowerShell as Administrator)"
             echo ""
             echo '```powershell'
-            echo "irm https://github.com/${repo}/releases/download/core-latest/install.ps1 | iex"
+            echo "irm https://get.tunnet.io | iex"
             echo '```'
             echo ""
           } > release-notes.md
@@ -294,8 +350,8 @@ jobs:
           tag_name: ${{ needs.validate.outputs.tag }}
           name: Tunnet ${{ needs.validate.outputs.tag }}
           body_path: release-notes.md
-          draft: false
-          prerelease: ${{ needs.validate.outputs.prerelease == 'true' }}
+          draft: true
+          prerelease: false
           generate_release_notes: true
           files: |
             artifacts/*.tar.gz
@@ -303,10 +359,13 @@ jobs:
             artifacts/*.sha256
             artifacts/install.sh
             artifacts/install.ps1
+            artifacts/core-manifest.json
+            artifacts/core-manifest.json.sha256
 
   attest:
     name: Attest Core release assets
-    needs: [validate, build-binaries, package-installers]
+    needs:
+      [validate, build-binaries, package-installers, generate-release-metadata]
     if: needs.validate.outputs.dry-run != 'true'
     runs-on: [ubuntu-latest]
     steps:
@@ -321,56 +380,11 @@ jobs:
           name: installers
           path: artifacts
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: core-release-metadata
+          path: artifacts
+
       - uses: actions/attest@v4
         with:
           subject-path: artifacts/*
-
-  promote-core-channel:
-    name: Promote core-latest
-    needs: [validate, github-release, attest, package-installers]
-    if: needs.validate.outputs.dry-run != 'true'
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.validate.outputs.tag }}
-
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: binaries-*
-          path: artifacts
-          merge-multiple: true
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: installers
-          path: channel
-
-      - name: Generate Core channel manifest
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${{ needs.validate.outputs.version }}"
-          artifacts_json="$(python - "$version" <<'PY'
-          import glob, hashlib, json, os, sys
-          version = sys.argv[1]
-          prefix = f"tunnet-headless-{version}-"
-          items = []
-          for path in sorted(glob.glob(f"artifacts/{prefix}*.tar.gz") + glob.glob(f"artifacts/{prefix}*.zip")):
-              name = os.path.basename(path)
-              target = name[len(prefix):].removesuffix(".tar.gz").removesuffix(".zip")
-              items.append({"target": target, "sha256": hashlib.sha256(open(path, "rb").read()).hexdigest()})
-          if not items: raise SystemExit("no Core archives found")
-          print(json.dumps(items, separators=(",", ":")))
-          PY
-          )"
-          api_version="$(sed -n 's/^pub const API_VERSION: u32 = \([0-9][0-9]*\);/\1/p' crates/tunnet-common/src/local_api.rs)"
-          node scripts/generate-daemon-manifest.mjs "$version" "$api_version" "$artifacts_json" "${{ github.repository }}" > channel/daemon-latest.json
-
-      - name: Promote only after immutable release and attestations succeeded
-        shell: bash
-        run: |
-          gh release view core-latest >/dev/null 2>&1 || gh release create core-latest --title "Tunnet Core latest" --notes "Tunnet Core update channel. Assets point to immutable vX.Y.Z releases."
-          gh release upload core-latest channel/daemon-latest.json channel/install.sh channel/install.ps1 --clobber

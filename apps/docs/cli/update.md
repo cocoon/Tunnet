@@ -2,7 +2,6 @@
 
 `tunnet update --check` reads the Core channel and does not need admin. `tunnet update` downloads, verifies, and activates Core and needs `sudo` on Linux/macOS or an elevated prompt on Windows.
 
-
 ```bash
 curl -fsSL https://get.tunnet.io | sh
 ```

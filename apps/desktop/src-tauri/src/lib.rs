@@ -466,10 +466,7 @@ fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
 #[tauri::command]
 fn open_releases(app: AppHandle) -> Result<(), String> {
     app.opener()
-        .open_url(
-            "https://github.com/tunnetio/Tunnet/releases/tag/core-latest",
-            None::<&str>,
-        )
+        .open_url("https://github.com/tunnetio/Tunnet/releases", None::<&str>)
         .map_err(|e| e.to_string())
 }
 

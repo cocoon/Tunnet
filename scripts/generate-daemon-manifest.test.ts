@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { generateDaemonManifest } from "./generate-daemon-manifest.mjs";
+import { generateCoreManifest } from "./generate-daemon-manifest.mjs";
 
 describe("Core release metadata", () => {
   test("points only to an immutable Core release", () => {
-    const manifest = generateDaemonManifest({
+    const manifest = generateCoreManifest({
       version: "1.2.3",
       apiVersion: 2,
       repository: "tunnetio/Tunnet",
@@ -16,7 +16,7 @@ describe("Core release metadata", () => {
 
   test("rejects malformed release inputs", () => {
     expect(() =>
-      generateDaemonManifest({
+      generateCoreManifest({
         version: "desktop-v1",
         apiVersion: 2,
         repository: "tunnetio/Tunnet",

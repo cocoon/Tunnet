@@ -36,7 +36,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ steps.resolve.outputs.tag }}"
-          [[ "$tag" =~ ^desktop-v([0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?)$ ]] || { echo "::error::invalid Desktop tag $tag"; exit 1; }
+          [[ "$tag" =~ ^desktop-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::invalid Desktop tag $tag"; exit 1; }
           version="${tag#desktop-v}"
           cargo="$(sed -n 's/^version = "\([^"]*\)"/\1/p' apps/desktop/src-tauri/Cargo.toml | head -1)"
           package="$(jq -r .version apps/desktop/package.json)"

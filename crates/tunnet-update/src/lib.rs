@@ -4,9 +4,8 @@ use anyhow::{Context, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const CHANNEL_URL: &str =
-    "https://github.com/tunnetio/Tunnet/releases/download/core-latest/daemon-latest.json";
-pub const SUPPORTED_API_VERSION: u32 = tunnet_common::local_api::API_VERSION;
+pub const CHANNEL_URL: &str = "https://get.tunnet.io/core/latest.json";
+const MANIFEST_SCHEMA_VERSION: u32 = 1;
 const REPOSITORY_OWNER: &str = "tunnetio";
 const REPOSITORY_NAME: &str = "Tunnet";
 const RELEASE_WORKFLOW: &str = ".github/workflows/release-binaries.yml";
@@ -45,14 +44,12 @@ pub async fn fetch_manifest(user_agent: &str) -> anyhow::Result<(Vec<u8>, CoreMa
 pub fn parse_manifest(raw: &[u8]) -> anyhow::Result<CoreManifest> {
     let manifest: CoreManifest = serde_json::from_slice(raw)?;
     ensure!(
-        manifest.schema_version == 1,
+        manifest.schema_version == MANIFEST_SCHEMA_VERSION,
         "unsupported Core manifest schema"
     );
     ensure!(
-        manifest.api_version == SUPPORTED_API_VERSION,
-        "Core Local API v{} is incompatible with supported v{}",
-        manifest.api_version,
-        SUPPORTED_API_VERSION
+        manifest.api_version > 0,
+        "invalid target Core Local API version"
     );
     semver::Version::parse(manifest.version.trim_start_matches('v'))?;
     ensure!(
@@ -253,11 +250,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn manifest_enforces_api_and_immutable_repository_urls() {
+    fn manifest_accepts_newer_target_api_and_enforces_immutable_repository_urls() {
         let mut manifest = CoreManifest {
             schema_version: 1,
             version: "1.2.3".into(),
-            api_version: SUPPORTED_API_VERSION,
+            api_version: tunnet_common::local_api::API_VERSION + 1,
             artifacts: vec![CoreArtifact {
                 platform: "windows".into(),
                 arch: "x86_64".into(),
@@ -274,9 +271,9 @@ mod tests {
             workflow_identity(&manifest),
             "https://github.com/tunnetio/Tunnet/.github/workflows/release-binaries.yml@refs/tags/v1.2.3"
         );
-        manifest.api_version += 1;
+        manifest.api_version = 0;
         assert!(parse_manifest(&serde_json::to_vec(&manifest).unwrap()).is_err());
-        manifest.api_version = SUPPORTED_API_VERSION;
+        manifest.api_version = tunnet_common::local_api::API_VERSION + 1;
         manifest.artifacts[0].url = "https://example.com/core.zip".into();
         assert!(parse_manifest(&serde_json::to_vec(&manifest).unwrap()).is_err());
     }

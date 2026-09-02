@@ -8,7 +8,7 @@
   GitHub attestation, installs binaries, and registers the Windows service.
 
 .EXAMPLE
-  irm https://github.com/tunnetio/Tunnet/releases/download/core-latest/install.ps1 | iex
+  irm https://get.tunnet.io | iex
 #>
 [CmdletBinding()]
 param(
@@ -52,13 +52,13 @@ function Get-Arch {
 }
 
 function Get-LatestTag([string]$Repository) {
-    $uri = "https://github.com/$Repository/releases/download/core-latest/daemon-latest.json"
+    $uri = if ($env:TUNNET_CORE_CHANNEL_URL) { $env:TUNNET_CORE_CHANNEL_URL } else { "https://get.tunnet.io/core/latest.json" }
     $headers = @{ "User-Agent" = "tunnet-install/1.0" }
     try {
         $manifest = Invoke-RestMethod -Uri $uri -Headers $headers
     }
     catch {
-        Die "could not read the core-latest channel: $($_.Exception.Message)"
+        Die "could not read the Core update channel: $($_.Exception.Message)"
     }
     if (-not $manifest.version) {
         Die "could not resolve latest Core version"

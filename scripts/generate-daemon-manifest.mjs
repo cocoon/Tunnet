@@ -10,7 +10,7 @@ const TARGETS = {
   "aarch64-pc-windows-msvc": ["windows", "aarch64", "msvc", "zip"],
 };
 
-export function generateDaemonManifest({
+export function generateCoreManifest({
   version,
   apiVersion,
   repository,
@@ -48,7 +48,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     process.argv.slice(2);
   process.stdout.write(
     JSON.stringify(
-      generateDaemonManifest({
+      generateCoreManifest({
         version,
         apiVersion: Number(apiVersion),
         artifacts: JSON.parse(artifactsJson),

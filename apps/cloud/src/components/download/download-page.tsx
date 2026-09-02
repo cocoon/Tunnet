@@ -23,7 +23,6 @@ const PLATFORMS: {
   label: string;
   Icon: typeof FaWindows;
   command: string;
-  scriptUrl: string;
   note: string;
   gui: {
     available: boolean;
@@ -36,7 +35,6 @@ const PLATFORMS: {
     label: "Windows",
     Icon: FaWindows,
     command: `irm ${GET}/windows | iex`,
-    scriptUrl: `${GET}/windows`,
     note: "Requires Administrator",
     gui: {
       available: true,
@@ -49,7 +47,6 @@ const PLATFORMS: {
     label: "Linux",
     Icon: FaLinux,
     command: `curl -fsSL ${GET}/linux | sh`,
-    scriptUrl: `${GET}/linux`,
     note: "Requires root",
     gui: { available: false },
   },
@@ -58,7 +55,6 @@ const PLATFORMS: {
     label: "macOS",
     Icon: FaApple,
     command: `curl -fsSL ${GET}/macos | sh`,
-    scriptUrl: `${GET}/macos`,
     note: "Requires admin",
     gui: { available: false },
   },
@@ -184,7 +180,7 @@ export function DownloadPage(): ReactNode {
                       </div>
                     </div>
                     <a
-                      href={active.scriptUrl}
+                      href={GET}
                       target="_blank"
                       rel="noreferrer"
                       className="l1-readout hidden text-[var(--l1-muted-2)] underline decoration-[var(--l1-steel-strong)] underline-offset-4 transition-colors hover:text-[var(--l1-copper)] sm:block"

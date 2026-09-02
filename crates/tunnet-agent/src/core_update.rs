@@ -7,7 +7,6 @@ use tokio::io::AsyncWriteExt;
 use tunnet_common::local_api::{CoreUpdatePhase, CoreUpdateStatus, LocalEvent};
 use tunnet_core::StatePaths;
 use tunnet_update::CoreManifest;
-pub use tunnet_update::SUPPORTED_API_VERSION;
 
 pub struct CoreUpdater {
     paths: StatePaths,
@@ -42,7 +41,7 @@ impl CoreUpdater {
                         },
                         current_version: env!("CARGO_PKG_VERSION").into(),
                         available_version: None,
-                        api_version: SUPPORTED_API_VERSION,
+                        api_version: tunnet_common::local_api::API_VERSION,
                         downloaded: 0,
                         total: None,
                         error: None,
@@ -127,7 +126,7 @@ impl CoreUpdater {
             std::fs::remove_dir_all(&stage)?;
         }
         std::fs::create_dir_all(&stage)?;
-        std::fs::write(stage.join("daemon-latest.json"), raw)?;
+        std::fs::write(stage.join("core-manifest.json"), raw)?;
         self.set(CoreUpdatePhase::Downloading, |s| {
             s.available_version = Some(manifest.version.clone())
         })
@@ -295,7 +294,7 @@ pub async fn activate_staged(paths: &StatePaths) -> anyhow::Result<()> {
 
 async fn load_staged_and_verify(paths: &StatePaths) -> anyhow::Result<CoreManifest> {
     let stage = paths.update_staging_dir();
-    let raw = std::fs::read(stage.join("daemon-latest.json"))?;
+    let raw = std::fs::read(stage.join("core-manifest.json"))?;
     let manifest = tunnet_update::parse_manifest(&raw)?;
     let artifact = tunnet_update::current_artifact(&manifest)?;
     let archive = stage.join("core.zip");
@@ -332,6 +331,7 @@ fn activate_verified(paths: &StatePaths, manifest: &CoreManifest) -> anyhow::Res
             paths,
             env!("CARGO_PKG_VERSION"),
             manifest.version.trim_start_matches('v'),
+            manifest.api_version,
             30,
         )?;
         #[cfg(windows)]
