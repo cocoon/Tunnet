@@ -1,5 +1,5 @@
-import { createRoute } from "@tanstack/react-router";
 import { Badge } from "@tunnet/ui/components/badge";
+import { Button } from "@tunnet/ui/components/button";
 import {
   Card,
   CardContent,
@@ -7,7 +7,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@tunnet/ui/components/card";
-import { useEffect, useState } from "react";
+import { RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import { useDirectNetworkId } from "@/lib/direct-network-context";
 import { api } from "@/lib/invoke";
 import type {
@@ -16,51 +17,70 @@ import type {
   NetcheckInfo,
   RoutesInfo,
 } from "@/lib/types";
-import { appRoute } from "../app";
 
-export const Route = createRoute({
-  getParentRoute: () => appRoute,
-  path: "/diagnostics",
-  component: DiagnosticsPage,
-});
-
-function DiagnosticsPage() {
+export function DiagnosticsPanel() {
   const networkId = useDirectNetworkId();
   const [diag, setDiag] = useState<DiagInfo | null>(null);
   const [netcheck, setNetcheck] = useState<NetcheckInfo | null>(null);
   const [dns, setDns] = useState<DnsStatusInfo | null>(null);
   const [routes, setRoutes] = useState<RoutesInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = useCallback(async () => {
+    setError(null);
+    const [diagRes, netcheckRes, dnsRes, routesRes] = await Promise.all([
+      api.diag(),
+      api.netcheck(),
+      api.dns(),
+      networkId ? api.networkRoutes(networkId) : api.routesList(),
+    ]);
+    setDiag(diagRes);
+    setNetcheck(netcheckRes);
+    setDns(dnsRes);
+    setRoutes(routesRes);
+  }, [networkId]);
 
   useEffect(() => {
-    async function load() {
-      const [diagRes, netcheckRes, dnsRes, routesRes] = await Promise.all([
-        api.diag(),
-        api.netcheck(),
-        api.dns(),
-        networkId ? api.networkRoutes(networkId) : api.routesList(),
-      ]);
-      setDiag(diagRes);
-      setNetcheck(netcheckRes);
-      setDns(dnsRes);
-      setRoutes(routesRes);
-    }
     void load().catch((err) =>
       setError(err instanceof Error ? err.message : String(err)),
     );
-  }, [networkId]);
+  }, [load]);
+
+  async function refresh() {
+    setRefreshing(true);
+    try {
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   return (
-    <div className="grid gap-4 xl:grid-cols-2">
-      {error ? (
-        <p className="text-sm text-destructive xl:col-span-2">{error}</p>
-      ) : null}
+    <div className="space-y-4">
+      <div className="flex items-center justify-end">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={refreshing}
+          onClick={() => void refresh()}
+        >
+          <RefreshCw
+            className={refreshing ? "size-4 animate-spin" : "size-4"}
+          />
+          Refresh
+        </Button>
+      </div>
+
+      {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
       {diag ? (
-        <Card size="sm">
+        <Card size="sm" className="shadow-none">
           <CardHeader>
             <div className="flex items-center gap-2">
-              <CardTitle>Diagnostics</CardTitle>
+              <CardTitle>Status</CardTitle>
               <Badge
                 variant="outline"
                 className={
@@ -101,7 +121,7 @@ function DiagnosticsPage() {
       ) : null}
 
       {netcheck ? (
-        <Card size="sm">
+        <Card size="sm" className="shadow-none">
           <CardHeader>
             <div className="flex items-center gap-2">
               <CardTitle>Netcheck</CardTitle>
@@ -135,7 +155,7 @@ function DiagnosticsPage() {
       ) : null}
 
       {dns ? (
-        <Card size="sm">
+        <Card size="sm" className="shadow-none">
           <CardHeader>
             <CardTitle>DNS</CardTitle>
           </CardHeader>
@@ -165,7 +185,7 @@ function DiagnosticsPage() {
       ) : null}
 
       {routes ? (
-        <Card size="sm">
+        <Card size="sm" className="shadow-none">
           <CardHeader>
             <CardTitle>Routes</CardTitle>
             <CardDescription>

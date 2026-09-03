@@ -2,6 +2,7 @@ import { createRoute } from "@tanstack/react-router";
 import { AppShell } from "@/components/AppShell";
 import { AppProvider } from "@/lib/app-context";
 import { DirectNetworkProvider } from "@/lib/direct-network-context";
+import { SettingsDialogProvider } from "@/lib/settings-dialog-context";
 import { Route as rootRoute } from "./__root";
 
 export const appRoute = createRoute({
@@ -14,7 +15,9 @@ function AppLayout() {
   return (
     <AppProvider>
       <DirectNetworkProvider>
-        <AppShell />
+        <SettingsDialogProvider>
+          <AppShell />
+        </SettingsDialogProvider>
       </DirectNetworkProvider>
     </AppProvider>
   );

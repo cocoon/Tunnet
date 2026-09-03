@@ -14,6 +14,7 @@ import { PeerTable } from "@/components/PeerTable";
 import { useApp } from "@/lib/app-context";
 import { useDirectNetwork } from "@/lib/direct-network-context";
 import { api } from "@/lib/invoke";
+import { useSettingsDialog } from "@/lib/settings-dialog-context";
 import type { PeerSummary } from "@/lib/types";
 import { appRoute } from "../app";
 
@@ -26,6 +27,7 @@ export const Route = createRoute({
 function OverviewPage() {
   const { node, meta, apiReachable, loading } = useApp();
   const { activeNetwork } = useDirectNetwork();
+  const { openSettings } = useSettingsDialog();
   const isManaged = (meta?.mode ?? node?.mode) === "managed";
 
   const network = useMemo(() => {
@@ -161,12 +163,13 @@ function OverviewPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Link
-              to="/app/settings"
+            <button
+              type="button"
+              onClick={() => openSettings("general")}
               className="inline-flex h-8 items-center rounded-lg border border-border px-2.5 text-sm transition-colors hover:bg-muted"
             >
               Open settings
-            </Link>
+            </button>
           </CardContent>
         </Card>
       ) : null}

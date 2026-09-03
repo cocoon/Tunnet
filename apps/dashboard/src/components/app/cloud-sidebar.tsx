@@ -1,5 +1,4 @@
-import { Link, useRouterState } from "@tanstack/react-router";
-import { Badge } from "@tunnet/ui/components/badge";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   Sidebar,
   SidebarContent,
@@ -13,7 +12,6 @@ import {
   SidebarMenuItem,
   SidebarRail,
 } from "@tunnet/ui/components/sidebar";
-import { cn } from "@tunnet/ui/lib/utils";
 import type { ComponentType } from "react";
 import {
   HiOutlineChartBarSquare,
@@ -70,16 +68,21 @@ export function CloudSidebar() {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   });
+  const navigate = useNavigate();
+
+  function handleNavigate(to: string) {
+    void navigate({ to });
+  }
 
   return (
     <Sidebar collapsible="icon" variant="inset">
-      <SidebarHeader className="gap-2 border-b border-sidebar-border py-3">
-        <div className="flex items-center gap-2 group-data-[collapsible=icon]:justify-center">
-          <img src="/logo.png" alt="Tunnet Cloud" className="size-8" />
-          <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
+      <SidebarHeader className="border-b border-sidebar-border">
+        <Link to="/cloud" className="flex items-center gap-2 overflow-hidden">
+          <img src="/logo.png" alt="Tunnet Cloud" className="size-8 shrink-0" />
+          <div className="min-w-0 flex-1 group-data-[state=collapsed]/sidebar:hidden">
             <p className="truncate text-sm font-semibold">Tunnet Cloud</p>
           </div>
-        </div>
+        </Link>
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
@@ -88,39 +91,19 @@ export function CloudSidebar() {
             <SidebarMenu>
               {cloudNav.map((item) => {
                 const Icon = item.icon;
-                const active =
-                  !item.disabled && isActive(pathname, item.to, item.exact);
-                if (item.disabled) {
-                  return (
-                    <SidebarMenuItem key={item.label}>
-                      <SidebarMenuButton
-                        disabled
-                        className="opacity-50"
-                        tooltip={`${item.label} (coming soon)`}
-                      >
-                        <Icon className="size-4" />
-                        <span>{item.label}</span>
-                        <span className="text-muted-foreground ml-auto text-[10px] group-data-[collapsible=icon]:hidden">
-                          Soon
-                        </span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  );
-                }
                 return (
-                  <SidebarMenuItem key={item.to}>
+                  <SidebarMenuItem key={item.label}>
                     <SidebarMenuButton
-                      isActive={active}
-                      tooltip={item.label}
-                      render={
-                        <Link
-                          to={item.to}
-                          className={cn(active && "font-medium")}
-                        />
+                      icon={<Icon className="size-4" />}
+                      isActive={
+                        !item.disabled &&
+                        isActive(pathname, item.to, item.exact)
                       }
+                      disabled={item.disabled}
+                      badge={item.disabled ? "Soon" : undefined}
+                      onSelect={() => handleNavigate(item.to)}
                     >
-                      <Icon className="size-4" />
-                      <span>{item.label}</span>
+                      {item.label}
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 );
@@ -129,16 +112,11 @@ export function CloudSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
-      <SidebarFooter className="border-t border-sidebar-border">
+      <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip="Back to organization"
-              render={<Link to="/" />}
-            >
-              <span className="text-muted-foreground text-xs">
-                ← Organization dashboard
-              </span>
+            <SidebarMenuButton onSelect={() => handleNavigate("/")}>
+              ← Organization dashboard
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

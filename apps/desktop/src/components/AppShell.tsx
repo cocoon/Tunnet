@@ -1,4 +1,9 @@
-import { Link, Outlet, useRouterState } from "@tanstack/react-router";
+import {
+  Link,
+  Outlet,
+  useNavigate,
+  useRouterState,
+} from "@tanstack/react-router";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,7 +33,6 @@ import {
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
-  SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarProvider,
@@ -36,7 +40,6 @@ import {
   SidebarTrigger,
 } from "@tunnet/ui/components/sidebar";
 import {
-  Activity,
   Download,
   LayoutDashboard,
   RotateCw,
@@ -52,6 +55,7 @@ import { CopyButton } from "@/components/CopyButton";
 import { useApp } from "@/lib/app-context";
 import { useDesktopUpdate } from "@/lib/desktop-update-context";
 import { useDirectNetwork } from "@/lib/direct-network-context";
+import { useSettingsDialog } from "@/lib/settings-dialog-context";
 import type { NetworkSummary } from "@/lib/types";
 
 interface NavItem {
@@ -68,8 +72,6 @@ const navItems: NavItem[] = [
   { to: "/app/firewall", label: "Firewall", icon: Shield, directOnly: true },
   { to: "/app/serve", label: "Share", icon: Server },
   { to: "/app/ssh", label: "SSH", icon: Terminal, badge: "Soon" },
-  { to: "/app/diagnostics", label: "Diagnostics", icon: Activity },
-  { to: "/app/settings", label: "Settings", icon: Settings },
 ];
 
 function shortId(id: string) {
@@ -97,7 +99,9 @@ export function AppShell() {
   const { node, meta, error } = useApp();
   const { networks, setNetworkId, activeNetwork } = useDirectNetwork();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const navigate = useNavigate();
   const desktopUpdate = useDesktopUpdate();
+  const { openSettings } = useSettingsDialog();
   const [restartDialog, setRestartDialog] = useState(false);
 
   const network = activeNetworkForMode(node, activeNetwork);
@@ -105,13 +109,20 @@ export function AppShell() {
   const visibleNav = navItems.filter((item) => !item.directOnly || isDirect);
   const connected = node?.data_plane_up ?? false;
 
+  function handleNavigate(to: string) {
+    void navigate({ to });
+  }
+
   return (
     <SidebarProvider>
-      <Sidebar collapsible="icon" className="border-r border-border">
-        <SidebarHeader className="border-b border-border py-3">
-          <div className="flex items-center gap-2 group-data-[collapsible=icon]:justify-center">
-            <img src="/logo.png" alt="Tunnet" className="size-7" />
-            <div className="flex min-w-0 items-center gap-2 group-data-[collapsible=icon]:hidden">
+      <Sidebar collapsible="icon">
+        <SidebarHeader className="border-b border-border">
+          <Link
+            to="/app"
+            className="flex items-center gap-2 overflow-hidden rounded-lg py-1"
+          >
+            <img src="/logo.png" alt="Tunnet" className="size-7 shrink-0" />
+            <div className="flex min-w-0 items-center gap-2 group-data-[state=collapsed]/sidebar:hidden">
               <span className="truncate font-semibold tracking-tight">
                 Tunnet
               </span>
@@ -119,7 +130,7 @@ export function AppShell() {
                 {modeLabel(meta?.mode ?? node?.mode)}
               </Badge>
             </div>
-          </div>
+          </Link>
         </SidebarHeader>
         <SidebarContent>
           <SidebarGroup>
@@ -136,16 +147,13 @@ export function AppShell() {
                   return (
                     <SidebarMenuItem key={item.to}>
                       <SidebarMenuButton
+                        icon={<Icon className="size-4" />}
                         isActive={active}
-                        tooltip={item.label}
-                        render={<Link to={item.to} />}
+                        badge={item.badge}
+                        onSelect={() => handleNavigate(item.to)}
                       >
-                        <Icon />
-                        <span>{item.label}</span>
+                        {item.label}
                       </SidebarMenuButton>
-                      {item.badge ? (
-                        <SidebarMenuBadge>{item.badge}</SidebarMenuBadge>
-                      ) : null}
                     </SidebarMenuItem>
                   );
                 })}
@@ -153,8 +161,8 @@ export function AppShell() {
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-        {isDirect && networks.length > 1 ? (
-          <SidebarFooter className="border-t border-border p-2">
+        <SidebarFooter>
+          {isDirect && networks.length > 1 ? (
             <SidebarGroup className="p-0">
               <SidebarGroupLabel className="px-2">Network</SidebarGroupLabel>
               <Select
@@ -173,8 +181,18 @@ export function AppShell() {
                 </SelectContent>
               </Select>
             </SidebarGroup>
-          </SidebarFooter>
-        ) : null}
+          ) : null}
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                icon={<Settings className="size-4" />}
+                onSelect={() => openSettings("general")}
+              >
+                Settings
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarFooter>
         <SidebarRail />
       </Sidebar>
       <SidebarInset className="flex max-h-svh flex-col overflow-hidden">

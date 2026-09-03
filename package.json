@@ -27,7 +27,7 @@
     "cli": "bun ./packages/cli/src/cli.ts"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.11",
+    "@biomejs/biome": "2.5.12",
     "@types/bun": "^1.4.0",
     "lefthook": "^2.1.12",
     "portless": "^0.15.6",
@@ -35,6 +35,6 @@
   },
   "dependencies": {
     "ip-address": "^10.7.0",
-    "zod": "^4.5.3"
+    "zod": "^4.5.4"
   }
 }

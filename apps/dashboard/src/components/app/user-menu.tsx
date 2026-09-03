@@ -14,7 +14,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@tunnet/ui/components/dropdown-menu";
-import { SidebarMenuButton } from "@tunnet/ui/components/sidebar";
 import { cn } from "@tunnet/ui/lib/utils";
 import { CloudIcon, LogOutIcon, UserIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -66,21 +65,24 @@ export function UserMenu({ className }: { className?: string }) {
     <DropdownMenu>
       <DropdownMenuTrigger
         render={
-          <SidebarMenuButton
-            size="lg"
-            tooltip={user.name || user.email}
+          <button
+            type="button"
+            title={user.name || user.email}
             className={cn(
-              "data-open:bg-sidebar-accent data-open:text-sidebar-accent-foreground",
+              "relative flex min-h-10 w-full min-w-0 items-center gap-2.5 rounded-xl px-2.5 text-left text-sm font-medium outline-none",
+              "text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground",
+              "focus-visible:bg-muted/70 focus-visible:ring-2 focus-visible:ring-ring",
+              "data-popup-open:bg-muted/70 data-popup-open:text-foreground",
               className,
             )}
           >
-            <Avatar className="size-8 rounded-lg">
+            <Avatar className="size-8 shrink-0 rounded-lg">
               {user.image ? (
                 <AvatarImage src={user.image} alt={user.name ?? user.email} />
               ) : null}
               <AvatarFallback>{initials(user.name, user.email)}</AvatarFallback>
             </Avatar>
-            <div className="grid flex-1 text-left text-sm leading-tight group-data-[collapsible=icon]:hidden">
+            <div className="grid min-w-0 flex-1 text-left text-sm leading-tight group-data-[state=collapsed]/sidebar:hidden">
               <span className="truncate font-medium">
                 {user.name || "Account"}
               </span>
@@ -88,7 +90,7 @@ export function UserMenu({ className }: { className?: string }) {
                 {user.email}
               </span>
             </div>
-          </SidebarMenuButton>
+          </button>
         }
       />
       <DropdownMenuContent
