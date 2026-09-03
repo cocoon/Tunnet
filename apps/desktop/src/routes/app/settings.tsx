@@ -248,8 +248,7 @@ function SettingsPage() {
               <div>
                 <p className="text-sm font-medium">Background service</p>
                 <p className="text-xs text-muted-foreground">
-                  Version {agentVersion ?? "not installed"} · Local API v
-                  {meta?.api_version ?? "-"}
+                  Version {agentVersion ?? "not installed"}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {coreUpdateLabel(coreUpdate)}

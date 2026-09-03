@@ -110,9 +110,7 @@ export function AppShell() {
       <Sidebar collapsible="icon" className="border-r border-border">
         <SidebarHeader className="border-b border-border py-3">
           <div className="flex items-center gap-2 group-data-[collapsible=icon]:justify-center">
-            <div className="flex size-7 items-center justify-center rounded-md bg-primary text-xs font-semibold text-primary-foreground">
-              T
-            </div>
+            <img src="/logo.png" alt="Tunnet" className="size-7" />
             <div className="flex min-w-0 items-center gap-2 group-data-[collapsible=icon]:hidden">
               <span className="truncate font-semibold tracking-tight">
                 Tunnet
