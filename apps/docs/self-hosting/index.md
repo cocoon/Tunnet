@@ -30,7 +30,7 @@ bun run db:migrate
 ./target/release/tunnet-control &
 bun run management:start &
 bun run dash:build &
-bun run dash:preview &
+bun run dash:dev &
 ```
 
 See the following pages for detailed configuration of each component.
