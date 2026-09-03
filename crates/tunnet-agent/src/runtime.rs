@@ -490,8 +490,7 @@ pub async fn run(
     // One long-lived osdns manager for the agent lifetime (control-plane
     // state, not per-query). Blocking work stays off the executor.
     let dns_controller: Option<Arc<DnsController>> = {
-        let ifname = args.ifname.clone();
-        match tokio::task::spawn_blocking(move || DnsController::create(&ifname)).await {
+        match tokio::task::spawn_blocking(DnsController::create).await {
             Ok(Ok(controller)) => Some(controller),
             Ok(Err(e)) => {
                 tracing::error!(error = %e, "osdns DNS integration unavailable");
@@ -730,11 +729,13 @@ pub async fn run(
     }
 
     // Explicit restoration is the normal lifecycle; never rely on Drop alone.
+    // osdns owns Enforce observation, so shutdown is just: restore the lease.
     async fn shutdown_dns(dns_controller: Option<Arc<DnsController>>) {
         if let Some(dns) = dns_controller {
-            let result = tokio::task::spawn_blocking(move || dns.shutdown()).await;
-            if let Err(e) = result {
-                tracing::warn!(error = %e, "DNS shutdown task failed");
+            match tokio::task::spawn_blocking(move || dns.restore()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "DNS shutdown restore failed"),
+                Err(e) => tracing::warn!(error = %e, "DNS shutdown task failed"),
             }
         }
     }
