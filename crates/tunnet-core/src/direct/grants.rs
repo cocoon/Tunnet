@@ -6,7 +6,7 @@ use aes_gcm::aead::{Aead, Generate};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use anyhow::{Context, bail};
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
-use jiff::Timestamp;
+use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -131,6 +131,16 @@ fn grant_sign_payload(grant: &NetworkGrant) -> anyhow::Result<Vec<u8>> {
         expires_at: grant.expires_at,
         content_key: &grant.content_key,
     })?)
+}
+
+/// Fixed lifetime for coordinator-issued grants: ten years.
+pub const GRANT_LIFETIME: SignedDuration = SignedDuration::from_hours(3650 * 24);
+
+/// When a grant issued at `issued_at` expires.
+pub fn grant_expiry(issued_at: Timestamp) -> anyhow::Result<Timestamp> {
+    issued_at
+        .checked_add(GRANT_LIFETIME)
+        .context("grant expiry is outside the representable timestamp range")
 }
 
 pub fn sign_grant(sk: &SigningKey, mut grant: NetworkGrant) -> anyhow::Result<NetworkGrant> {
@@ -329,7 +339,14 @@ pub fn decrypt_content(content_key_hex: &str, ciphertext: &[u8]) -> anyhow::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jiff::Span;
+
+    #[test]
+    fn grant_expiry_uses_fixed_lifetime() {
+        let now = Timestamp::now();
+        let expires = grant_expiry(now).expect("ten-year grant expiry must be computable");
+
+        assert_eq!(now.duration_until(expires), GRANT_LIFETIME);
+    }
 
     fn sample_grant(network_id: Uuid, endpoint_id: &str, role: MemberRole) -> NetworkGrant {
         let now = Timestamp::now();
@@ -339,7 +356,7 @@ mod tests {
             role,
             network_epoch: 1,
             issued_at: now,
-            expires_at: now.checked_add(Span::new().hours(24)).unwrap(),
+            expires_at: now.checked_add(SignedDuration::from_hours(24)).unwrap(),
             content_key: hex::encode([0xAB; 32]),
             sig: String::new(),
         }

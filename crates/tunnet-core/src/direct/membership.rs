@@ -29,7 +29,7 @@ use iroh_docs::protocol::Docs;
 use iroh_docs::store::Query;
 use iroh_docs::{AuthorId, DocTicket, NamespaceId};
 use iroh_gossip::net::Gossip;
-use jiff::{Span, Timestamp};
+use jiff::Timestamp;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tunnet_common::DnsConfig;
@@ -38,9 +38,9 @@ use uuid::Uuid;
 use crate::acl::AclEngine;
 use crate::direct::auth::AuthCache;
 use crate::direct::grants::{
-    EpochRecord, Genesis, MemberRole, NetworkGrant, Revocation, SignedMemberRecord, sign_epoch,
-    sign_genesis, sign_grant, sign_member_record, sign_revocation, verify_epoch, verify_genesis,
-    verify_member_record, verify_revocation, verifying_key_from_hex,
+    EpochRecord, Genesis, MemberRole, NetworkGrant, Revocation, SignedMemberRecord, grant_expiry,
+    sign_epoch, sign_genesis, sign_grant, sign_member_record, sign_revocation, verify_epoch,
+    verify_genesis, verify_member_record, verify_revocation, verifying_key_from_hex,
 };
 use crate::routing::RoutingTable;
 use crate::state::{DirectState, StatePaths};
@@ -450,7 +450,7 @@ impl DocsMembership {
                 role,
                 network_epoch: epoch,
                 issued_at: now,
-                expires_at: now.checked_add(Span::new().days(3650))?,
+                expires_at: grant_expiry(now)?,
                 content_key: self.inner.content_key.clone(),
                 sig: String::new(),
             },
