@@ -278,10 +278,18 @@ impl TunnetNode {
         sock_path: PathBuf,
         poll_secs: u64,
     ) -> Result<Self> {
+        // SDK coordinator owns managed control explicitly when present.
+        // Direct-only builds have no control transport at all.
+        #[cfg(feature = "managed")]
         let (node, pending) = CoreNode::bootstrap(identity, persisted, paths, core_cfg)
             .await
             .map_err(Error::from_anyhow)?;
-        let control_driver = if let Some(pending) = pending {
+        #[cfg(not(feature = "managed"))]
+        let node = CoreNode::bootstrap(identity, persisted, paths, core_cfg)
+            .await
+            .map_err(Error::from_anyhow)?;
+        #[cfg(feature = "managed")]
+        let control_driver = pending.map(|pending| {
             let ctx = tunnet_core::sync::ManagedDriverCtx::from_node(
                 &node,
                 node.persisted
@@ -294,10 +302,10 @@ impl TunnetNode {
                 env!("CARGO_PKG_VERSION"),
                 poll_secs,
             );
-            Some(tunnet_core::sync::spawn_managed_driver(pending, ctx))
-        } else {
-            None
-        };
+            tunnet_core::sync::spawn_managed_driver(pending, ctx)
+        });
+        #[cfg(not(feature = "managed"))]
+        let control_driver: Option<tokio::task::JoinHandle<()>> = None;
         let node = Arc::new(node);
         let (tx, rx) = mpsc::channel(64);
         let router = spawn_stream_acceptor(node.clone(), tx);

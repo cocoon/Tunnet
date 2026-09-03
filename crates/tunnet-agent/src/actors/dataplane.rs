@@ -256,7 +256,11 @@ impl DataPlaneActor {
             );
             let res = tokio::time::timeout(
                 std::time::Duration::from_secs(15),
-                self.route_actor.ask(ApplyDesiredRoutes { desired }),
+                self.route_actor.ask(ApplyDesiredRoutes {
+                    desired,
+                    // Local lifecycle intent: always applies, never versioned.
+                    version: crate::actors::ControlVersion::Local,
+                }),
             )
             .await
             .map_err(|_| DataPlaneError::Routes("route apply timed out".into()));

@@ -80,9 +80,6 @@ pub async fn run(
         hosts
     };
 
-    // Core bootstrap creates NO background tasks: control transport is
-    // returned unowned for the ControlPlaneActor (managed) and the caller
-    // owns every other subsystem via the supervisor tree.
     let (node, _pending_control) = CoreNode::bootstrap(
         identity.clone(),
         persisted,
@@ -111,8 +108,6 @@ pub async fn run(
         },
     )
     .await?;
-    // The agent actor tree owns its own transport; drop the bootstrap one
-    // (it spawned no task, so this opens no connection).
     drop(_pending_control);
 
     let config_store = node.effective_config.clone();

@@ -30,6 +30,7 @@ pub struct PostureActor {
     src_posture_ok: Arc<ArcSwap<bool>>,
     cancel: tokio_util::sync::CancellationToken,
     tasks: Vec<super::OwnedTask>,
+    last_policy_version: Option<u64>,
 }
 
 impl Actor for PostureActor {
@@ -50,6 +51,7 @@ impl Actor for PostureActor {
             src_posture_ok: args.src_posture_ok,
             cancel,
             tasks: Vec::new(),
+            last_policy_version: None,
         };
         actor.start_owned_tasks(actor_ref);
         // Initial collection without blocking the mailbox.
@@ -190,6 +192,9 @@ pub struct ApplyRemoteAgentPolicy {
     pub policy: tunnet_common::RemoteAgentPolicy,
     pub paths: tunnet_core::StatePaths,
     pub store: tunnet_core::EffectiveConfigStore,
+    /// Snapshot version guard: stale snapshots must not overwrite the merge
+    /// from a newer one. Direct operator commands use `Local`.
+    pub version: super::ControlVersion,
 }
 
 pub struct PostureStatusChanged {
@@ -282,6 +287,10 @@ impl Message<ApplyPostureConfig> for PostureActor {
 impl Message<ApplyRemoteAgentPolicy> for PostureActor {
     type Reply = ();
     async fn handle(&mut self, msg: ApplyRemoteAgentPolicy, ctx: &mut Context<Self, Self::Reply>) {
+        if !super::accept_version(&mut self.last_policy_version, msg.version) {
+            tracing::debug!(version = ?msg.version, "ignoring stale remote agent policy");
+            return;
+        }
         let engine = self.engine.clone();
         let control = self.control.clone();
         ctx.pipe(async move {

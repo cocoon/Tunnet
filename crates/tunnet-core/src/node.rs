@@ -230,10 +230,12 @@ impl CoreNode {
 
     /// Bootstrap based on persisted mode.
     ///
-    /// Returns the node plus, in Managed mode, an unowned [`PendingControl`]
-    /// transport. No background task is spawned: the caller owns control
-    /// lifecycle explicitly (agent `ControlPlaneActor` or an explicit
-    /// `ManagedControlDriver` for SDK/kube-node).
+    /// Spawns no background control-plane tasks. In Managed builds the node
+    /// is returned alongside its unowned transport; the caller owns control
+    /// lifecycle explicitly (agent `ControlPlaneActor`, or an explicit
+    /// managed driver for SDK/kube-node). Direct-only builds return the node
+    /// alone so they never name the managed transport type.
+    #[cfg(feature = "managed")]
     pub async fn bootstrap(
         identity: AgentIdentity,
         persisted: PersistedState,
@@ -242,16 +244,42 @@ impl CoreNode {
     ) -> anyhow::Result<(Self, Option<crate::ws_client::PendingControl>)> {
         match &persisted {
             PersistedState::Managed(m) => {
-                #[cfg(feature = "managed")]
-                {
-                    Self::bootstrap_managed(identity, persisted.clone(), m.clone(), paths, cfg)
-                        .await
+                Self::bootstrap_managed(identity, persisted.clone(), m.clone(), paths, cfg).await
+            }
+            PersistedState::Direct { networks } => {
+                if networks.is_empty() {
+                    anyhow::bail!("no Direct networks joined");
                 }
-                #[cfg(not(feature = "managed"))]
+                #[cfg(feature = "direct")]
                 {
-                    let _ = (&identity, &paths, &cfg, m);
-                    anyhow::bail!("managed mode requires the `managed` feature");
+                    let node =
+                        Self::bootstrap_direct(identity, persisted.clone(), paths, cfg).await?;
+                    Ok((node, None))
                 }
+                #[cfg(not(feature = "direct"))]
+                {
+                    let _ = (identity, paths, cfg);
+                    let _ = networks.len();
+                    anyhow::bail!("direct mode requires the `direct` feature");
+                }
+            }
+        }
+    }
+
+    /// Bootstrap based on persisted mode (Direct-only builds).
+    ///
+    /// Spawns no background control-plane tasks.
+    #[cfg(not(feature = "managed"))]
+    pub async fn bootstrap(
+        identity: AgentIdentity,
+        persisted: PersistedState,
+        paths: StatePaths,
+        cfg: CoreNodeConfig,
+    ) -> anyhow::Result<Self> {
+        match &persisted {
+            PersistedState::Managed(m) => {
+                let _ = (&identity, &paths, &cfg, m);
+                anyhow::bail!("managed mode requires the `managed` feature");
             }
             PersistedState::Direct { networks } => {
                 if networks.is_empty() {
@@ -466,7 +494,7 @@ impl CoreNode {
         persisted: PersistedState,
         paths: StatePaths,
         cfg: CoreNodeConfig,
-    ) -> anyhow::Result<(Self, Option<crate::ws_client::PendingControl>)> {
+    ) -> anyhow::Result<Self> {
         let networks = persisted.direct_networks().to_vec();
         if networks.is_empty() {
             anyhow::bail!("no Direct networks joined");
@@ -653,39 +681,36 @@ impl CoreNode {
         tracing::info!(%contact, networks = direct_runtimes.len(), "direct contact id");
 
         let _ = cfg.agent_version;
-        Ok((
-            Self {
-                identity,
-                persisted: PersistedState::Direct {
-                    networks: persisted_networks,
-                },
-                endpoint,
-                pool,
-                tunnel_pool,
-                effective_config,
-                routes,
-                acl,
-                version,
-                self_ipv4,
-                paths,
-                #[cfg(feature = "serve")]
-                serves,
-                #[cfg(feature = "tunnel")]
-                tunnels,
-                #[cfg(feature = "send")]
-                send,
-                #[cfg(feature = "managed")]
-                signed: None,
-                #[cfg(feature = "managed")]
-                control_link: None,
-                direct_auth: Some(auth),
-                direct: direct_runtimes,
-                gossip: Some(gossip),
-                docs_engine: Some(docs_engine),
-                presence_tables: Arc::new(Mutex::new(HashMap::new())),
+        Ok(Self {
+            identity,
+            persisted: PersistedState::Direct {
+                networks: persisted_networks,
             },
-            None,
-        ))
+            endpoint,
+            pool,
+            tunnel_pool,
+            effective_config,
+            routes,
+            acl,
+            version,
+            self_ipv4,
+            paths,
+            #[cfg(feature = "serve")]
+            serves,
+            #[cfg(feature = "tunnel")]
+            tunnels,
+            #[cfg(feature = "send")]
+            send,
+            #[cfg(feature = "managed")]
+            signed: None,
+            #[cfg(feature = "managed")]
+            control_link: None,
+            direct_auth: Some(auth),
+            direct: direct_runtimes,
+            gossip: Some(gossip),
+            docs_engine: Some(docs_engine),
+            presence_tables: Arc::new(Mutex::new(HashMap::new())),
+        })
     }
 
     /// Shared Gossip for presence / service-relay topics.

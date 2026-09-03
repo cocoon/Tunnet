@@ -554,8 +554,7 @@ pub fn spawn_managed_driver(
                         #[cfg(not(feature = "tunnel"))]
                         ServerMsg::OpenTunnel { tunnel_id, .. } => {
                             tracing::warn!(%tunnel_id, "OpenTunnel ignored (`tunnel` feature disabled)");
-                            let _ = ws
-                                .tx
+                            let _ = client_tx
                                 .send(ClientMsg::TunnelFailed {
                                     tunnel_id,
                                     error: "tunnel feature disabled".into(),
@@ -730,6 +729,10 @@ pub fn spawn_managed_driver(
 /// One snapshot poll + apply. Shared by the core driver loop and the agent
 /// `ControlPlaneActor`; both run it as owned periodic work (never a hidden
 /// detached task).
+///
+/// Overlapping polls can complete out of order: a provably older snapshot
+/// (strictly lower version than already applied) is skipped. Equal versions
+/// still re-apply — peer lists / keys can change without a version bump.
 #[allow(clippy::too_many_arguments)]
 pub async fn poll_once(
     client: &SignedClient,
@@ -743,8 +746,14 @@ pub async fn poll_once(
 ) {
     match client.poll(**version.load()).await {
         Ok(snap) => {
-            // Always re-apply: peer lists / keys can change without a
-            // networks.version bump (presence used to gate peers).
+            if snap.version < **version.load() {
+                tracing::debug!(
+                    v = snap.version,
+                    current = **version.load(),
+                    "ignoring stale poll snapshot"
+                );
+                return;
+            }
             if let Ok(m) = membership_for_network(&snap, network_id) {
                 apply_membership(
                     m,

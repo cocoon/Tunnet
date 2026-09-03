@@ -55,7 +55,8 @@ pub struct ControlPlaneActor {
     client_tx: tokio::sync::mpsc::Sender<ClientMsg>,
     link: ControlPlaneLink,
     cancel: tokio_util::sync::CancellationToken,
-    transport_handle: Option<tokio::task::JoinHandle<()>>,
+    transport_task: Option<super::OwnedTask>,
+    forwarder: Option<super::OwnedTask>,
     heartbeat: Option<super::OwnedTask>,
     poller: Option<super::OwnedTask>,
     version: Arc<ArcSwap<u64>>,
@@ -88,46 +89,51 @@ impl Actor for ControlPlaneActor {
 
         // Owned transport task. `run` only returns on cancellation; any
         // other return is an unexpected service death → abnormal failure.
-        let transport_handle = {
+        // Delivery uses bounded `send()` (never lossy `try_send`); the weak
+        // ref keeps the task from holding the actor alive.
+        let transport_task = {
             let done_cancel = cancel.clone();
             let transport_weak = actor_ref.downgrade();
-            tokio::spawn(async move {
+            super::OwnedTask::spawn("control-transport", cancel.clone(), async move {
                 transport
                     .run(server_tx, client_rx, done_cancel.clone())
                     .await;
-                if !done_cancel.is_cancelled()
-                    && let Some(actor) = transport_weak.upgrade()
-                {
-                    let _ = actor.tell(TransportExited).try_send();
+                if done_cancel.is_cancelled() {
+                    return;
                 }
+                let Some(actor) = transport_weak.upgrade() else {
+                    return;
+                };
+                let _ = actor.tell(TransportExited).send().await;
             })
         };
 
-        // Forwarder: ServerMsg -> actor tells (owned, cancellable).
-        // Uses a weak ref so it cannot keep the actor alive indefinitely.
-        let weak = actor_ref.downgrade();
-        let forward_cancel = cancel.clone();
-        tokio::spawn(async move {
-            let mut rx = server_rx;
-            loop {
-                tokio::select! {
-                    _ = forward_cancel.cancelled() => break,
-                    msg = rx.recv() => {
-                        let Some(msg) = msg else { break };
-                        if let Some(actor) = weak.upgrade() {
-                            // Burst backpressure: bounded mailbox drops? No:
-                            // ServerMsg must not be lost; use send (bounded
-                            // wait) for important commands.
-                            if actor.tell(InboundServerMsg(msg)).send().await.is_err() {
+        // Forwarder: ServerMsg -> actor tells. Actor-owned (cancelled and
+        // joined in `on_stop`, aborted only on timeout). Weak ref so it
+        // cannot keep the actor alive; ServerMsgs use bounded `send()` so
+        // important commands apply backpressure instead of being dropped.
+        let forwarder = {
+            let weak = actor_ref.downgrade();
+            let forward_cancel = cancel.clone();
+            super::OwnedTask::spawn("control-forwarder", cancel.clone(), async move {
+                let mut rx = server_rx;
+                loop {
+                    tokio::select! {
+                        _ = forward_cancel.cancelled() => break,
+                        msg = rx.recv() => {
+                            let Some(msg) = msg else { break };
+                            if let Some(actor) = weak.upgrade() {
+                                if actor.tell(InboundServerMsg(msg)).send().await.is_err() {
+                                    break;
+                                }
+                            } else {
                                 break;
                             }
-                        } else {
-                            break;
                         }
                     }
                 }
-            }
-        });
+            })
+        };
 
         // Heartbeat driver (owned periodic tell, never blocks mailbox).
         let hb_weak = actor_ref.downgrade();
@@ -204,7 +210,8 @@ impl Actor for ControlPlaneActor {
             client_tx,
             link,
             cancel,
-            transport_handle: Some(transport_handle),
+            transport_task: Some(transport_task),
+            forwarder: Some(forwarder),
             heartbeat: Some(heartbeat),
             poller: Some(poller),
             version,
@@ -216,9 +223,15 @@ impl Actor for ControlPlaneActor {
         _actor_ref: WeakActorRef<Self>,
         _reason: ActorStopReason,
     ) -> Result<(), Self::Error> {
+        // Cancel everything, then join each owned task with the shared
+        // bounded abort-after-timeout semantics: after this returns, none
+        // of the actor's long-lived tasks may still be running.
         self.cancel.cancel();
-        if let Some(h) = self.transport_handle.take() {
-            let _ = tokio::time::timeout(Duration::from_secs(5), h).await;
+        if let Some(task) = self.transport_task.take() {
+            task.shutdown().await;
+        }
+        if let Some(task) = self.forwarder.take() {
+            task.shutdown().await;
         }
         if let Some(task) = self.heartbeat.take() {
             task.shutdown().await;
@@ -269,6 +282,8 @@ impl ControlPlaneActor {
                         Some(self.cfg.paths.dir.as_path()),
                     );
                     // Typed dispatch: routes via RouteActor (bounded ask with timeout).
+                    // The snapshot version travels with the work so a lagging
+                    // task can never overwrite newer desired routes.
                     let desired = membership_desired(
                         &node,
                         &m.device_profile,
@@ -281,6 +296,7 @@ impl ControlPlaneActor {
                             .collect::<Vec<_>>(),
                         m.device_profile.exit_node_endpoint_id.is_some(),
                     );
+                    let snapshot_version = snap.version;
                     let route_actor = self.cfg.route_actor.clone();
                     let client_tx = self.client_tx.clone();
                     let policy = m.agent_policy.clone();
@@ -292,7 +308,12 @@ impl ControlPlaneActor {
                             Some(route_actor) => {
                                 if let Ok(res) = tokio::time::timeout(
                                     Duration::from_secs(15),
-                                    route_actor.ask(ApplyDesiredRoutes { desired }),
+                                    route_actor.ask(ApplyDesiredRoutes {
+                                        desired,
+                                        version: crate::actors::ControlVersion::Snapshot(
+                                            snapshot_version,
+                                        ),
+                                    }),
                                 )
                                 .await
                                     && let Err(e) = res
@@ -304,13 +325,18 @@ impl ControlPlaneActor {
                                 tracing::debug!("route actor not wired yet; skipping route apply");
                             }
                         }
-                        // Remote policy merge off the mailbox.
+                        // Remote policy merge off the mailbox. Versioned like
+                        // routes: a lagging snapshot must not overwrite the
+                        // merge from a newer one.
                         if let Some(posture) = posture_actor {
                             let _ = posture
                                 .tell(ApplyRemoteAgentPolicy {
                                     policy,
                                     paths,
                                     store,
+                                    version: crate::actors::ControlVersion::Snapshot(
+                                        snapshot_version,
+                                    ),
                                 })
                                 .send()
                                 .await;
@@ -340,6 +366,7 @@ impl ControlPlaneActor {
                             policy: snap.agent_policy.clone(),
                             paths: self.cfg.paths.clone(),
                             store: node.effective_config.clone(),
+                            version: crate::actors::ControlVersion::Snapshot(snap.version),
                         })
                         .send()
                         .await;
@@ -368,7 +395,8 @@ impl ControlPlaneActor {
             }
             ServerMsg::Ping { nonce } => {
                 self.send_client(ClientMsg::Pong { nonce });
-                // Ping wake-up poll off the mailbox.
+                // Ping wake-up poll off the mailbox. Shares `poll_once` with
+                // the periodic driver (stale-guarded, single implementation).
                 if let Some(signed) = node.signed.clone() {
                     let routes = node.routes.clone();
                     let acl = node.acl.clone();
@@ -378,32 +406,17 @@ impl ControlPlaneActor {
                     let hostname = self.cfg.hostname.clone();
                     let dir = self.cfg.paths.dir.clone();
                     tokio::spawn(async move {
-                        match signed.poll(**version.load()).await {
-                            Ok(snap) => {
-                                if let Ok(m) = tunnet_core::sync::membership_for_network(&snap, nid)
-                                    && (snap.version != **version.load()
-                                        || m.version != routes.version())
-                                {
-                                    tunnet_core::sync::apply_membership(
-                                        m,
-                                        &snap.org_policy,
-                                        snap.policy_verifying_key.as_deref(),
-                                        &routes,
-                                        &acl,
-                                        &version,
-                                        snap.version,
-                                        &eid,
-                                        &hostname,
-                                        Some(dir.as_path()),
-                                    );
-                                    // Snapshot cache path: reload from node is unavailable here;
-                                    // skip re-save on ping poll (snapshot already cached on WS path).
-                                    let _ = dir;
-                                }
-                                let _ = eid;
-                            }
-                            Err(e) => tracing::warn!(?e, "ping wake-up poll failed"),
-                        }
+                        tunnet_core::sync::poll_once(
+                            &signed,
+                            &version,
+                            &routes,
+                            &acl,
+                            nid,
+                            &eid,
+                            &hostname,
+                            Some(dir.as_path()),
+                        )
+                        .await;
                     });
                 }
             }
@@ -643,6 +656,9 @@ impl ControlPlaneActor {
                                 policy,
                                 paths,
                                 store,
+                                // Direct operator command, not snapshot
+                                // state: explicit intent always applies.
+                                version: crate::actors::ControlVersion::Local,
                             })
                             .send()
                             .await;
