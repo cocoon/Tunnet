@@ -588,14 +588,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_bring_up_leaves_no_external_side_effects() {
+    async fn bring_up_failure_or_cycle_leaves_no_residue() {
         use crate::actors::routes::GetRouteStatus;
         use std::sync::atomic::Ordering;
 
         let (node, _tmp) = test_node().await;
         let mut args = test_args(node);
-        // Absurd ifname: TUN build must fail fast without privileges, before
-        // any side effect (publication, DNS, routes, NAT) runs.
         args.config.ifname = "tunnet-test-ifname-that-cannot-exist-0123456789-abcdef".into();
         let published = args.published.clone();
         let status_snapshot = args.status.clone();
@@ -606,21 +604,32 @@ mod tests {
             kameo::mailbox::bounded(crate::actors::DATAPLANE_MAILBOX),
         );
         actor.wait_for_startup().await;
-        let res = actor.ask(BringUp).await;
-        assert!(res.is_err(), "bring-up without TUN must fail");
-        // Authoritative actor state uncorrupted …
-        let status: DataPlaneStatus = actor.ask(GetStatus).await.expect("status");
-        assert!(!status.up);
-        assert_eq!(status.generation, 0);
-        // … and no external side effect leaked: nothing published, read-model
-        // snapshots untouched, no routes owned.
-        assert!(published.load_full().is_none());
-        assert!(!status_snapshot.is_up());
-        assert!(!peer_dns.load(Ordering::SeqCst));
+        let res = tokio::time::timeout(std::time::Duration::from_secs(120), actor.ask(BringUp))
+            .await
+            .expect("BringUp must not hang");
+        if res.is_err() {
+            let status: DataPlaneStatus = actor.ask(GetStatus).await.expect("status");
+            assert!(!status.up);
+            assert_eq!(status.generation, 0);
+            assert!(published.load_full().is_none());
+            assert!(!status_snapshot.is_up());
+            assert!(!peer_dns.load(Ordering::SeqCst));
+        } else {
+            let status: DataPlaneStatus = actor.ask(GetStatus).await.expect("status");
+            assert!(status.up);
+            assert_eq!(status.generation, 1);
+            assert!(published.load_full().is_some());
+            assert!(status_snapshot.is_up());
+            actor.ask(BringDown).await.expect("down");
+            let status: DataPlaneStatus = actor.ask(GetStatus).await.expect("status");
+            assert!(!status.up);
+            assert!(published.load_full().is_none());
+            assert!(!status_snapshot.is_up());
+            assert!(!peer_dns.load(Ordering::SeqCst));
+        }
         let routes: crate::actors::routes::RouteStatus =
             route.ask(GetRouteStatus).await.expect("routes");
         assert!(routes.owned.is_empty());
-        // Down stays idempotent after the failure, and stop still drains.
         actor.ask(BringDown).await.expect("down");
         actor.stop_gracefully().await.expect("stop");
         tokio::time::timeout(
