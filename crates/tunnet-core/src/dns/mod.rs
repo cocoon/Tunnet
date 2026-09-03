@@ -18,7 +18,10 @@ mod peerdns;
 mod upstream;
 
 pub use nameserver::{UpstreamSource, parse_upstream};
-pub use upstream::{HickoryLookup, build_resolver, tunnet_resolver_opts};
+pub use upstream::{
+    HickoryLookup, build_resolver, capture_underlay_upstream_specs, filter_self_nameservers,
+    system_nameservers_excluding, tunnet_resolver_opts, with_underlay_upstream,
+};
 
 use peerdns::{answer_owned, answer_ptr, base_response, owned_forward_name, parse_in_addr_arpa};
 use upstream::{ExternalLookup, map_external};
@@ -61,6 +64,11 @@ async fn bind_udp_with_retry(bind: SocketAddr) -> anyhow::Result<UdpSocket> {
 }
 
 async fn run(bind: SocketAddr, routes: RoutingTable, dns: DnsConfig) -> anyhow::Result<()> {
+    // Loop-prevention invariant: resolve a `"system"` upstream to the
+    // explicit underlay snapshot NOW, before the agent installs the osdns
+    // overlay that points the OS at PeerDNS. `build_resolver` additionally
+    // filters our own magic IP so even a post-overlay rebuild cannot loop.
+    let dns = with_underlay_upstream(&dns);
     let lookup = match HickoryLookup::from_dns_config(&dns) {
         Ok(l) => Arc::new(l),
         Err(e) => {
@@ -234,7 +242,10 @@ mod tests {
 
     use super::nameserver::connection_summary;
     use super::peerdns::name_in_suffix;
-    use super::upstream::{ExtLookupFut, ExternalAnswer, ExternalLookup, tunnet_resolver_opts};
+    use super::upstream::{
+        ExtLookupFut, ExternalAnswer, ExternalLookup, filter_self_nameservers,
+        tunnet_resolver_opts, with_underlay_upstream,
+    };
 
     struct MockLookup {
         calls: Mutex<Vec<(String, RecordType)>>,
@@ -459,6 +470,50 @@ mod tests {
         assert!(!opts.validate);
         let on = tunnet_resolver_opts(true);
         assert!(on.validate);
+    }
+
+    #[test]
+    fn loop_prevention_filters_peerdns_magic_from_candidates() {
+        let magic = Ipv4Addr::new(100, 100, 100, 53);
+        let filtered = filter_self_nameservers(
+            [
+                std::net::IpAddr::V4(magic),
+                std::net::IpAddr::from([1, 1, 1, 1]),
+                std::net::IpAddr::V4(magic),
+            ],
+            magic,
+        );
+        assert_eq!(filtered, vec![std::net::IpAddr::from([1, 1, 1, 1])]);
+        // A post-overlay system state pointing only at PeerDNS leaves
+        // nothing usable; the resolver must fail closed instead of looping.
+        assert!(filter_self_nameservers([std::net::IpAddr::V4(magic)], magic).is_empty());
+    }
+
+    #[test]
+    fn underlay_snapshot_never_selects_peerdns_itself() {
+        let dns = DnsConfig {
+            upstream: vec!["system".into()],
+            ..DnsConfig::default()
+        };
+        assert_eq!(dns.magic_ip, Ipv4Addr::new(100, 100, 100, 53));
+        // Must run BEFORE the osdns overlay is installed; afterwards the OS
+        // state points at PeerDNS and only the explicit snapshot is safe.
+        let pinned = with_underlay_upstream(&dns);
+        match parse_upstream(&pinned.upstream).unwrap() {
+            UpstreamSource::System => {
+                // Host without system DNS: `build_resolver` fails closed.
+            }
+            UpstreamSource::Config(config) => {
+                assert!(!config.name_servers.is_empty());
+                assert!(
+                    config
+                        .name_servers
+                        .iter()
+                        .all(|ns| ns.ip != std::net::IpAddr::V4(dns.magic_ip)),
+                    "Hickory must never use PeerDNS as its own upstream"
+                );
+            }
+        }
     }
 
     #[test]

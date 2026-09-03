@@ -41,6 +41,7 @@ metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 ipnet.workspace = true
 netdev.workspace = true
+osdns.workspace = true
 sha2.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
@@ -76,3 +77,4 @@ windows-sys = { version = "0.61", features = [
 [dev-dependencies]
 rstest.workspace = true
 tempfile = "3"
+osdns = { version = "0.1", features = ["test-util", "tracing"] }

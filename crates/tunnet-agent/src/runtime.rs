@@ -19,6 +19,7 @@ use crate::dataplane::{
 use crate::ingress::IngressRegistry;
 use crate::metrics::AgentMetrics;
 use crate::recorder::{RecordingStore, recordings_dir};
+use crate::system_dns::DnsController;
 use crate::tun_io::build_tun;
 
 pub async fn run(
@@ -480,16 +481,53 @@ pub async fn run(
         ingress: ingress.clone(),
     });
 
+    // PeerDNS first: its Hickory upstream is snapshotted from the underlay
+    // resolver *before* the osdns overlay points the OS at PeerDNS, so the
+    // external path can never recursively rediscover PeerDNS itself.
     let dns_bind = tunnet_core::dns::bind_addr(dns_cfg.magic_ip);
     let _dns_task = tunnet_core::dns::spawn(dns_bind, node.routes.clone(), dns_cfg.clone());
-    let dns_guard = match crate::system_dns::configure(dns_cfg.magic_ip, &dns_cfg.suffix) {
-        Ok(g) => Some(g),
-        Err(e) => {
-            tracing::warn!(?e, "PeerDNS system configuration skipped");
-            None
+
+    // One long-lived osdns manager for the agent lifetime (control-plane
+    // state, not per-query). Blocking work stays off the executor.
+    let dns_controller: Option<Arc<DnsController>> = {
+        let ifname = args.ifname.clone();
+        match tokio::task::spawn_blocking(move || DnsController::create(&ifname)).await {
+            Ok(Ok(controller)) => Some(controller),
+            Ok(Err(e)) => {
+                tracing::error!(error = %e, "osdns DNS integration unavailable");
+                None
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "osdns init task failed");
+                None
+            }
         }
     };
-    peer_dns_active.store(dns_guard.is_some(), std::sync::atomic::Ordering::Relaxed);
+    let dns_active = match dns_controller.clone() {
+        Some(dns) => {
+            let ifname = args.ifname.clone();
+            let magic_ip = dns_cfg.magic_ip;
+            let suffix = dns_cfg.suffix.clone();
+            let worker = dns.clone();
+            match tokio::task::spawn_blocking(move || worker.apply(&ifname, magic_ip, &suffix))
+                .await
+            {
+                // Read back reality: only claim PeerDNS active while the
+                // lease is actually held.
+                Ok(Ok(())) => dns.is_active(),
+                Ok(Err(e)) => {
+                    tracing::error!(error = %e, "PeerDNS OS configuration failed");
+                    false
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "PeerDNS configuration task failed");
+                    false
+                }
+            }
+        }
+        None => false,
+    };
+    peer_dns_active.store(dns_active, std::sync::atomic::Ordering::Relaxed);
 
     if !is_direct
         && let Some(snap) = tunnet_core::state::load_snapshot_cache(&node.paths)
@@ -537,7 +575,14 @@ pub async fn run(
         mtu,
     );
 
-    let initial = build_initial_plane(tun, dns_guard, outbound, &node, is_direct, network_id);
+    let initial = build_initial_plane(
+        tun,
+        dns_controller.clone(),
+        outbound,
+        &node,
+        is_direct,
+        network_id,
+    );
     spawn_controller(ControllerSpawn {
         handle: data_plane,
         cmd_rx,
@@ -550,6 +595,7 @@ pub async fn run(
             prefix,
             mtu,
             dns_cfg: dns_cfg.clone(),
+            dns: dns_controller.clone(),
             is_direct,
             network_id,
             underlay_hosts: underlay_hosts.clone(),
@@ -683,12 +729,23 @@ pub async fn run(
         }
     }
 
+    // Explicit restoration is the normal lifecycle; never rely on Drop alone.
+    async fn shutdown_dns(dns_controller: Option<Arc<DnsController>>) {
+        if let Some(dns) = dns_controller {
+            let result = tokio::task::spawn_blocking(move || dns.shutdown()).await;
+            if let Err(e) = result {
+                tracing::warn!(error = %e, "DNS shutdown task failed");
+            }
+        }
+    }
+
     #[cfg(unix)]
     {
         let _ = shutdown;
         let upgrade = crate::upgrade::UpgradeGuard::install()?;
         let reason = upgrade.wait().await;
         tracing::info!(?reason, "shutdown signal; draining");
+        shutdown_dns(dns_controller).await;
         node.shutdown().await;
         Ok(())
     }
@@ -701,6 +758,7 @@ pub async fn run(
             tokio::signal::ctrl_c().await?;
             tracing::info!("ctrl-c, shutting down");
         }
+        shutdown_dns(dns_controller).await;
         node.shutdown().await;
         Ok(())
     }

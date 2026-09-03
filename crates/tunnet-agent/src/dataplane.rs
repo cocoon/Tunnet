@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::ingress::IngressRegistry;
 use crate::metrics::AgentMetrics;
-use crate::system_dns::DnsGuard;
+use crate::system_dns::DnsController;
 use crate::system_routes::RouteReconciler;
 use crate::tun_io::{build_tun, run_outbound};
 
@@ -32,6 +32,7 @@ pub struct DataPlaneConfig {
     pub prefix: u8,
     pub mtu: u16,
     pub dns_cfg: DnsConfig,
+    pub dns: Option<Arc<DnsController>>,
     pub is_direct: bool,
     pub network_id: Uuid,
     pub underlay_hosts: Vec<Ipv4Addr>,
@@ -39,7 +40,7 @@ pub struct DataPlaneConfig {
 
 pub(crate) struct LivePlane {
     tun: Arc<AsyncDevice>,
-    dns_guard: Option<DnsGuard>,
+    dns: Option<Arc<DnsController>>,
     outbound: tokio::task::JoinHandle<()>,
 }
 
@@ -110,18 +111,14 @@ pub fn spawn_controller(spawn: ControllerSpawn) {
 
 pub fn build_initial_plane(
     tun: Arc<AsyncDevice>,
-    dns_guard: Option<DnsGuard>,
+    dns: Option<Arc<DnsController>>,
     outbound: tokio::task::JoinHandle<()>,
     node: &CoreNode,
     is_direct: bool,
     network_id: Uuid,
 ) -> LivePlane {
     let _ = (node, is_direct, network_id);
-    LivePlane {
-        tun,
-        dns_guard,
-        outbound,
-    }
+    LivePlane { tun, dns, outbound }
 }
 
 fn route_snapshot(
@@ -173,7 +170,16 @@ async fn bring_down(
         tracing::warn!(error = %e, "route teardown failed");
     }
     crate::forward::teardown_exit_nat();
-    drop(live.dns_guard);
+    // Explicit restoration is the normal lifecycle; osdns leaves externally
+    // modified state untouched instead of overwriting it.
+    if let Some(dns) = live.dns {
+        let result = tokio::task::spawn_blocking(move || dns.restore()).await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::error!(error = %e, "PeerDNS restore failed"),
+            Err(e) => tracing::warn!(error = %e, "PeerDNS restore task failed"),
+        }
+    }
     peer_dns_active.store(false, std::sync::atomic::Ordering::SeqCst);
     {
         let mut slot = tun_slot.write().await;
@@ -217,17 +223,35 @@ async fn bring_up(
         slot.generation = slot.generation.wrapping_add(1);
     }
 
-    let dns_guard = match crate::system_dns::configure(cfg.dns_cfg.magic_ip, &cfg.dns_cfg.suffix) {
-        Ok(g) => {
-            peer_dns_active.store(true, std::sync::atomic::Ordering::SeqCst);
-            Some(g)
+    // osdns is synchronous control-plane work; keep it off the executor.
+    // A failed apply leaves internal state honest: PeerDNS is reported
+    // inactive instead of claiming an overlay that was never installed.
+    let dns_active = match cfg.dns.clone() {
+        Some(dns) => {
+            let ifname = cfg.ifname.clone();
+            let magic_ip = cfg.dns_cfg.magic_ip;
+            let suffix = cfg.dns_cfg.suffix.clone();
+            let worker = dns.clone();
+            let result =
+                tokio::task::spawn_blocking(move || worker.update(&ifname, magic_ip, &suffix))
+                    .await;
+            match result {
+                // Read back reality: only claim PeerDNS active while the
+                // lease is actually held.
+                Ok(Ok(())) => dns.is_active(),
+                Ok(Err(e)) => {
+                    tracing::error!(error = %e, "PeerDNS OS configuration failed");
+                    false
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "PeerDNS configuration task failed");
+                    false
+                }
+            }
         }
-        Err(e) => {
-            tracing::warn!(?e, "PeerDNS system configuration skipped");
-            peer_dns_active.store(false, std::sync::atomic::Ordering::SeqCst);
-            None
-        }
+        None => false,
     };
+    peer_dns_active.store(dns_active, std::sync::atomic::Ordering::SeqCst);
 
     let (remote_subnets, device_profile, has_exit) =
         route_snapshot(node, cfg.is_direct, cfg.network_id);
@@ -265,7 +289,7 @@ async fn bring_up(
 
     *state.lock() = Some(LivePlane {
         tun,
-        dns_guard,
+        dns: cfg.dns.clone(),
         outbound,
     });
     handle.set_up(true);
