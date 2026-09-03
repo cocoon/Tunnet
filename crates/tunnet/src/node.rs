@@ -266,7 +266,15 @@ impl TunnetNode {
         }
         #[cfg(not(any(unix, windows)))]
         {
-            Self::bootstrap_coordinator(identity, persisted, paths, core_cfg, PathBuf::new()).await
+            Self::bootstrap_coordinator(
+                identity,
+                persisted,
+                paths,
+                core_cfg,
+                PathBuf::new(),
+                poll_secs,
+            )
+            .await
         }
     }
 
@@ -280,6 +288,8 @@ impl TunnetNode {
     ) -> Result<Self> {
         // SDK coordinator owns managed control explicitly when present.
         // Direct-only builds have no control transport at all.
+        #[cfg(not(feature = "managed"))]
+        let _ = poll_secs;
         #[cfg(feature = "managed")]
         let (node, pending) = CoreNode::bootstrap(identity, persisted, paths, core_cfg)
             .await

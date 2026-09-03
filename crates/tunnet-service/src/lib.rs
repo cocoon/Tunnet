@@ -60,7 +60,7 @@ pub fn is_admin() -> bool {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 const SERVICE_NAME: &str = "tunnet";
 #[cfg(target_os = "macos")]
 const LAUNCHD_LABEL: &str = "com.tunnet.agent";
