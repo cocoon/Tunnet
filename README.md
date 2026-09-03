@@ -104,6 +104,10 @@ curl -fsSL https://get.tunnet.io | sh
 irm https://get.tunnet.io | iex
 ```
 
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for development requirements, setup, testing, and contribution guidelines.
+
 ## License
 
 Tunnet uses component-level licensing:
