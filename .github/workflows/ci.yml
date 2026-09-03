@@ -39,3 +39,28 @@ jobs:
 
       - name: Clippy (SDK direct)
         run: cargo clippy -p tunnet --no-default-features --features direct -- -D warnings
+
+  test:
+    name: Rust tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-${{ matrix.os }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Run workspace tests
+        run: cargo nextest run --workspace --exclude tunnet-desktop --all-features
+
+      - name: Run workspace doctests
+        run: cargo test --workspace --exclude tunnet-desktop --all-features --doc
