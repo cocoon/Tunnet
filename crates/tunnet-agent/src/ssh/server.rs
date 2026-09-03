@@ -14,12 +14,12 @@ use tunnet_common::ws::ClientMsg;
 use tunnet_core::{AclEngine, ConnPool, RoutingTable, SignedClient};
 use uuid::Uuid;
 
-use super::SshSessionRegistry;
 use super::pty::{PtyRequest, PtySession, spawn_pty};
 use super::sftp::SftpSession;
 use super::tee::{
     RecorderTarget, RecordingTee, make_meta, recorder_unavailable, resolve_recorder_target,
 };
+use crate::actors::ssh_registry::{RegisterSession, SessionEnded, SshRegistryActor};
 use crate::recorder::RecordingStore;
 
 type PtyInTx = std::sync::mpsc::Sender<Vec<u8>>;
@@ -31,7 +31,7 @@ type PtyResizeMap = HashMap<ChannelId, PtyResizeTx>;
 pub struct SshServeDeps {
     pub routes: RoutingTable,
     pub acl: AclEngine,
-    pub sessions: SshSessionRegistry,
+    pub sessions: kameo::actor::ActorRef<SshRegistryActor>,
     pub cp_tx: Option<tokio::sync::mpsc::Sender<ClientMsg>>,
     pub pool: ConnPool,
     pub store: Option<Arc<RecordingStore>>,
@@ -278,12 +278,18 @@ impl SshHandler {
             master,
         } = pty;
 
-        self.deps.sessions.insert(
-            session_id,
-            self.peer_hex.clone(),
-            self.username.clone(),
-            child_killer.clone_killer(),
-        );
+        // Session registry is actor-owned; registration is a bounded tell.
+        let _ = self
+            .deps
+            .sessions
+            .tell(RegisterSession {
+                id: session_id,
+                peer_hex: self.peer_hex.clone(),
+                target_user: self.username.clone(),
+                killer: child_killer.clone_killer(),
+            })
+            .send()
+            .await;
 
         let (pty_out_tx, mut pty_out_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
         let (pty_in_tx, pty_in_rx) = std::sync::mpsc::channel::<Vec<u8>>();
@@ -364,8 +370,10 @@ impl SshHandler {
 
             pty_in.lock().remove(&channel);
             pty_resize.lock().remove(&channel);
-            sessions.remove(&session_id);
-            let killed = sessions.take_killed(&session_id);
+            let killed = sessions
+                .ask(SessionEnded { id: session_id })
+                .await
+                .unwrap_or(false);
             let _ = child_killer.kill();
             let duration_ms = started.elapsed().as_millis() as u64;
 

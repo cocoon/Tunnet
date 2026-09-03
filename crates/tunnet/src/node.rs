@@ -120,6 +120,7 @@ enum NodeInner {
         listener_rx: Mutex<Option<mpsc::Receiver<InboundConnection>>>,
         _sock_path: PathBuf,
         _router: iroh::protocol::Router,
+        _control_driver: Option<tokio::task::JoinHandle<()>>,
     },
     #[cfg(any(unix, windows))]
     Client {
@@ -197,7 +198,6 @@ impl TunnetNode {
         let poll_secs = cfg.poll_secs.unwrap_or(30);
         let core_cfg = CoreNodeConfig {
             hostname,
-            poll_secs,
             kind: "sdk",
             agent_version: env!("CARGO_PKG_VERSION"),
             advertise_datagram_alpn: false,
@@ -211,6 +211,7 @@ impl TunnetNode {
                 paths,
                 core_cfg,
                 PathBuf::new(),
+                poll_secs,
             )
             .await;
         }
@@ -248,6 +249,7 @@ impl TunnetNode {
                         paths,
                         core_cfg,
                         sock_path.clone(),
+                        poll_secs,
                     )
                     .await?;
                     if let NodeInner::Coordinator { node: core, .. } = &*node.inner {
@@ -274,10 +276,28 @@ impl TunnetNode {
         paths: StatePaths,
         core_cfg: CoreNodeConfig,
         sock_path: PathBuf,
+        poll_secs: u64,
     ) -> Result<Self> {
-        let node = CoreNode::bootstrap(identity, persisted, paths, core_cfg)
+        let (node, pending) = CoreNode::bootstrap(identity, persisted, paths, core_cfg)
             .await
             .map_err(Error::from_anyhow)?;
+        let control_driver = if let Some(pending) = pending {
+            let ctx = tunnet_core::sync::ManagedDriverCtx::from_node(
+                &node,
+                node.persisted
+                    .primary_network_id()
+                    .unwrap_or(uuid::Uuid::nil()),
+                node.persisted
+                    .primary_network_name()
+                    .unwrap_or("tunnet")
+                    .to_string(),
+                env!("CARGO_PKG_VERSION"),
+                poll_secs,
+            );
+            Some(tunnet_core::sync::spawn_managed_driver(pending, ctx))
+        } else {
+            None
+        };
         let node = Arc::new(node);
         let (tx, rx) = mpsc::channel(64);
         let router = spawn_stream_acceptor(node.clone(), tx);
@@ -287,6 +307,7 @@ impl TunnetNode {
                 listener_rx: Mutex::new(Some(rx)),
                 _sock_path: sock_path,
                 _router: router,
+                _control_driver: control_driver,
             }),
         })
     }

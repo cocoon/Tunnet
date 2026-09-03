@@ -15,3 +15,7 @@
 ## Rust Idioms
 
 * **Use Rust’s type system instead of manual encodings.** Prefer enums, newtypes, and typed variants over `u8`/`bool` tags, magic constants, or structs that manually emulate enums. Make invalid states unrepresentable whenever practical.
+
+## Tooling
+
+* **Rust test** prefer nextest for testing instead of cargo test

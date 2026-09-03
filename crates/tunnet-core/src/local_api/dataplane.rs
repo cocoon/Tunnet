@@ -1,32 +1,38 @@
-//! Handle for pausing / resuming the agent data plane (TUN + DNS + routes).
+//! Kameo-free control surface for pausing / resuming the agent data plane.
+//!
+//! HTTP handlers receive a narrow [`DataPlaneControl`] interface. The agent
+//! implements it with Kameo `ReplyRecipient`s; frequently-read status is served
+//! from a cheap atomic snapshot, never via an actor round-trip.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::sync::{mpsc, oneshot};
+use async_trait::async_trait;
 
-pub enum DataPlaneCmd {
-    Up(oneshot::Sender<Result<(), String>>),
-    Down(oneshot::Sender<Result<(), String>>),
+/// Narrow control capability used by the Local Management API.
+///
+/// Implemented in `tunnet-agent` on top of the `DataPlaneActor`. Kept in core
+/// as a plain async trait so core never depends on Kameo.
+#[async_trait]
+pub trait DataPlaneControl: Send + Sync {
+    fn is_up(&self) -> bool;
+    async fn bring_up(&self) -> Result<(), String>;
+    async fn bring_down(&self) -> Result<(), String>;
 }
 
-/// Cloneable control surface used by the Local Management API server.
-#[derive(Clone)]
-pub struct DataPlaneHandle {
+/// Cheap shared read model for dataplane status.
+///
+/// The `DataPlaneActor` is the only writer; HTTP GETs read this directly.
+#[derive(Clone, Default)]
+pub struct DataPlaneStatusSnapshot {
     up: Arc<AtomicBool>,
-    tx: mpsc::Sender<DataPlaneCmd>,
 }
 
-impl DataPlaneHandle {
-    pub fn new(buffer: usize) -> (Self, mpsc::Receiver<DataPlaneCmd>) {
-        let (tx, rx) = mpsc::channel(buffer);
-        (
-            Self {
-                up: Arc::new(AtomicBool::new(true)),
-                tx,
-            },
-            rx,
-        )
+impl DataPlaneStatusSnapshot {
+    pub fn new(up: bool) -> Self {
+        Self {
+            up: Arc::new(AtomicBool::new(up)),
+        }
     }
 
     pub fn is_up(&self) -> bool {
@@ -36,42 +42,4 @@ impl DataPlaneHandle {
     pub fn set_up(&self, v: bool) {
         self.up.store(v, Ordering::SeqCst);
     }
-
-    pub async fn bring_up(&self) -> Result<(), String> {
-        let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(DataPlaneCmd::Up(tx))
-            .await
-            .map_err(|_| "data plane controller stopped".to_string())?;
-        rx.await
-            .map_err(|_| "data plane controller dropped reply".to_string())?
-    }
-
-    pub async fn bring_down(&self) -> Result<(), String> {
-        let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(DataPlaneCmd::Down(tx))
-            .await
-            .map_err(|_| "data plane controller stopped".to_string())?;
-        rx.await
-            .map_err(|_| "data plane controller dropped reply".to_string())?
-    }
-
-    /// Agent-side: drain commands (used by the runtime controller loop).
-    pub(crate) fn take_cmd(cmd: DataPlaneCmd) -> (bool, oneshot::Sender<Result<(), String>>) {
-        match cmd {
-            DataPlaneCmd::Up(tx) => (true, tx),
-            DataPlaneCmd::Down(tx) => (false, tx),
-        }
-    }
-}
-
-/// Re-export cmd receiver type for the agent runtime.
-pub type DataPlaneCmdRx = mpsc::Receiver<DataPlaneCmd>;
-
-pub async fn recv_cmd(
-    rx: &mut DataPlaneCmdRx,
-) -> Option<(bool, oneshot::Sender<Result<(), String>>)> {
-    let cmd = rx.recv().await?;
-    Some(DataPlaneHandle::take_cmd(cmd))
 }

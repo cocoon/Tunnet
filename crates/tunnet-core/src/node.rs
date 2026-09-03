@@ -49,51 +49,13 @@ use crate::state::{PersistedState, StatePaths};
 #[cfg(any(feature = "managed", feature = "direct"))]
 use crate::stream::TUNNEL_STREAM_ALPN;
 #[cfg(feature = "managed")]
-use crate::sync::{
-    apply_membership, membership_for_network, spawn_poll_fallback, spawn_ws_processor,
-};
+use crate::sync::{apply_membership, membership_for_network};
 #[cfg(feature = "tunnel")]
 use crate::tunnel::TunnelManager;
 #[cfg(feature = "direct")]
 use ed25519_dalek::SigningKey;
 #[cfg(feature = "direct")]
 use iroh_docs::protocol::Docs;
-
-/// Callback when CP requests killing an SSH session (`session_id`).
-pub type KillSshHook = Arc<dyn Fn(&str) + Send + Sync>;
-
-pub type PostureConfigUpdateHook =
-    Arc<dyn Fn(u64, Vec<String>, Vec<tunnet_common::posture::CustomScriptConfig>) + Send + Sync>;
-
-pub type PostureStatusHook = Arc<
-    dyn Fn(Vec<tunnet_common::posture::PostureEvalResult>, String, Option<u64>, Vec<String>)
-        + Send
-        + Sync,
->;
-
-/// Optional hooks for control-plane posture WebSocket messages.
-#[derive(Clone, Default)]
-pub struct PostureHooks {
-    pub on_recheck: Option<Arc<dyn Fn() + Send + Sync>>,
-    pub on_config_update: Option<PostureConfigUpdateHook>,
-    pub on_status: Option<PostureStatusHook>,
-}
-
-/// Called when remote org agent policy arrives (snapshot or hot push).
-/// Returns the merged effective config for reporting to the control plane.
-pub type AgentPolicyHook = Arc<
-    dyn Fn(tunnet_common::RemoteAgentPolicy) -> tunnet_common::EffectiveAgentConfig + Send + Sync,
->;
-
-pub type MembershipAppliedHook =
-    Arc<dyn Fn(&tunnet_common::NetworkMembershipSnapshot) + Send + Sync>;
-
-#[derive(Clone, Default)]
-pub struct AgentConfigHooks {
-    pub on_remote_policy: Option<AgentPolicyHook>,
-    /// Fired after routes/ACL are updated from a membership snapshot.
-    pub on_membership_applied: Option<MembershipAppliedHook>,
-}
 
 /// Per-Direct-network runtime (docs + firewall + state).
 #[cfg(feature = "direct")]
@@ -111,17 +73,10 @@ pub struct DirectNetworkRuntime {
 pub struct CoreNodeConfig {
     pub hostname: String,
     pub agent_version: &'static str,
-    pub poll_secs: u64,
     pub advertise_datagram_alpn: bool,
     /// Advertise `tunnet/recording/1` (this node can receive session recordings).
     pub advertise_recording_alpn: bool,
     pub kind: &'static str, // "agent" | "sdk"
-    /// Optional hook when CP requests killing an SSH session (session_id string).
-    pub on_kill_ssh: Option<KillSshHook>,
-    /// Optional hooks for posture control-plane messages.
-    pub posture_hooks: Option<PostureHooks>,
-    /// Optional hooks for remote agent policy merge / report.
-    pub agent_config_hooks: Option<AgentConfigHooks>,
     /// Shared flag updated by posture status; gates ACL rules with `srcPosture`.
     pub src_posture_ok: Option<Arc<arc_swap::ArcSwap<bool>>>,
     /// Endpoint connectivity (relay preset, DHT, mDNS).
@@ -140,13 +95,9 @@ impl Default for CoreNodeConfig {
         Self {
             hostname: "tunnet-node".into(),
             agent_version: env!("CARGO_PKG_VERSION"),
-            poll_secs: 30,
             advertise_datagram_alpn: false,
             advertise_recording_alpn: false,
             kind: "sdk",
-            on_kill_ssh: None,
-            posture_hooks: None,
-            agent_config_hooks: None,
             src_posture_ok: None,
             #[cfg(any(feature = "managed", feature = "direct"))]
             connectivity: ConnectivityOptions::default(),
@@ -278,12 +229,17 @@ impl CoreNode {
     }
 
     /// Bootstrap based on persisted mode.
+    ///
+    /// Returns the node plus, in Managed mode, an unowned [`PendingControl`]
+    /// transport. No background task is spawned: the caller owns control
+    /// lifecycle explicitly (agent `ControlPlaneActor` or an explicit
+    /// `ManagedControlDriver` for SDK/kube-node).
     pub async fn bootstrap(
         identity: AgentIdentity,
         persisted: PersistedState,
         paths: StatePaths,
         cfg: CoreNodeConfig,
-    ) -> anyhow::Result<Self> {
+    ) -> anyhow::Result<(Self, Option<crate::ws_client::PendingControl>)> {
         match &persisted {
             PersistedState::Managed(m) => {
                 #[cfg(feature = "managed")]
@@ -322,7 +278,7 @@ impl CoreNode {
         managed: ManagedState,
         paths: StatePaths,
         cfg: CoreNodeConfig,
-    ) -> anyhow::Result<Self> {
+    ) -> anyhow::Result<(Self, Option<crate::ws_client::PendingControl>)> {
         let alpns = build_alpns(&cfg, false, cfg.enable_gossip);
 
         let my_id_hex = identity.endpoint_id_hex();
@@ -446,49 +402,18 @@ impl CoreNode {
         .await
         .context("open send manager")?;
 
-        let ws = crate::ws_client::spawn(
+        // Unowned transport: no task spawned. The owner runs
+        // `PendingControl::transport.run(...)` explicitly.
+        let pending = crate::ws_client::PendingControl::new(
             managed.control_url.clone(),
             my_id_hex.clone(),
             identity.signing_key.clone(),
         );
-        let control_link = Some(ws.link.clone());
+        let control_link = Some(pending.link());
         #[cfg(feature = "serve")]
-        serves.set_client_tx(ws.tx.clone());
+        serves.set_client_tx(pending.client_tx.clone());
         #[cfg(feature = "send")]
-        send.set_client_tx(ws.tx.clone());
-        spawn_ws_processor(
-            ws,
-            routes.clone(),
-            acl.clone(),
-            version.clone(),
-            paths.clone_paths(),
-            managed.network_id,
-            my_id_hex.clone(),
-            cfg.hostname.clone(),
-            cfg.agent_version,
-            Some(signed.clone()),
-            #[cfg(feature = "serve")]
-            Some(serves.clone()),
-            #[cfg(feature = "tunnel")]
-            Some(tunnels.clone()),
-            #[cfg(feature = "send")]
-            Some(send.clone()),
-            cfg.on_kill_ssh.clone(),
-            cfg.posture_hooks.clone(),
-            cfg.agent_config_hooks.clone(),
-            Some(tunnel_pool.clone()),
-        );
-        spawn_poll_fallback(
-            signed.clone(),
-            version.clone(),
-            cfg.poll_secs,
-            routes.clone(),
-            acl.clone(),
-            managed.network_id,
-            my_id_hex.clone(),
-            cfg.hostname.clone(),
-            Some(paths.dir.clone()),
-        );
+        send.set_client_tx(pending.client_tx.clone());
 
         let _ = persisted;
         pool.set_keep_alive(cfg.keep_alive);
@@ -500,36 +425,39 @@ impl CoreNode {
             None
         };
 
-        Ok(Self {
-            identity,
-            persisted: PersistedState::Managed(managed),
-            endpoint,
-            pool,
-            tunnel_pool,
-            effective_config,
-            routes,
-            acl,
-            version,
-            self_ipv4: membership.assigned_ipv4,
-            paths,
-            #[cfg(feature = "serve")]
-            serves,
-            #[cfg(feature = "tunnel")]
-            tunnels,
-            #[cfg(feature = "send")]
-            send,
-            signed: Some(signed),
-            control_link,
-            #[cfg(feature = "direct")]
-            direct_auth: None,
-            #[cfg(feature = "direct")]
-            direct: HashMap::new(),
-            gossip,
-            #[cfg(feature = "direct")]
-            docs_engine: None,
-            #[cfg(feature = "direct")]
-            presence_tables: Arc::new(Mutex::new(HashMap::new())),
-        })
+        Ok((
+            Self {
+                identity,
+                persisted: PersistedState::Managed(managed),
+                endpoint,
+                pool,
+                tunnel_pool,
+                effective_config,
+                routes,
+                acl,
+                version,
+                self_ipv4: membership.assigned_ipv4,
+                paths,
+                #[cfg(feature = "serve")]
+                serves,
+                #[cfg(feature = "tunnel")]
+                tunnels,
+                #[cfg(feature = "send")]
+                send,
+                signed: Some(signed),
+                control_link,
+                #[cfg(feature = "direct")]
+                direct_auth: None,
+                #[cfg(feature = "direct")]
+                direct: HashMap::new(),
+                gossip,
+                #[cfg(feature = "direct")]
+                docs_engine: None,
+                #[cfg(feature = "direct")]
+                presence_tables: Arc::new(Mutex::new(HashMap::new())),
+            },
+            Some(pending),
+        ))
     }
 
     #[cfg(feature = "direct")]
@@ -538,7 +466,7 @@ impl CoreNode {
         persisted: PersistedState,
         paths: StatePaths,
         cfg: CoreNodeConfig,
-    ) -> anyhow::Result<Self> {
+    ) -> anyhow::Result<(Self, Option<crate::ws_client::PendingControl>)> {
         let networks = persisted.direct_networks().to_vec();
         if networks.is_empty() {
             anyhow::bail!("no Direct networks joined");
@@ -725,36 +653,39 @@ impl CoreNode {
         tracing::info!(%contact, networks = direct_runtimes.len(), "direct contact id");
 
         let _ = cfg.agent_version;
-        Ok(Self {
-            identity,
-            persisted: PersistedState::Direct {
-                networks: persisted_networks,
+        Ok((
+            Self {
+                identity,
+                persisted: PersistedState::Direct {
+                    networks: persisted_networks,
+                },
+                endpoint,
+                pool,
+                tunnel_pool,
+                effective_config,
+                routes,
+                acl,
+                version,
+                self_ipv4,
+                paths,
+                #[cfg(feature = "serve")]
+                serves,
+                #[cfg(feature = "tunnel")]
+                tunnels,
+                #[cfg(feature = "send")]
+                send,
+                #[cfg(feature = "managed")]
+                signed: None,
+                #[cfg(feature = "managed")]
+                control_link: None,
+                direct_auth: Some(auth),
+                direct: direct_runtimes,
+                gossip: Some(gossip),
+                docs_engine: Some(docs_engine),
+                presence_tables: Arc::new(Mutex::new(HashMap::new())),
             },
-            endpoint,
-            pool,
-            tunnel_pool,
-            effective_config,
-            routes,
-            acl,
-            version,
-            self_ipv4,
-            paths,
-            #[cfg(feature = "serve")]
-            serves,
-            #[cfg(feature = "tunnel")]
-            tunnels,
-            #[cfg(feature = "send")]
-            send,
-            #[cfg(feature = "managed")]
-            signed: None,
-            #[cfg(feature = "managed")]
-            control_link: None,
-            direct_auth: Some(auth),
-            direct: direct_runtimes,
-            gossip: Some(gossip),
-            docs_engine: Some(docs_engine),
-            presence_tables: Arc::new(Mutex::new(HashMap::new())),
-        })
+            None,
+        ))
     }
 
     /// Shared Gossip for presence / service-relay topics.

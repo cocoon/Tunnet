@@ -8,7 +8,7 @@ use tunnet_core::direct::{AuthCache, FirewallEngine, SpoofTracker};
 use tunnet_core::{AclEngine, RoutingTable};
 use uuid::Uuid;
 
-use crate::dataplane::TunSlot;
+use crate::actors::dataplane::PublishedPlane;
 use crate::ingress::IngressRegistry;
 use crate::metrics::AgentMetrics;
 use crate::tun_io::{InboundDeps, serve_tunnel_connection};
@@ -21,7 +21,7 @@ use crate::tun_io::{InboundDeps, serve_tunnel_connection};
 #[allow(clippy::too_many_arguments)]
 pub fn install_dialer_datagram_pump(
     pool: &ConnPool,
-    tun_slot: TunSlot,
+    tun_slot: PublishedPlane,
     routes: RoutingTable,
     acl: AclEngine,
     firewalls: HashMap<Uuid, FirewallEngine>,
@@ -42,7 +42,7 @@ pub fn install_dialer_datagram_pump(
         let pool = pool_for_hook.clone();
         let ingress = ingress.clone();
         ingress.force_spawn(peer, async move {
-            if tun_slot.read().await.device.is_none() {
+            if tun_slot.load_full().is_none() {
                 return;
             }
             serve_tunnel_connection(InboundDeps {

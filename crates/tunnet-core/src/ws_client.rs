@@ -139,35 +139,83 @@ impl ControlPlaneLink {
     }
 }
 
-pub struct WsChannel {
-    pub rx: tokio::sync::mpsc::Receiver<ServerMsg>,
-    pub tx: tokio::sync::mpsc::Sender<ClientMsg>,
+/// Kameo-free control transport.
+///
+/// Owns reconnect/auth/read/write and exposes bounded `ClientMsg` /
+/// `ServerMsg` channels. Exposes an owned `run` future instead of secretly
+/// detaching itself, so the agent `ControlPlaneActor` can own its lifecycle.
+pub struct ControlTransport {
+    pub control_url: String,
+    pub endpoint_id: String,
+    pub signing_key: SigningKey,
     pub link: ControlPlaneLink,
 }
 
-pub fn spawn(control_url: String, endpoint_id: String, signing_key: SigningKey) -> WsChannel {
-    let link = ControlPlaneLink::new(control_url.clone());
-    let (server_tx, server_rx) = tokio::sync::mpsc::channel::<ServerMsg>(64);
-    let (client_tx, client_rx) = tokio::sync::mpsc::channel::<ClientMsg>(64);
+/// Unowned control transport + bounded channels, returned by
+/// `CoreNode::bootstrap`. No task is spawned; the owner (agent
+/// `ControlPlaneActor` or an explicit `ManagedControlDriver`) runs it.
+pub struct PendingControl {
+    pub transport: ControlTransport,
+    pub server_tx: tokio::sync::mpsc::Sender<ServerMsg>,
+    pub server_rx: tokio::sync::mpsc::Receiver<ServerMsg>,
+    pub client_tx: tokio::sync::mpsc::Sender<ClientMsg>,
+    pub client_rx: tokio::sync::mpsc::Receiver<ClientMsg>,
+}
 
-    let link_task = link.clone();
-    tokio::spawn(async move {
-        ensure_rustls_crypto_provider();
-        run(
+impl PendingControl {
+    pub fn new(control_url: String, endpoint_id: String, signing_key: SigningKey) -> Self {
+        let transport = ControlTransport::new(control_url, endpoint_id, signing_key);
+        let (server_tx, server_rx) = tokio::sync::mpsc::channel::<ServerMsg>(128);
+        let (client_tx, client_rx) = tokio::sync::mpsc::channel::<ClientMsg>(128);
+        Self {
+            transport,
+            server_tx,
+            server_rx,
+            client_tx,
+            client_rx,
+        }
+    }
+
+    pub fn link(&self) -> ControlPlaneLink {
+        self.transport.link()
+    }
+}
+
+impl ControlTransport {
+    pub fn new(control_url: String, endpoint_id: String, signing_key: SigningKey) -> Self {
+        let link = ControlPlaneLink::new(control_url.clone());
+        Self {
             control_url,
             endpoint_id,
             signing_key,
+            link,
+        }
+    }
+
+    pub fn link(&self) -> ControlPlaneLink {
+        self.link.clone()
+    }
+
+    /// Run the reconnect loop until `client_rx` closes AND the task is
+    /// cancelled via `cancel`. Normal disconnects reconnect with backoff;
+    /// they are operational state, never actor failures.
+    pub async fn run(
+        self,
+        server_tx: tokio::sync::mpsc::Sender<ServerMsg>,
+        mut client_rx: tokio::sync::mpsc::Receiver<ClientMsg>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) {
+        ensure_rustls_crypto_provider();
+        run(
+            self.control_url,
+            self.endpoint_id,
+            self.signing_key,
             server_tx,
-            client_rx,
-            link_task,
+            &mut client_rx,
+            self.link,
+            cancel,
         )
         .await;
-    });
-
-    WsChannel {
-        rx: server_rx,
-        tx: client_tx,
-        link,
     }
 }
 
@@ -230,16 +278,29 @@ async fn run(
     endpoint_id: String,
     signing_key: SigningKey,
     server_tx: tokio::sync::mpsc::Sender<ServerMsg>,
-    mut client_rx: tokio::sync::mpsc::Receiver<ClientMsg>,
+    client_rx: &mut tokio::sync::mpsc::Receiver<ClientMsg>,
     link: ControlPlaneLink,
+    cancel: tokio_util::sync::CancellationToken,
 ) {
     let mut backoff = MIN_BACKOFF;
     let mut outbound_closed = false;
     tracing::info!(url = %control_url, "ws reconnect loop starting");
 
     loop {
+        if cancel.is_cancelled() {
+            link.mark_disconnected(Some("control transport shutdown".into()));
+            break;
+        }
         let mut connection_refused = false;
-        match connect_once(&control_url, &endpoint_id, &signing_key).await {
+        let connect_res = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                link.mark_disconnected(Some("control transport shutdown".into()));
+                return;
+            }
+            res = connect_once(&control_url, &endpoint_id, &signing_key) => res,
+        };
+        match connect_res {
             Ok(mut ws) => {
                 backoff = MIN_BACKOFF;
                 link.mark_connected();
@@ -299,6 +360,9 @@ async fn run(
                                 break Some("keepalive ping failed".to_string());
                             }
                         }
+                        _ = cancel.cancelled() => {
+                            break Some("control transport shutdown".to_string());
+                        }
                     }
                 };
                 link.mark_disconnected(disconnect_reason);
@@ -327,7 +391,14 @@ async fn run(
         };
 
         let wall_before = Timestamp::now();
-        tokio::time::sleep(wait).await;
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                link.mark_disconnected(Some("control transport shutdown".into()));
+                return;
+            }
+            _ = tokio::time::sleep(wait) => {}
+        }
 
         if std::time::Duration::try_from(Timestamp::now().duration_since(wall_before))
             .is_ok_and(|elapsed| elapsed > wait + RESUME_OVERSHOOT)
@@ -377,4 +448,55 @@ async fn connect_once(
         .await
         .context("websocket connect timed out")??;
     Ok(ws)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A dead control plane is operational state, not failure: the transport
+    /// must keep backing off (never return/terminate on its own) and must
+    /// stop promptly on cancellation.
+    #[tokio::test]
+    async fn disconnect_is_operational_state_not_failure() {
+        let key = SigningKey::generate(&mut rand::rng());
+        let pending = PendingControl::new("http://127.0.0.1:9".into(), "aa".into(), key);
+        let link = pending.link();
+        let PendingControl {
+            transport,
+            server_tx,
+            server_rx,
+            client_rx,
+            ..
+        } = pending;
+        let _ = server_rx;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let stop = cancel.clone();
+        let handle = tokio::spawn(async move {
+            transport.run(server_tx, client_rx, stop).await;
+        });
+        // Unreachable control plane (refused or connect timeout): the
+        // transport records the error and backs off instead of terminating.
+        tokio::time::timeout(Duration::from_secs(25), async {
+            loop {
+                let snap = link.snapshot();
+                if !snap.connected && snap.last_error.is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("transport records connect failure");
+        assert!(
+            !handle.is_finished(),
+            "transport must not terminate on connect failure"
+        );
+        // Cancellation stops the reconnect loop promptly.
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("transport stops on cancel")
+            .expect("transport task");
+    }
 }

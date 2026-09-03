@@ -11,7 +11,7 @@ use crate::serve::ServeManager;
 use crate::tunnel::TunnelManager;
 
 use super::bootstrap::BootstrapOps;
-use super::dataplane::DataPlaneHandle;
+use super::dataplane::DataPlaneControl;
 
 /// Live agent state shared with the Local Management API server.
 pub struct LocalApiState {
@@ -28,7 +28,7 @@ pub struct LocalApiState {
     pub serves: ServeManager,
     pub tunnels: TunnelManager,
     pub send: SendManager,
-    pub data_plane: DataPlaneHandle,
+    pub data_plane: Arc<dyn DataPlaneControl>,
     pub bootstrap: Arc<dyn BootstrapOps>,
     pub events: tokio::sync::broadcast::Sender<LocalEvent>,
 }

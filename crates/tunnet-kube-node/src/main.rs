@@ -191,24 +191,34 @@ async fn main() -> anyhow::Result<()> {
     };
     spawn_health_server(cli.health_bind.clone(), health);
 
-    let node = Arc::new(
-        CoreNode::bootstrap(
-            identity,
-            persisted,
-            paths,
-            CoreNodeConfig {
-                hostname,
-                poll_secs: 30,
-                kind,
-                agent_version: env!("CARGO_PKG_VERSION"),
-                advertise_datagram_alpn: false,
-                connectivity: tunnet_core::direct::ConnectivityOptions::managed_default(),
-                ..Default::default()
-            },
-        )
-        .await
-        .context("bootstrap CoreNode")?,
-    );
+    let (node, pending) = CoreNode::bootstrap(
+        identity,
+        persisted,
+        paths,
+        CoreNodeConfig {
+            hostname: hostname.clone(),
+            kind,
+            agent_version: env!("CARGO_PKG_VERSION"),
+            advertise_datagram_alpn: false,
+            connectivity: tunnet_core::direct::ConnectivityOptions::managed_default(),
+            ..Default::default()
+        },
+    )
+    .await
+    .context("bootstrap CoreNode")?;
+    let _control_driver = pending.map(|pending| {
+        let ctx = tunnet_core::sync::ManagedDriverCtx::from_node(
+            &node,
+            node.persisted
+                .primary_network_id()
+                .unwrap_or(uuid::Uuid::nil()),
+            hostname,
+            env!("CARGO_PKG_VERSION"),
+            30,
+        );
+        tunnet_core::sync::spawn_managed_driver(pending, ctx)
+    });
+    let node = Arc::new(node);
 
     let stream_handler = match &mode {
         Mode::Connector(_) => stream_handler(node.routes.clone()),

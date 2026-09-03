@@ -1,4 +1,5 @@
 mod accept;
+mod actors;
 mod api_bootstrap;
 mod auto_update;
 mod cli;
@@ -16,7 +17,6 @@ mod ingress;
 mod magic_dns;
 mod metrics;
 mod policy_api;
-mod posture;
 mod qos;
 mod recorder;
 mod runtime;

@@ -20,7 +20,7 @@ use tunnet_core::stream::{StreamHandler, StreamProtocolHandler, TUNNEL_STREAM_AL
 use tunnet_core::{AclEngine, ConnPool, RoutingTable, SendManager, SignedClient};
 use uuid::Uuid;
 
-use crate::dataplane::TunSlot;
+use crate::actors::dataplane::PublishedPlane;
 use crate::ingress::IngressRegistry;
 use crate::metrics::AgentMetrics;
 use crate::recorder::{RecordingStore, serve_recording_connection};
@@ -31,7 +31,7 @@ pub struct AcceptDeps {
     pub routes: RoutingTable,
     pub acl: AclEngine,
     pub metrics: AgentMetrics,
-    pub tun: TunSlot,
+    pub tun: PublishedPlane,
     pub stream_handler: StreamHandler,
     pub cp_tx: Option<tokio::sync::mpsc::Sender<ClientMsg>>,
     pub recording_store: Option<Arc<RecordingStore>>,
@@ -112,7 +112,7 @@ pub fn spawn(deps: AcceptDeps) -> Router {
 
 #[derive(Clone)]
 struct TunnelHandler {
-    tun: TunSlot,
+    tun: PublishedPlane,
     routes: RoutingTable,
     acl: AclEngine,
     firewalls: HashMap<Uuid, FirewallEngine>,
@@ -131,14 +131,13 @@ impl fmt::Debug for TunnelHandler {
 
 impl ProtocolHandler for TunnelHandler {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
-        if self.tun.read().await.device.is_none() {
+        if self.tun.load_full().is_none() {
             tracing::debug!("tunnel ALPN ignored (data plane down)");
             conn.close(1u32.into(), b"dataplane_down");
             return Ok(());
         }
         let peer = conn.remote_id();
 
-        // Install into pool first so outbound send and ingress share one QUIC conn.
         if !self.dgram_pool.adopt(peer, conn.clone()).await {
             tracing::debug!(%peer, "accept lost tie-break; closing");
             conn.close(0u32.into(), b"tie_break");

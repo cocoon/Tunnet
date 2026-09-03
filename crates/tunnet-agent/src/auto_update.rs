@@ -1,9 +1,8 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use tunnet_core::{StatePaths, TunnetConfig};
+use tunnet_core::StatePaths;
 
 #[cfg(not(windows))]
 use crate::cmds_update::apply_service_reload;
@@ -219,53 +218,6 @@ pub fn stage_pending(
             boots: 0,
         },
     )
-}
-
-pub fn spawn(
-    paths: StatePaths,
-    store: Option<tunnet_core::EffectiveConfigStore>,
-    updater: Arc<crate::core_update::CoreUpdater>,
-) {
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(60)).await;
-        loop {
-            let (enabled, interval_hours) = if let Some(store) = &store {
-                let effective = store.load();
-                (
-                    effective.effective.auto_update_enabled.value,
-                    effective.effective.auto_update_check_interval_hours.value,
-                )
-            } else {
-                let config = TunnetConfig::try_load(&paths)
-                    .ok()
-                    .flatten()
-                    .unwrap_or_default();
-                (
-                    config.update.enabled.unwrap_or(false),
-                    config.update.check_interval_hours.unwrap_or(6),
-                )
-            };
-            if enabled && !paths.update_pending_file().exists() {
-                match updater.check().await {
-                    Ok(status)
-                        if status.phase == tunnet_common::local_api::CoreUpdatePhase::Available =>
-                    {
-                        if let Err(error) = updater.stage_and_activate(false).await {
-                            tracing::warn!(?error, "automatic Core update failed");
-                        }
-                    }
-                    Err(error) => tracing::warn!(?error, "automatic Core update check failed"),
-                    _ => {}
-                }
-            }
-            tokio::time::sleep(Duration::from_secs(if enabled {
-                interval_hours.max(1) * 3600
-            } else {
-                3600
-            }))
-            .await;
-        }
-    });
 }
 
 #[cfg(test)]

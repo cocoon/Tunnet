@@ -81,6 +81,7 @@ impl PresenceTable {
     }
 }
 
+#[derive(Clone)]
 pub struct PresenceConfig {
     pub gossip: Gossip,
     pub network_id: Uuid,

@@ -1995,6 +1995,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
+name = "downcast-rs"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "117240f60069e65410b3ae1bb213295bd828f707b5bec6596a1afc8793ce0cbc"
+
+[[package]]
 name = "dpi"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4660,6 +4666,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "kameo"
+version = "0.22.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cbab7323ed30490812f43ef6416a9e21bb150e9633e451ed124ca276b1ca82a"
+dependencies = [
+ "downcast-rs 2.0.2",
+ "dyn-clone",
+ "futures",
+ "kameo_macros",
+ "rmp-serde",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "kameo_macros"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7566055976eb86ee8e8fbafa0fbdad985c5d7c3f4eed04fc11bb495f71e3856"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "keccak"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6891,7 +6925,7 @@ checksum = "b4a596a2b3d2752d94f51fac2d4a96737b8705dddd311a32b9af47211f08671e"
 dependencies = [
  "anyhow",
  "bitflags 1.3.2",
- "downcast-rs",
+ "downcast-rs 1.2.1",
  "filedescriptor",
  "lazy_static",
  "libc",
@@ -7648,6 +7682,25 @@ dependencies = [
  "libc",
  "untrusted 0.9.0",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rmp"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba8be72d372b2c9b35542551678538b562e7cf86c3315773cae48dfbfe7790c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "rmp-serde"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
+dependencies = [
+ "rmp",
+ "serde",
 ]
 
 [[package]]
@@ -10071,6 +10124,7 @@ dependencies = [
  "signal-hook-registry",
  "socket2 0.6.5",
  "tokio-macros",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -10695,6 +10749,7 @@ dependencies = [
  "dashmap",
  "dotenvy",
  "ecdysis",
+ "ed25519-dalek",
  "etherparse",
  "futures-util",
  "hex",
@@ -10703,6 +10758,7 @@ dependencies = [
  "iroh-blobs",
  "iroh-gossip",
  "jiff",
+ "kameo",
  "libc",
  "metrics",
  "metrics-exporter-prometheus",

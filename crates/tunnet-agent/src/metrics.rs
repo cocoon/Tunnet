@@ -9,6 +9,17 @@ pub struct AgentMetrics {
 }
 
 impl AgentMetrics {
+    /// Test handle without installing a global recorder (parallel tests).
+    #[cfg(test)]
+    pub fn for_tests() -> Self {
+        let recorder = PrometheusBuilder::new()
+            .with_recommended_naming(true)
+            .build_recorder();
+        Self {
+            handle: recorder.handle(),
+        }
+    }
+
     pub fn new() -> anyhow::Result<Self> {
         let handle = PrometheusBuilder::new()
             .with_recommended_naming(true)

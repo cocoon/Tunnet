@@ -3,7 +3,6 @@
 use std::collections::BTreeSet;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use ipnet::Ipv4Net;
@@ -116,7 +115,7 @@ impl RouteOp {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum RouteError {
     #[error("route already exists")]
     AlreadyExists,
@@ -182,7 +181,7 @@ impl RouteError {
 }
 
 #[async_trait]
-trait RouteBackend: Send {
+pub(crate) trait RouteBackend: Send {
     async fn list(&mut self) -> Result<Vec<RouteSpec>, RouteError>;
     async fn add(&mut self, route: &RouteSpec) -> Result<(), RouteError>;
     async fn delete(&mut self, route: &RouteSpec) -> Result<(), RouteError>;
@@ -358,78 +357,40 @@ impl DesiredRoutes {
     }
 }
 
-struct Inner {
+/// Single-owner route state. Owned directly by `RouteActor`; no shared mutex.
+pub(crate) struct RouteEngine {
     backend: Box<dyn RouteBackend>,
-    owned: BTreeSet<RouteSpec>,
+    pub(crate) owned: BTreeSet<RouteSpec>,
     last_desired: Option<DesiredRoutes>,
 }
 
-/// Diff-based OS route manager backed by kernel list/add/delete.
-#[derive(Clone)]
-pub struct RouteReconciler {
-    inner: Arc<tokio::sync::Mutex<Inner>>,
-}
-
-impl RouteReconciler {
-    pub fn new() -> anyhow::Result<Self> {
+impl RouteEngine {
+    pub(crate) fn new() -> anyhow::Result<Self> {
         let backend = NativeBackend::new().map_err(|e| anyhow::anyhow!("route manager: {e}"))?;
-        let this = Self::with_backend(Box::new(backend));
-        this.spawn_route_listener();
-        Ok(this)
+        Ok(Self::with_backend(Box::new(backend)))
     }
 
-    fn with_backend(backend: Box<dyn RouteBackend>) -> Self {
+    pub(crate) fn with_backend(backend: Box<dyn RouteBackend>) -> Self {
         Self {
-            inner: Arc::new(tokio::sync::Mutex::new(Inner {
-                backend,
-                owned: BTreeSet::new(),
-                last_desired: None,
-            })),
+            backend,
+            owned: BTreeSet::new(),
+            last_desired: None,
         }
     }
 
-    fn spawn_route_listener(&self) {
-        let this = self.clone();
-        tokio::spawn(async move {
-            let Ok(mut listener) = AsyncRouteManager::listener() else {
-                return;
-            };
-            loop {
-                match listener.listen().await {
-                    Ok(_) => {
-                        let debounce = tokio::time::Duration::from_millis(100);
-                        let _ = tokio::time::timeout(debounce, async {
-                            loop {
-                                if listener.listen().await.is_err() {
-                                    break;
-                                }
-                            }
-                        })
-                        .await;
-                        if let Err(e) = this.reconcile_last().await {
-                            tracing::warn!(error = %e, "route listener reconciliation failed");
-                        }
-                    }
-                    Err(e) => {
-                        tracing::debug!(?e, "OS route listener stopped");
-                        break;
-                    }
-                }
-            }
-        });
+    pub(crate) fn owned_routes(&self) -> Vec<RouteSpec> {
+        self.owned.iter().cloned().collect()
     }
 
-    async fn reconcile_last(&self) -> Result<(), RouteError> {
-        let desired = self.inner.lock().await.last_desired.clone();
-        let Some(desired) = desired else {
+    pub(crate) async fn reconcile_last(&mut self) -> Result<(), RouteError> {
+        let Some(desired) = self.last_desired.clone() else {
             return Ok(());
         };
         self.reconcile(&desired).await
     }
 
-    pub async fn reconcile(&self, desired: &DesiredRoutes) -> Result<(), RouteError> {
-        let mut g = self.inner.lock().await;
-        g.last_desired = Some(desired.clone());
+    pub(crate) async fn reconcile(&mut self, desired: &DesiredRoutes) -> Result<(), RouteError> {
+        self.last_desired = Some(desired.clone());
 
         let underlay = desired.underlay.clone().or_else(UnderlayInfo::discover);
         let gateway = underlay.as_ref().and_then(UnderlayInfo::gateway_v4);
@@ -470,18 +431,18 @@ impl RouteReconciler {
 
         let want = desired.to_specs(gateway, underlay_if, tun_if, allow_default);
 
-        let kernel = g.backend.list().await?;
+        let kernel = self.backend.list().await?;
         let kernel_by_id: BTreeSet<_> = kernel.iter().map(RouteSpec::identity).collect();
 
-        g.owned
+        self.owned
             .retain(|owned| kernel.iter().any(|k| k.identity() == owned.identity()));
         for spec in &want {
             if kernel_by_id.contains(&spec.identity()) {
-                g.owned.insert(spec.clone());
+                self.owned.insert(spec.clone());
             }
         }
 
-        let mut to_del: Vec<RouteSpec> = g
+        let mut to_del: Vec<RouteSpec> = self
             .owned
             .iter()
             .filter(|owned| !want.iter().any(|w| w.identity() == owned.identity()))
@@ -512,21 +473,21 @@ impl RouteReconciler {
         to_del.sort_by_key(RouteSpec::del_rank);
         let mut errors = Vec::new();
         for spec in to_del {
-            match g.backend.delete(&spec).await {
+            match self.backend.delete(&spec).await {
                 Ok(()) => {
-                    g.owned.retain(|o| o.identity() != spec.identity());
+                    self.owned.retain(|o| o.identity() != spec.identity());
                     tracing::debug!(route = %spec, "removed OS route");
                 }
                 Err(e) if e.is_idempotent_delete() => {
-                    g.owned.retain(|o| o.identity() != spec.identity());
+                    self.owned.retain(|o| o.identity() != spec.identity());
                 }
                 Err(e) => {
-                    let still_there = match g.backend.list().await {
+                    let still_there = match self.backend.list().await {
                         Ok(list) => list.iter().any(|k| k.identity() == spec.identity()),
                         Err(_) => true,
                     };
                     if !still_there {
-                        g.owned.retain(|o| o.identity() != spec.identity());
+                        self.owned.retain(|o| o.identity() != spec.identity());
                     } else {
                         tracing::warn!(error = %e, route = %spec, "failed to delete OS route");
                         errors.push(e);
@@ -535,7 +496,7 @@ impl RouteReconciler {
             }
         }
 
-        let kernel = g.backend.list().await?;
+        let kernel = self.backend.list().await?;
         let kernel_by_id: BTreeSet<_> = kernel.iter().map(RouteSpec::identity).collect();
         let mut to_add: Vec<_> = want
             .iter()
@@ -553,15 +514,15 @@ impl RouteReconciler {
                 );
                 continue;
             }
-            match g.backend.add(&spec).await {
+            match self.backend.add(&spec).await {
                 Ok(()) => {
-                    g.owned.insert(spec.clone());
+                    self.owned.insert(spec.clone());
                     tracing::debug!(route = %spec, "installed OS route");
                 }
                 Err(e) if e.is_idempotent_add() => {
-                    let kernel = g.backend.list().await.unwrap_or_default();
+                    let kernel = self.backend.list().await.unwrap_or_default();
                     if kernel.iter().any(|k| k.identity() == spec.identity()) {
-                        g.owned.insert(spec.clone());
+                        self.owned.insert(spec.clone());
                     } else {
                         tracing::warn!(error = %e, route = %spec, "add reported exists without matching kernel route");
                         errors.push(e);
@@ -587,30 +548,29 @@ impl RouteReconciler {
         }
     }
 
-    pub async fn clear(&self) -> Result<(), RouteError> {
-        let mut g = self.inner.lock().await;
-        let mut routes: Vec<_> = g.owned.iter().cloned().collect();
+    pub(crate) async fn clear(&mut self) -> Result<(), RouteError> {
+        let mut routes: Vec<_> = self.owned.iter().cloned().collect();
         routes.sort_by_key(RouteSpec::del_rank);
         let mut errors = Vec::new();
         for spec in routes {
-            match g.backend.delete(&spec).await {
+            match self.backend.delete(&spec).await {
                 Ok(()) | Err(RouteError::NotFound) => {
-                    g.owned.retain(|o| o.identity() != spec.identity());
+                    self.owned.retain(|o| o.identity() != spec.identity());
                 }
                 Err(e) => {
-                    let still_there = match g.backend.list().await {
+                    let still_there = match self.backend.list().await {
                         Ok(list) => list.iter().any(|k| k.identity() == spec.identity()),
                         Err(_) => true,
                     };
                     if still_there {
                         errors.push(e);
                     } else {
-                        g.owned.retain(|o| o.identity() != spec.identity());
+                        self.owned.retain(|o| o.identity() != spec.identity());
                     }
                 }
             }
         }
-        g.last_desired = None;
+        self.last_desired = None;
         match errors.len() {
             0 => Ok(()),
             1 => Err(errors.remove(0)),
@@ -626,9 +586,9 @@ fn resolve_if_index(name: &str) -> Option<u32> {
         .map(|iface| iface.index)
 }
 
+/// Build a [`DesiredRoutes`] from high-level membership inputs (pure, testable).
 #[allow(clippy::too_many_arguments)]
-pub async fn apply(
-    reconciler: &RouteReconciler,
+pub fn desired_from_membership(
     ifname: &str,
     profile: &DeviceProfile,
     assigned_ipv4: Ipv4Addr,
@@ -636,30 +596,24 @@ pub async fn apply(
     remote_subnets: &[Ipv4Net],
     has_exit: bool,
     underlay_hosts: &[Ipv4Addr],
-) -> Result<(), RouteError> {
-    reconciler
-        .reconcile(&DesiredRoutes {
-            ifname: ifname.to_string(),
-            tun_if_index: resolve_if_index(ifname),
-            profile: profile.clone(),
-            mesh_cidr: mesh_cidr(assigned_ipv4, prefix),
-            remote_subnets: remote_subnets.to_vec(),
-            has_exit,
-            underlay_hosts: underlay_hosts.to_vec(),
-            underlay: None,
-        })
-        .await
-}
-
-pub async fn unapply(reconciler: &RouteReconciler) -> Result<(), RouteError> {
-    reconciler.clear().await
+) -> DesiredRoutes {
+    DesiredRoutes {
+        ifname: ifname.to_string(),
+        tun_if_index: resolve_if_index(ifname),
+        profile: profile.clone(),
+        mesh_cidr: mesh_cidr(assigned_ipv4, prefix),
+        remote_subnets: remote_subnets.to_vec(),
+        has_exit,
+        underlay_hosts: underlay_hosts.to_vec(),
+        underlay: None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
     struct MockState {
@@ -772,21 +726,19 @@ mod tests {
         }
     }
 
-    fn reconciler(mock: MockBackend) -> RouteReconciler {
-        RouteReconciler::with_backend(Box::new(mock))
+    fn reconciler(mock: MockBackend) -> RouteEngine {
+        RouteEngine::with_backend(Box::new(mock))
     }
 
     #[tokio::test]
     async fn successful_add_updates_tracked_state() {
         let state = Arc::new(Mutex::new(MockState::default()));
-        let r = reconciler(MockBackend {
+        let mut r = reconciler(MockBackend {
             state: state.clone(),
         });
         r.reconcile(&mesh_desired()).await.unwrap();
-        let inner = r.inner.lock().await;
         assert!(
-            inner
-                .owned
+            r.owned
                 .iter()
                 .any(|s| s.dest == "10.99.0.0/24".parse().unwrap())
         );
@@ -807,12 +759,11 @@ mod tests {
             fail_add: [spec_tun("10.99.0.0/24", 9).identity()].into(),
             ..Default::default()
         }));
-        let r = reconciler(MockBackend {
+        let mut r = reconciler(MockBackend {
             state: state.clone(),
         });
         assert!(r.reconcile(&mesh_desired()).await.is_err());
-        let inner = r.inner.lock().await;
-        assert!(!inner.owned.iter().any(|s| s.dest == dest));
+        assert!(!r.owned.iter().any(|s| s.dest == dest));
         assert!(state.lock().unwrap().kernel.is_empty());
     }
 
@@ -824,25 +775,25 @@ mod tests {
             fail_add: [ident].into(),
             ..Default::default()
         }));
-        let r = reconciler(MockBackend {
+        let mut r = reconciler(MockBackend {
             state: state.clone(),
         });
         assert!(r.reconcile(&mesh_desired()).await.is_err());
         state.lock().unwrap().fail_add.clear();
         r.reconcile(&mesh_desired()).await.unwrap();
         assert_eq!(state.lock().unwrap().add_calls.len(), 2);
-        assert!(r.inner.lock().await.owned.iter().any(|s| s.dest == dest));
+        assert!(r.owned.iter().any(|s| s.dest == dest));
     }
 
     #[tokio::test]
     async fn successful_delete_removes_tracked_state() {
         let state = Arc::new(Mutex::new(MockState::default()));
-        let r = reconciler(MockBackend {
+        let mut r = reconciler(MockBackend {
             state: state.clone(),
         });
         r.reconcile(&mesh_desired()).await.unwrap();
         r.clear().await.unwrap();
-        assert!(r.inner.lock().await.owned.is_empty());
+        assert!(r.owned.is_empty());
         assert!(state.lock().unwrap().kernel.is_empty());
     }
 
@@ -850,27 +801,20 @@ mod tests {
     async fn failed_delete_does_not_falsely_mark_absent() {
         let ident = spec_tun("10.99.0.0/24", 9).identity();
         let state = Arc::new(Mutex::new(MockState::default()));
-        let r = reconciler(MockBackend {
+        let mut r = reconciler(MockBackend {
             state: state.clone(),
         });
         r.reconcile(&mesh_desired()).await.unwrap();
         state.lock().unwrap().fail_delete.insert(ident);
         assert!(r.clear().await.is_err());
-        assert!(
-            r.inner
-                .lock()
-                .await
-                .owned
-                .iter()
-                .any(|s| s.identity() == ident)
-        );
+        assert!(r.owned.iter().any(|s| s.identity() == ident));
         assert!(!state.lock().unwrap().kernel.is_empty());
     }
 
     #[tokio::test]
     async fn external_kernel_removal_is_restored() {
         let state = Arc::new(Mutex::new(MockState::default()));
-        let r = reconciler(MockBackend {
+        let mut r = reconciler(MockBackend {
             state: state.clone(),
         });
         r.reconcile(&mesh_desired()).await.unwrap();
@@ -883,13 +827,13 @@ mod tests {
     #[tokio::test]
     async fn stale_in_memory_state_is_corrected_from_kernel() {
         let state = Arc::new(Mutex::new(MockState::default()));
-        let r = reconciler(MockBackend {
+        let mut r = reconciler(MockBackend {
             state: state.clone(),
         });
         r.reconcile(&mesh_desired()).await.unwrap();
         state.lock().unwrap().kernel.clear();
         r.reconcile(&mesh_desired()).await.unwrap();
-        let owned = r.inner.lock().await.owned.clone();
+        let owned = r.owned.clone();
         let kernel = state.lock().unwrap().kernel.clone();
         assert_eq!(owned.len(), kernel.len());
     }
@@ -901,12 +845,12 @@ mod tests {
             kernel: [existing].into(),
             ..Default::default()
         }));
-        let r = reconciler(MockBackend {
+        let mut r = reconciler(MockBackend {
             state: state.clone(),
         });
         r.reconcile(&mesh_desired()).await.unwrap();
         assert!(state.lock().unwrap().add_calls.is_empty());
-        assert_eq!(r.inner.lock().await.owned.len(), 1);
+        assert_eq!(r.owned.len(), 1);
     }
 
     #[tokio::test]
@@ -916,10 +860,10 @@ mod tests {
             kernel: [old.clone()].into(),
             ..Default::default()
         }));
-        let r = reconciler(MockBackend {
+        let mut r = reconciler(MockBackend {
             state: state.clone(),
         });
-        r.inner.lock().await.owned.insert(old);
+        r.owned.insert(old);
         r.reconcile(&exit_desired()).await.unwrap();
         let kernel = state.lock().unwrap().kernel.clone();
         assert!(
@@ -941,10 +885,10 @@ mod tests {
             kernel: [wrong.clone()].into(),
             ..Default::default()
         }));
-        let r = reconciler(MockBackend {
+        let mut r = reconciler(MockBackend {
             state: state.clone(),
         });
-        r.inner.lock().await.owned.insert(wrong);
+        r.owned.insert(wrong);
         r.reconcile(&mesh_desired()).await.unwrap();
         let kernel = state.lock().unwrap().kernel.clone();
         assert!(kernel.iter().all(|s| s.if_index == 9));
@@ -953,7 +897,7 @@ mod tests {
     #[tokio::test]
     async fn gateway_change_replaces_escape_routes() {
         let state = Arc::new(Mutex::new(MockState::default()));
-        let r = reconciler(MockBackend {
+        let mut r = reconciler(MockBackend {
             state: state.clone(),
         });
         r.reconcile(&exit_desired()).await.unwrap();
@@ -978,7 +922,7 @@ mod tests {
     #[tokio::test]
     async fn underlay_interface_change_is_handled() {
         let state = Arc::new(Mutex::new(MockState::default()));
-        let r = reconciler(MockBackend {
+        let mut r = reconciler(MockBackend {
             state: state.clone(),
         });
         r.reconcile(&exit_desired()).await.unwrap();
@@ -1000,7 +944,7 @@ mod tests {
     #[tokio::test]
     async fn default_tun_installed_after_escape_routes() {
         let state = Arc::new(Mutex::new(MockState::default()));
-        let r = reconciler(MockBackend {
+        let mut r = reconciler(MockBackend {
             state: state.clone(),
         });
         r.reconcile(&exit_desired()).await.unwrap();
@@ -1019,7 +963,7 @@ mod tests {
     #[tokio::test]
     async fn default_route_refused_without_underlay() {
         let state = Arc::new(Mutex::new(MockState::default()));
-        let r = reconciler(MockBackend {
+        let mut r = reconciler(MockBackend {
             state: state.clone(),
         });
         let mut d = exit_desired();
@@ -1047,7 +991,7 @@ mod tests {
             kernel: [unrelated.clone()].into(),
             ..Default::default()
         }));
-        let r = reconciler(MockBackend {
+        let mut r = reconciler(MockBackend {
             state: state.clone(),
         });
         r.reconcile(&mesh_desired()).await.unwrap();
@@ -1064,7 +1008,7 @@ mod tests {
             kernel: [mesh.clone(), host.clone()].into(),
             ..Default::default()
         }));
-        let r = reconciler(MockBackend {
+        let mut r = reconciler(MockBackend {
             state: state.clone(),
         });
         r.reconcile(&DesiredRoutes {
@@ -1088,7 +1032,7 @@ mod tests {
     #[tokio::test]
     async fn mesh_cidr_is_installed_when_kernel_has_no_connected_route() {
         let state = Arc::new(Mutex::new(MockState::default()));
-        let r = reconciler(MockBackend {
+        let mut r = reconciler(MockBackend {
             state: state.clone(),
         });
         r.reconcile(&DesiredRoutes {

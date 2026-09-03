@@ -13,7 +13,6 @@ use crate::acl::AclEngine;
 use crate::control::SignedClient;
 use crate::routing::RoutingTable;
 use crate::state::{StatePaths, save_snapshot_cache};
-use crate::ws_client::WsChannel;
 
 pub fn membership_for_network(
     snap: &EndpointSnapshot,
@@ -137,29 +136,107 @@ pub struct SyncHandles {
     pub version: Arc<ArcSwap<u64>>,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn spawn_ws_processor(
-    mut ws: WsChannel,
-    routes: RoutingTable,
-    acl: AclEngine,
-    version: Arc<ArcSwap<u64>>,
-    paths: StatePaths,
-    network_id: Uuid,
-    self_endpoint_id: String,
-    self_hostname: String,
-    agent_version: &'static str,
-    poll_client: Option<SignedClient>,
-    #[cfg(feature = "serve")] serves: Option<crate::serve::ServeManager>,
-    #[cfg(feature = "tunnel")] tunnels: Option<crate::tunnel::TunnelManager>,
-    #[cfg(feature = "send")] send: Option<crate::send::SendManager>,
-    on_kill_ssh: Option<crate::node::KillSshHook>,
-    posture_hooks: Option<crate::node::PostureHooks>,
-    agent_config_hooks: Option<crate::node::AgentConfigHooks>,
-    tunnel_pool: Option<crate::iroh_pool::ConnPool>,
-) {
+/// Explicit owner-spawned managed control driver (no hidden tasks).
+///
+/// Runs the [`PendingControl`] transport plus snapshot/serve/tunnel/send
+/// handling. Returns the [`JoinHandle`] so the caller owns lifecycle.
+/// Agent daemons use `ControlPlaneActor` instead; SDK/kube-node use this.
+pub struct ManagedDriverCtx {
+    pub routes: RoutingTable,
+    pub acl: AclEngine,
+    pub version: Arc<ArcSwap<u64>>,
+    pub paths: StatePaths,
+    pub network_id: Uuid,
+    pub self_endpoint_id: String,
+    pub self_hostname: String,
+    pub agent_version: &'static str,
+    /// Periodic snapshot poll interval (fallback when WS stalls).
+    pub poll_secs: u64,
+    pub poll_client: Option<SignedClient>,
+    #[cfg(feature = "serve")]
+    pub serves: Option<crate::serve::ServeManager>,
+    #[cfg(feature = "tunnel")]
+    pub tunnels: Option<crate::tunnel::TunnelManager>,
+    #[cfg(feature = "send")]
+    pub send: Option<crate::send::SendManager>,
+    pub tunnel_pool: Option<crate::iroh_pool::ConnPool>,
+    pub effective_config: Option<crate::EffectiveConfigStore>,
+}
+
+impl ManagedDriverCtx {
+    /// Build from a bootstrapped node. Serve/tunnel/send managers are wired
+    /// according to this crate's enabled features.
+    pub fn from_node(
+        node: &crate::node::CoreNode,
+        network_id: Uuid,
+        self_hostname: String,
+        agent_version: &'static str,
+        poll_secs: u64,
+    ) -> Self {
+        Self {
+            routes: node.routes.clone(),
+            acl: node.acl.clone(),
+            version: node.version.clone(),
+            paths: node.paths.clone(),
+            network_id,
+            self_endpoint_id: node.endpoint_id_hex(),
+            self_hostname,
+            agent_version,
+            poll_secs,
+            poll_client: node.signed.clone(),
+            #[cfg(feature = "serve")]
+            serves: Some(node.serves.clone()),
+            #[cfg(feature = "tunnel")]
+            tunnels: Some(node.tunnels.clone()),
+            #[cfg(feature = "send")]
+            send: Some(node.send.clone()),
+            tunnel_pool: Some(node.tunnel_pool.clone()),
+            effective_config: Some(node.effective_config.clone()),
+        }
+    }
+}
+
+pub fn spawn_managed_driver(
+    pending: crate::ws_client::PendingControl,
+    ctx: ManagedDriverCtx,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let _ = ws
-            .tx
+        let ManagedDriverCtx {
+            routes,
+            acl,
+            version,
+            paths,
+            network_id,
+            self_endpoint_id,
+            self_hostname,
+            agent_version,
+            poll_secs,
+            poll_client,
+            #[cfg(feature = "serve")]
+            serves,
+            #[cfg(feature = "tunnel")]
+            tunnels,
+            #[cfg(feature = "send")]
+            send,
+            tunnel_pool,
+            effective_config,
+        } = ctx;
+        let crate::ws_client::PendingControl {
+            transport,
+            server_tx,
+            mut server_rx,
+            client_tx,
+            client_rx,
+        } = pending;
+        // Owned transport task; cancelled when the driver ends.
+        let transport_cancel = tokio_util::sync::CancellationToken::new();
+        let transport_task = {
+            let cancel = transport_cancel.clone();
+            tokio::spawn(async move {
+                transport.run(server_tx, client_rx, cancel).await;
+            })
+        };
+        let _ = client_tx
             .send(ClientMsg::Hello {
                 endpoint_id: "self".into(),
                 agent_version: agent_version.into(),
@@ -171,9 +248,28 @@ pub fn spawn_ws_processor(
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // Don't fire immediately; WS connect already slides last_heartbeat_at.
         heartbeat.tick().await;
+        // Owned poll fallback (same task, no hidden detached timer).
+        let mut poll_ticker = tokio::time::interval(Duration::from_secs(poll_secs.max(5)));
+        poll_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        poll_ticker.tick().await;
         loop {
             tokio::select! {
-                Some(msg) = ws.rx.recv() => {
+                _ = poll_ticker.tick() => {
+                    if let Some(client) = &poll_client {
+                        poll_once(
+                            client,
+                            &version,
+                            &routes,
+                            &acl,
+                            network_id,
+                            &self_endpoint_id,
+                            &self_hostname,
+                            Some(paths.dir.as_path()),
+                        )
+                        .await;
+                    }
+                }
+                Some(msg) = server_rx.recv() => {
                     match msg {
                         ServerMsg::Snapshot(snap) => {
                             if let Some(pool) = tunnel_pool.as_ref() {
@@ -197,11 +293,6 @@ pub fn spawn_ws_processor(
                                     &self_hostname,
                                     Some(paths.dir.as_path()),
                                 );
-                                if let Some(hooks) = &agent_config_hooks
-                                    && let Some(on_m) = &hooks.on_membership_applied
-                                {
-                                    on_m(m);
-                                }
                                 save_snapshot_cache(&paths, &snap).ok();
                                 tracing::info!(
                                     v = m.version,
@@ -210,25 +301,30 @@ pub fn spawn_ws_processor(
                                     hostname_routes = m.hostname_routes.len(),
                                     "snapshot from ws"
                                 );
-                                if let Some(hooks) = &agent_config_hooks
-                                    && let Some(on_policy) = &hooks.on_remote_policy
-                                {
-                                    // Membership inherits network ← org; use that for this agent.
-                                    let config = on_policy(m.agent_policy.clone());
-                                    let _ = ws
-                                        .tx
+                                // Merge remote policy into the effective config
+                                // directly (no callback hooks) and report it.
+                                if let Some(store) = &effective_config {
+                                    let local = crate::TunnetConfig::try_load(&paths)
+                                        .ok()
+                                        .flatten()
+                                        .unwrap_or_default();
+                                    let config =
+                                        store.apply_remote(&local, m.agent_policy.clone());
+                                    let _ = client_tx
                                         .send(ClientMsg::EffectiveConfigReport {
                                             config,
                                             reported_at: jiff::Timestamp::now(),
                                         })
                                         .await;
                                 }
-                            } else if let Some(hooks) = &agent_config_hooks
-                                && let Some(on_policy) = &hooks.on_remote_policy
-                            {
-                                let config = on_policy(snap.agent_policy.clone());
-                                let _ = ws
-                                    .tx
+                            } else if let Some(store) = &effective_config {
+                                let local = crate::TunnetConfig::try_load(&paths)
+                                    .ok()
+                                    .flatten()
+                                    .unwrap_or_default();
+                                let config =
+                                    store.apply_remote(&local, snap.agent_policy.clone());
+                                let _ = client_tx
                                     .send(ClientMsg::EffectiveConfigReport {
                                         config,
                                         reported_at: jiff::Timestamp::now(),
@@ -259,7 +355,7 @@ pub fn spawn_ws_processor(
                             break;
                         }
                         ServerMsg::Ping { nonce } => {
-                            let _ = ws.tx.send(ClientMsg::Pong { nonce }).await;
+                            let _ = client_tx.send(ClientMsg::Pong { nonce }).await;
                             if let Some(client) = &poll_client {
                                 match client.poll(**version.load()).await {
                                     Ok(snap) => {
@@ -279,16 +375,27 @@ pub fn spawn_ws_processor(
                                                 &self_hostname,
                                                 Some(paths.dir.as_path()),
                                             );
-                                            if let Some(hooks) = &agent_config_hooks
-                                                && let Some(on_m) = &hooks.on_membership_applied
-                                            {
-                                                on_m(m);
-                                            }
                                             save_snapshot_cache(&paths, &snap).ok();
                                             tracing::info!(
                                                 v = m.version,
                                                 "snapshot from ping wake-up poll"
                                             );
+                                            if let Some(store) = &effective_config {
+                                                let local = crate::TunnetConfig::try_load(&paths)
+                                                    .ok()
+                                                    .flatten()
+                                                    .unwrap_or_default();
+                                                let config = store.apply_remote(
+                                                    &local,
+                                                    m.agent_policy.clone(),
+                                                );
+                                                let _ = client_tx
+                                                    .send(ClientMsg::EffectiveConfigReport {
+                                                        config,
+                                                        reported_at: jiff::Timestamp::now(),
+                                                    })
+                                                    .await;
+                                            }
                                         }
                                     }
                                     Err(e) => {
@@ -338,12 +445,11 @@ pub fn spawn_ws_processor(
                             };
                             match result {
                                 Ok(_) => {
-                                    let _ = ws.tx.send(ClientMsg::ServeReady { serve_id }).await;
+                                    let _ = client_tx.send(ClientMsg::ServeReady { serve_id }).await;
                                 }
                                 Err(e) => {
                                     tracing::warn!(?e, %serve_id, "StartServe failed");
-                                    let _ = ws
-                                        .tx
+                                    let _ = client_tx
                                         .send(ClientMsg::ServeFailed {
                                             serve_id,
                                             error: e.to_string(),
@@ -355,8 +461,7 @@ pub fn spawn_ws_processor(
                         #[cfg(not(feature = "serve"))]
                         ServerMsg::StartServe { serve_id, .. } => {
                             tracing::warn!(%serve_id, "StartServe ignored (`serve` feature disabled)");
-                            let _ = ws
-                                .tx
+                            let _ = client_tx
                                 .send(ClientMsg::ServeFailed {
                                     serve_id,
                                     error: "serve feature disabled".into(),
@@ -387,12 +492,12 @@ pub fn spawn_ws_processor(
                                     }
                                 }
                             }
-                            let _ = ws.tx.send(ClientMsg::ServeStopped { serve_id }).await;
+                            let _ = client_tx.send(ClientMsg::ServeStopped { serve_id }).await;
                         }
                         #[cfg(not(feature = "serve"))]
                         ServerMsg::StopServe { serve_id } => {
                             tracing::warn!(%serve_id, "StopServe ignored (`serve` feature disabled)");
-                            let _ = ws.tx.send(ClientMsg::ServeStopped { serve_id }).await;
+                            let _ = client_tx.send(ClientMsg::ServeStopped { serve_id }).await;
                         }
                         #[cfg(feature = "tunnel")]
                         ServerMsg::OpenTunnel {
@@ -433,12 +538,11 @@ pub fn spawn_ws_processor(
                             match result {
                                 Ok(info) => {
                                     tracing::info!(url = %info.public_url, "OpenTunnel active");
-                                    let _ = ws.tx.send(ClientMsg::TunnelReady { tunnel_id }).await;
+                                    let _ = client_tx.send(ClientMsg::TunnelReady { tunnel_id }).await;
                                 }
                                 Err(e) => {
                                     tracing::warn!(?e, %tunnel_id, "OpenTunnel failed");
-                                    let _ = ws
-                                        .tx
+                                    let _ = client_tx
                                         .send(ClientMsg::TunnelFailed {
                                             tunnel_id,
                                             error: e.to_string(),
@@ -463,20 +567,17 @@ pub fn spawn_ws_processor(
                             if let Some(mgr) = &tunnels {
                                 let _ = mgr.stop(&tunnel_id);
                             }
-                            let _ = ws.tx.send(ClientMsg::TunnelStopped { tunnel_id }).await;
+                            let _ = client_tx.send(ClientMsg::TunnelStopped { tunnel_id }).await;
                         }
                         #[cfg(not(feature = "tunnel"))]
                         ServerMsg::StopTunnel { tunnel_id } => {
                             tracing::warn!(%tunnel_id, "StopTunnel ignored (`tunnel` feature disabled)");
-                            let _ = ws.tx.send(ClientMsg::TunnelStopped { tunnel_id }).await;
+                            let _ = client_tx.send(ClientMsg::TunnelStopped { tunnel_id }).await;
                         }
                         ServerMsg::KillSshSession { session_id } => {
-                            if let Some(hook) = &on_kill_ssh {
-                                hook(&session_id);
-                                tracing::info!(%session_id, "KillSshSession handled");
-                            } else {
-                                tracing::warn!(%session_id, "KillSshSession ignored (no hook)");
-                            }
+                            // No posture/SSH engine in the core driver;
+                            // the agent actor handles kills via SshRegistryActor.
+                            tracing::warn!(%session_id, "KillSshSession ignored (core driver has no session registry)");
                         }
                         #[cfg(feature = "send")]
                         ServerMsg::SendFile {
@@ -501,8 +602,7 @@ pub fn spawn_ws_processor(
                                     }
                                     Err(e) => {
                                         tracing::warn!(?e, %transfer_id, "SendFile failed");
-                                        let _ = ws
-                                            .tx
+                                        let _ = client_tx
                                             .send(ClientMsg::TransferFailed {
                                                 transfer_id,
                                                 error: e.to_string(),
@@ -516,8 +616,7 @@ pub fn spawn_ws_processor(
                         #[cfg(not(feature = "send"))]
                         ServerMsg::SendFile { transfer_id, .. } => {
                             tracing::warn!(%transfer_id, "SendFile ignored (`send` feature disabled)");
-                            let _ = ws
-                                .tx
+                            let _ = client_tx
                                 .send(ClientMsg::TransferFailed {
                                     transfer_id,
                                     error: "send feature disabled".into(),
@@ -578,36 +677,19 @@ pub fn spawn_ws_processor(
                             tracing::warn!(%mode, "SetSendConsent ignored (`send` feature disabled)");
                         }
                         ServerMsg::PostureRecheck => {
-                            if let Some(hooks) = &posture_hooks {
-                                if let Some(hook) = &hooks.on_recheck {
-                                    hook();
-                                    tracing::info!("PostureRecheck handled");
-                                } else {
-                                    tracing::warn!("PostureRecheck ignored (no hook)");
-                                }
-                            }
+                            tracing::debug!("PostureRecheck ignored (core driver has no posture engine)");
                         }
-                        ServerMsg::PostureConfigUpdate {
-                            interval_secs,
-                            enabled_collectors,
-                            custom_scripts,
-                        } => {
-                            if let Some(hooks) = &posture_hooks {
-                                if let Some(hook) = &hooks.on_config_update {
-                                    hook(interval_secs, enabled_collectors, custom_scripts);
-                                    tracing::info!(interval_secs, "PostureConfigUpdate applied");
-                                } else {
-                                    tracing::warn!("PostureConfigUpdate ignored (no hook)");
-                                }
-                            }
+                        ServerMsg::PostureConfigUpdate { interval_secs, .. } => {
+                            tracing::debug!(interval_secs, "PostureConfigUpdate ignored (core driver has no posture engine)");
                         }
                         ServerMsg::AgentConfigUpdate { policy } => {
-                            if let Some(hooks) = &agent_config_hooks
-                                && let Some(on_policy) = &hooks.on_remote_policy
-                            {
-                                let config = on_policy(policy);
-                                let _ = ws
-                                    .tx
+                            if let Some(store) = &effective_config {
+                                let local = crate::TunnetConfig::try_load(&paths)
+                                    .ok()
+                                    .flatten()
+                                    .unwrap_or_default();
+                                let config = store.apply_remote(&local, policy);
+                                let _ = client_tx
                                     .send(ClientMsg::EffectiveConfigReport {
                                         config,
                                         reported_at: jiff::Timestamp::now(),
@@ -616,22 +698,8 @@ pub fn spawn_ws_processor(
                                 tracing::info!("AgentConfigUpdate applied");
                             }
                         }
-                        ServerMsg::PostureStatus {
-                            postures,
-                            enforcement_action,
-                            grace_period_remaining_secs,
-                            remediation_messages,
-                        } => {
-                            if let Some(hooks) = &posture_hooks
-                                && let Some(hook) = &hooks.on_status
-                            {
-                                hook(
-                                    postures,
-                                    enforcement_action,
-                                    grace_period_remaining_secs,
-                                    remediation_messages,
-                                );
-                            }
+                        ServerMsg::PostureStatus { enforcement_action, .. } => {
+                            tracing::debug!(%enforcement_action, "PostureStatus ignored (core driver has no posture engine)");
                         }
                     }
                 }
@@ -640,7 +708,7 @@ pub fn spawn_ws_processor(
                         .as_ref()
                         .map(|p| p.heartbeat_counters())
                         .unwrap_or((0, 0, 0));
-                    let _ = ws.tx.send(ClientMsg::Heartbeat {
+                    let _ = client_tx.send(ClientMsg::Heartbeat {
                         active_conns,
                         bytes_tx,
                         bytes_rx,
@@ -648,65 +716,62 @@ pub fn spawn_ws_processor(
                     if let Some(pool) = tunnel_pool.as_ref() {
                         let bytes = pool.cloud_relay_meter().take();
                         if bytes > 0 {
-                            let _ = ws.tx.send(ClientMsg::CloudRelayUsage { bytes }).await;
+                            let _ = client_tx.send(ClientMsg::CloudRelayUsage { bytes }).await;
                         }
                     }
                 }
             }
         }
-    });
+        transport_cancel.cancel();
+        let _ = transport_task.await;
+    })
 }
 
+/// One snapshot poll + apply. Shared by the core driver loop and the agent
+/// `ControlPlaneActor`; both run it as owned periodic work (never a hidden
+/// detached task).
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_poll_fallback(
-    client: SignedClient,
-    version: Arc<ArcSwap<u64>>,
-    poll_secs: u64,
-    routes: RoutingTable,
-    acl: AclEngine,
+pub async fn poll_once(
+    client: &SignedClient,
+    version: &Arc<ArcSwap<u64>>,
+    routes: &RoutingTable,
+    acl: &AclEngine,
     network_id: Uuid,
-    self_endpoint_id: String,
-    self_hostname: String,
-    known_hosts_dir: Option<std::path::PathBuf>,
+    self_endpoint_id: &str,
+    self_hostname: &str,
+    known_hosts_dir: Option<&std::path::Path>,
 ) {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(poll_secs));
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            match client.poll(**version.load()).await {
-                Ok(snap) => {
-                    // Always re-apply: peer lists / keys can change without a
-                    // networks.version bump (presence used to gate peers).
-                    if let Ok(m) = membership_for_network(&snap, network_id) {
-                        apply_membership(
-                            m,
-                            &snap.org_policy,
-                            snap.policy_verifying_key.as_deref(),
-                            &routes,
-                            &acl,
-                            &version,
-                            snap.version,
-                            &self_endpoint_id,
-                            &self_hostname,
-                            known_hosts_dir.as_deref(),
-                        );
-                        tracing::info!(
-                            v = m.version,
-                            peers = m.ipv4_peers.len(),
-                            subnet_routes = m.subnet_routes.len(),
-                            hostname_routes = m.hostname_routes.len(),
-                            "snapshot via poll"
-                        );
-                    }
-                }
-                Err(e) => {
-                    acl.mark_stale();
-                    tracing::warn!(?e, "poll failed");
-                }
+    match client.poll(**version.load()).await {
+        Ok(snap) => {
+            // Always re-apply: peer lists / keys can change without a
+            // networks.version bump (presence used to gate peers).
+            if let Ok(m) = membership_for_network(&snap, network_id) {
+                apply_membership(
+                    m,
+                    &snap.org_policy,
+                    snap.policy_verifying_key.as_deref(),
+                    routes,
+                    acl,
+                    version,
+                    snap.version,
+                    self_endpoint_id,
+                    self_hostname,
+                    known_hosts_dir,
+                );
+                tracing::info!(
+                    v = m.version,
+                    peers = m.ipv4_peers.len(),
+                    subnet_routes = m.subnet_routes.len(),
+                    hostname_routes = m.hostname_routes.len(),
+                    "snapshot via poll"
+                );
             }
         }
-    });
+        Err(e) => {
+            acl.mark_stale();
+            tracing::warn!(?e, "poll failed");
+        }
+    }
 }
 
 #[cfg(test)]

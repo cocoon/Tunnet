@@ -13,7 +13,7 @@ use tunnet_core::direct::{
 use tunnet_core::{AclEngine, ConnPool, RoutingTable, iroh_pool::send_datagram};
 use uuid::Uuid;
 
-use crate::dataplane::TunSlot;
+use crate::actors::dataplane::PublishedPlane;
 use crate::metrics::AgentMetrics;
 use crate::qos::{self, OutboundScheduler};
 use crate::ssh_nat;
@@ -157,7 +157,7 @@ pub async fn run_outbound(deps: OutboundDeps) -> anyhow::Result<()> {
 
 pub struct InboundDeps {
     pub conn: Connection,
-    pub tun: TunSlot,
+    pub tun: PublishedPlane,
     pub routes: RoutingTable,
     pub acl: AclEngine,
     pub firewalls: HashMap<Uuid, FirewallEngine>,
@@ -204,121 +204,133 @@ pub async fn serve_tunnel_connection(deps: InboundDeps) {
         .and_then(|a| a.networks_for(&remote_hex).into_iter().next())
         .or_else(|| routes.lookup_endpoint(&remote_hex).map(|p| p.network_id));
 
-    let start_gen = tun.read().await.generation;
+    // Load the published generation once. Retain the device + its exact
+    // cancellation token; never reacquire a global lock per packet and never
+    // observe a newer generation.
+    let Some(plane) = tun.load_full() else {
+        return;
+    };
+    let device = plane.device.clone();
+    let generation_cancel = plane.cancel.clone();
+    // Pinned at reader start: this task never observes a newer generation.
+    tracing::debug!(generation = plane.generation, %remote_id, "ingress reader pinned");
 
     loop {
-        {
-            let slot = tun.read().await;
-            if slot.device.is_none() || slot.generation != start_gen {
-                break;
-            }
+        if generation_cancel.is_cancelled() {
+            break;
         }
-
-        match conn.read_datagram().await {
-            Ok(dg) => {
-                if let Some(p) = &pool {
-                    p.touch_peer(remote_id);
-                }
-
-                let pkt = match packet::parse(&dg) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        drop_parse(&metrics, e);
-                        continue;
-                    }
-                };
-                let Some(pkt) = require_ipv4(&metrics, pkt, true) else {
-                    continue;
-                };
-                let src = pkt.ip.v4_src().unwrap();
-
-                let peer_info = inbound_network
-                    .and_then(|nid| routes.lookup_network_ip(nid, &src))
-                    .or_else(|| routes.lookup_endpoint(&remote_hex));
-
-                if let Some(peer_info) = &peer_info
-                    && !source_matches_peer(src, peer_info.ip)
-                {
-                    metrics.dropped_inc("antispoof");
-                    if let Some(nid) = inbound_network.or(Some(peer_info.network_id))
-                        && let Some(tracker) = spoofs.get(&nid)
-                        && tracker.record(&remote_hex)
-                    {
-                        let counts = tracker.drain_window_counts();
-                        for (peer, n) in counts {
-                            tracing::warn!(
-                                peer = %peer,
-                                spoofed_packets = n,
-                                "ingress anti-spoof drops in last window"
-                            );
-                        }
-                    }
-                    continue;
-                }
-
-                if !acl.allow_packet(&remote_hex, Direction::Inbound, &pkt) {
-                    metrics.dropped_inc("policy_deny_in");
-                    continue;
-                }
-
-                let peer_net = peer_info.as_ref().map(|p| p.network_id).or(inbound_network);
-                if let Some(nid) = peer_net
-                    && let Some(fw) = firewalls.get(&nid)
-                {
-                    match fw.evaluate(
-                        PacketDirection::Inbound,
-                        &pkt,
-                        Some(&remote_hex),
-                        peer_info.as_ref().map(|p| p.hostname.as_str()),
-                        Some(nid),
-                    ) {
-                        EvalResult::Allow => {}
-                        EvalResult::Deny => {
-                            metrics.dropped_inc("fw_deny_in");
-                            continue;
-                        }
-                        EvalResult::Reject { reply } => {
-                            metrics.dropped_inc("fw_reject_in");
-                            if !reply.is_empty() {
-                                let _ = send_datagram(&conn, reply).await;
-                            }
-                            continue;
-                        }
-                    }
-                }
-
-                let n = dg.len() as u64;
-                let self_ip = acl.self_id.load().ip;
-                let send_result = {
-                    let slot = tun.read().await;
-                    let Some(device) = slot.device.as_ref() else {
-                        break;
-                    };
-                    if slot.generation != start_gen {
-                        break;
-                    }
-                    if ssh_nat::needs_inbound_rewrite(&dg, self_ip) {
-                        let mut packet = dg.to_vec();
-                        let _ = ssh_nat::rewrite_inbound(&mut packet, self_ip);
-                        device.send(&packet).await
-                    } else {
-                        device.send(dg.as_ref()).await
-                    }
-                };
-                if let Err(e) = send_result {
-                    tracing::warn!(?e, "tun send failed");
-                    metrics.dropped_inc("tun_send_failed");
+        // Cancellation first so BringDown promptly stops old readers.
+        let dg = tokio::select! {
+            biased;
+            _ = generation_cancel.cancelled() => break,
+            res = conn.read_datagram() => match res {
+                Ok(dg) => dg,
+                Err(e) => {
+                    tracing::debug!(?e, "read_datagram closed");
                     break;
                 }
-                metrics.packets_inc("in");
-                metrics.bytes_add("in", n);
-                if let Some(p) = &pool {
-                    p.record_bytes_in(remote_id, n);
+            },
+        };
+        if generation_cancel.is_cancelled() {
+            break;
+        }
+        {
+            #[allow(clippy::collapsible_if)]
+            if let Some(p) = &pool {
+                p.touch_peer(remote_id);
+            }
+
+            let pkt = match packet::parse(&dg) {
+                Ok(p) => p,
+                Err(e) => {
+                    drop_parse(&metrics, e);
+                    continue;
+                }
+            };
+            let Some(pkt) = require_ipv4(&metrics, pkt, true) else {
+                continue;
+            };
+            let src = pkt.ip.v4_src().unwrap();
+
+            let peer_info = inbound_network
+                .and_then(|nid| routes.lookup_network_ip(nid, &src))
+                .or_else(|| routes.lookup_endpoint(&remote_hex));
+
+            if let Some(peer_info) = &peer_info
+                && !source_matches_peer(src, peer_info.ip)
+            {
+                metrics.dropped_inc("antispoof");
+                if let Some(nid) = inbound_network.or(Some(peer_info.network_id))
+                    && let Some(tracker) = spoofs.get(&nid)
+                    && tracker.record(&remote_hex)
+                {
+                    let counts = tracker.drain_window_counts();
+                    for (peer, n) in counts {
+                        tracing::warn!(
+                            peer = %peer,
+                            spoofed_packets = n,
+                            "ingress anti-spoof drops in last window"
+                        );
+                    }
+                }
+                continue;
+            }
+
+            if !acl.allow_packet(&remote_hex, Direction::Inbound, &pkt) {
+                metrics.dropped_inc("policy_deny_in");
+                continue;
+            }
+
+            let peer_net = peer_info.as_ref().map(|p| p.network_id).or(inbound_network);
+            if let Some(nid) = peer_net
+                && let Some(fw) = firewalls.get(&nid)
+            {
+                match fw.evaluate(
+                    PacketDirection::Inbound,
+                    &pkt,
+                    Some(&remote_hex),
+                    peer_info.as_ref().map(|p| p.hostname.as_str()),
+                    Some(nid),
+                ) {
+                    EvalResult::Allow => {}
+                    EvalResult::Deny => {
+                        metrics.dropped_inc("fw_deny_in");
+                        continue;
+                    }
+                    EvalResult::Reject { reply } => {
+                        metrics.dropped_inc("fw_reject_in");
+                        if !reply.is_empty() {
+                            let _ = send_datagram(&conn, reply).await;
+                        }
+                        continue;
+                    }
                 }
             }
-            Err(e) => {
-                tracing::debug!(?e, "read_datagram closed");
+
+            let n = dg.len() as u64;
+            let self_ip = acl.self_id.load().ip;
+            // Generation already verified: device + token belong to the
+            // generation loaded at reader start. Recheck cancellation
+            // (not a lock) before the send so BringDown wins races.
+            if generation_cancel.is_cancelled() {
                 break;
+            }
+            let send_result = if ssh_nat::needs_inbound_rewrite(&dg, self_ip) {
+                let mut packet = dg.to_vec();
+                let _ = ssh_nat::rewrite_inbound(&mut packet, self_ip);
+                device.send(&packet).await
+            } else {
+                device.send(dg.as_ref()).await
+            };
+            if let Err(e) = send_result {
+                tracing::warn!(?e, "tun send failed");
+                metrics.dropped_inc("tun_send_failed");
+                break;
+            }
+            metrics.packets_inc("in");
+            metrics.bytes_add("in", n);
+            if let Some(p) = &pool {
+                p.record_bytes_in(remote_id, n);
             }
         }
     }
