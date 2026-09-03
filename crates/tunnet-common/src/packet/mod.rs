@@ -17,10 +17,14 @@
 
 mod build;
 mod frag;
+mod owned;
 mod parse;
 
 pub use build::{set_tcp_ipv4_checksum, synthesize_reject, tcp_ipv4_checksum_of};
-pub use frag::{CachedTransport, FRAGMENT_TTL, FragmentTable, MAX_FRAGMENT_ENTRIES, ResolvedL4};
+pub use frag::{
+    CachedTransport, FRAGMENT_TTL, FragKey, FragmentTable, MAX_FRAGMENT_ENTRIES, ResolvedL4,
+};
+pub use owned::{FlowKey, PacketBuf, PacketMeta, PacketPool, SshNatClass};
 pub use parse::{ParseError, parse};
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};

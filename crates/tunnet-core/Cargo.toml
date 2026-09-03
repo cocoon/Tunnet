@@ -63,6 +63,8 @@ hickory-proto = { workspace = true, optional = true }
 hickory-resolver = { workspace = true, optional = true }
 
 iroh.workspace = true
+noq.workspace = true
+noq-proto.workspace = true
 iroh-gossip.workspace = true
 iroh-blobs = { workspace = true, optional = true }
 iroh-docs = { workspace = true, optional = true }

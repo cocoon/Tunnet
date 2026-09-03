@@ -24,6 +24,52 @@ pub struct PeerInfo {
     pub ssh_host_key: Option<String>,
 }
 
+// Manual Debug: EndpointId may not implement it in all feature sets; keep a
+// compact representation for logs/tests.
+impl std::fmt::Debug for PeerInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeerInfo")
+            .field("endpoint_hex", &self.endpoint_hex)
+            .field("hostname", &self.hostname)
+            .field("ip", &self.ip)
+            .field("network_id", &self.network_id)
+            .finish()
+    }
+}
+
+/// Stable per-peer fast-path handle returned directly by routing.
+///
+/// Carries the binary endpoint ID plus the resolved peer, so established
+/// packet forwarding needs no DashMap lookup, no endpoint-hex conversion,
+/// and no second route-table load.
+#[derive(Debug, Clone)]
+pub struct FastPeerHandle {
+    pub endpoint: EndpointId,
+    pub peer: Arc<PeerInfo>,
+}
+
+impl FastPeerHandle {
+    pub fn endpoint_hex(&self) -> &str {
+        &self.peer.endpoint_hex
+    }
+}
+
+/// Single routing verdict from one immutable snapshot load.
+#[derive(Debug, Clone)]
+pub enum RouteDecision {
+    LocalMagic,
+    LocalAdvertised,
+    Peer(FastPeerHandle),
+    NoRoute,
+}
+
+impl RouteDecision {
+    pub fn peer(peer: Arc<PeerInfo>) -> Self {
+        let endpoint = peer.endpoint;
+        Self::Peer(FastPeerHandle { endpoint, peer })
+    }
+}
+
 /// Resolved hostname route (exact or wildcard).
 pub struct HostnameRouteInfo {
     pub peer: Arc<PeerInfo>,
@@ -141,30 +187,47 @@ impl RoutingTable {
         self.rebuild(None);
     }
 
-    /// Direct peer IP, subnet LPM, then selected exit node for internet.
-    /// On birthday collisions across networks, first-joined network wins.
-    pub fn lookup_ip(&self, ip: &Ipv4Addr) -> Option<Arc<PeerInfo>> {
+    /// Single immutable-snapshot route decision for the hot path.
+    ///
+    /// Loads route state exactly once and returns a [`RouteDecision`] carrying
+    /// a stable peer handle. Replaces the old multi-call sequence of
+    /// `is_magic_dns_destination` + `is_advertised_destination` + `lookup_ip`.
+    pub fn route_once(&self, dst: &Ipv4Addr) -> RouteDecision {
         let tables = self.inner.load();
-        if let Some(peer) = tables.by_ip.get(ip).cloned() {
-            return Some(peer);
+        if *dst == tables.magic_ip {
+            return RouteDecision::LocalMagic;
         }
-        if let Some(peer) = self.dynamic_synth.get(ip) {
-            return Some(peer.clone());
+        if tables.advertised.iter().any(|net| net.contains(dst)) {
+            return RouteDecision::LocalAdvertised;
         }
-        if let Some((prefix, peer)) = tables.subnets.get_lpm(&Ipv4Net::from(*ip)) {
-            // Full-tunnel exit CIDR must not steal LAN when allow_local_lan is on.
-            if !(tables.allow_local_lan && is_rfc1918(ip) && prefix.prefix_len() == 0) {
-                return Some(peer.clone());
-            }
+        if let Some(peer) = tables.by_ip.get(dst).cloned() {
+            return RouteDecision::peer(peer);
         }
-        // Exit node catches remaining (non-mesh, non-LAN when allowed) destinations.
-        if !is_mesh_or_link_local(ip)
-            && !(tables.allow_local_lan && is_rfc1918(ip))
+        if let Some(peer) = self.dynamic_synth.get(dst) {
+            return RouteDecision::peer(peer.clone());
+        }
+        if let Some((prefix, peer)) = tables.subnets.get_lpm(&Ipv4Net::from(*dst))
+            && !(tables.allow_local_lan && is_rfc1918(dst) && prefix.prefix_len() == 0)
+        {
+            return RouteDecision::peer(peer.clone());
+        }
+        if !is_mesh_or_link_local(dst)
+            && !(tables.allow_local_lan && is_rfc1918(dst))
             && let Some(exit) = &tables.exit_node
         {
-            return Some(exit.clone());
+            return RouteDecision::peer(exit.clone());
         }
-        None
+        RouteDecision::NoRoute
+    }
+
+    /// Direct peer IP, subnet LPM, then selected exit node for internet.
+    /// On birthday collisions across networks, first-joined network wins.
+    /// Delegates to [`Self::route_once`]; retained for non-hot-path callers.
+    pub fn lookup_ip(&self, ip: &Ipv4Addr) -> Option<Arc<PeerInfo>> {
+        match self.route_once(ip) {
+            RouteDecision::Peer(h) => Some(h.peer),
+            _ => None,
+        }
     }
 
     pub fn exit_node(&self) -> Option<Arc<PeerInfo>> {

@@ -167,6 +167,30 @@ fn selected_path_is_cloud_relay(conn: &Connection, urls: &HashSet<String>) -> bo
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FastSendError {
+    /// No live connection: caller must take the slow reconnect path.
+    NoConnection,
+    /// QUIC DATAGRAM buffer full: scheduler owns the drop/retry decision.
+    /// Never blocks; never converts the packet into an awaited future.
+    TransportFull,
+    TooLarge,
+    Closed,
+}
+
+impl std::fmt::Display for FastSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoConnection => write!(f, "no live connection"),
+            Self::TransportFull => write!(f, "transport buffer full"),
+            Self::TooLarge => write!(f, "datagram_too_large"),
+            Self::Closed => write!(f, "connection closed"),
+        }
+    }
+}
+
+impl std::error::Error for FastSendError {}
+
 #[derive(Clone)]
 pub struct ConnPool {
     endpoint: Endpoint,
@@ -174,6 +198,11 @@ pub struct ConnPool {
     /// Keyed by endpoint only for the pool's default ALPN (on-demand state).
     /// Secondary ALPNs use `extra` without idle management.
     entries: Arc<DashMap<EndpointId, Arc<AsyncMutex<PeerSlot>>>>,
+    /// Lock-free established fast path: live QUIC connections mirrored here on
+    /// adopt/dial so per-packet sends avoid the per-peer async mutex.
+    fast_conns: Arc<DashMap<EndpointId, Connection>>,
+    /// Coarse last-activity millis; updated at most once per second per peer.
+    fast_touch_ms: Arc<DashMap<EndpointId, AtomicU64>>,
     extra: Arc<ExtraConnMap>,
     policy: Arc<PoolPolicy>,
     metrics: Arc<PoolMetrics>,
@@ -198,6 +227,8 @@ impl ConnPool {
             endpoint,
             alpn,
             entries: Arc::new(DashMap::new()),
+            fast_conns: Arc::new(DashMap::new()),
+            fast_touch_ms: Arc::new(DashMap::new()),
             extra: Arc::new(DashMap::new()),
             policy: Arc::new(PoolPolicy {
                 keep_alive: AtomicBool::new(true),
@@ -226,6 +257,8 @@ impl ConnPool {
             endpoint,
             alpn,
             entries: Arc::new(DashMap::new()),
+            fast_conns: Arc::new(DashMap::new()),
+            fast_touch_ms: Arc::new(DashMap::new()),
             extra: Arc::new(DashMap::new()),
             policy: other.policy.clone(),
             metrics: other.metrics.clone(),
@@ -314,6 +347,7 @@ impl ConnPool {
         if let Some(existing) = guard.live_conn() {
             if existing.stable_id() == conn.stable_id() {
                 guard.touch();
+                self.fast_conns.insert(peer, conn.clone());
                 return true;
             }
             if !Self::prefer_incoming(local, peer, guard.opened_by_us, false) {
@@ -328,6 +362,7 @@ impl ConnPool {
         guard.state = PeerConnState::Connected;
         guard.touch();
         drop(guard);
+        self.fast_conns.insert(peer, conn.clone());
         self.fire_tunnel_hook(peer, conn);
         true
     }
@@ -349,6 +384,8 @@ impl ConnPool {
             g.drop_buf();
             tracing::debug!(%peer, "closed tunnel pool connection");
         }
+        self.fast_conns.clear();
+        self.fast_touch_ms.clear();
         for entry in self.extra.iter() {
             let mut g = entry.value().lock().await;
             if let Some(c) = g.take() {
@@ -618,9 +655,10 @@ impl ConnPool {
 
                 for pkt in buffered {
                     if let Err(e) = send_datagram(&canonical, pkt).await {
-                        tracing::warn!(%peer, ?e, "flush buffered datagram failed");
+                        tracing::debug!(%peer, ?e, "flush buffered datagram dropped");
                     }
                 }
+                self.fast_conns.insert(peer, canonical.clone());
                 if fire_hook {
                     self.fire_tunnel_hook(peer, canonical.clone());
                 }
@@ -664,7 +702,51 @@ impl ConnPool {
         Ok(conn)
     }
 
+    /// Established fast path: non-blocking DATAGRAM submit with no async
+    /// mutex. The scheduler owns queue/drop decisions; a full transport
+    /// returns [`FastSendError::TransportFull`] instead of awaiting.
+    pub fn try_send_fast(&self, peer: EndpointId, packet: Bytes) -> Result<(), FastSendError> {
+        let Some(conn) = self.fast_conns.get(&peer).map(|e| e.clone()) else {
+            return Err(FastSendError::NoConnection);
+        };
+        if conn.close_reason().is_some() {
+            self.fast_conns.remove(&peer);
+            return Err(FastSendError::NoConnection);
+        }
+        try_send_datagram(&conn, packet).map_err(|e| match e {
+            TrySendError::Full => FastSendError::TransportFull,
+            TrySendError::TooLarge => FastSendError::TooLarge,
+            TrySendError::Closed => FastSendError::Closed,
+        })?;
+        self.touch_fast(peer);
+        Ok(())
+    }
+
+    /// Fast-path liveness without touching the slot mutex.
+    pub fn fast_has_live(&self, peer: EndpointId) -> bool {
+        self.fast_conns
+            .get(&peer)
+            .is_some_and(|c| c.close_reason().is_none())
+    }
+
+    fn touch_fast(&self, peer: EndpointId) {
+        let now = now_millis();
+        let entry = self
+            .fast_touch_ms
+            .entry(peer)
+            .or_insert_with(|| AtomicU64::new(0));
+        let last = entry.load(Ordering::Relaxed);
+        // Coarse activity: at most one atomic store per second per peer.
+        if now.wrapping_sub(last) >= 1000 {
+            entry.store(now, Ordering::Relaxed);
+            self.touch_peer(peer);
+        }
+    }
+
     /// Send a packet, buffering + reconnecting when the peer is suspended (on-demand).
+    ///
+    /// Slow path only: connection setup, reconnect buffering, tie-breaking.
+    /// Established forwarding must use [`Self::try_send_fast`].
     pub async fn send_or_buffer(&self, peer: EndpointId, packet: Bytes) -> anyhow::Result<()> {
         let slot = self.slot(peer);
         {
@@ -711,6 +793,8 @@ impl ConnPool {
 
     pub async fn drop_peer(&self, peer: EndpointId) {
         self.entries.remove(&peer);
+        self.fast_conns.remove(&peer);
+        self.fast_touch_ms.remove(&peer);
         self.extra.retain(|(p, _), _| *p != peer);
     }
 
@@ -832,28 +916,62 @@ impl ConnPool {
     }
 }
 
-/// Send a datagram, waiting for buffer space when congested instead of dropping.
+/// Non-blocking DATAGRAM error. The scheduler owns drop/retry decisions;
+/// the transport is never awaited while holding a stale packet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrySendError {
+    Full,
+    TooLarge,
+    Closed,
+}
+
+impl std::fmt::Display for TrySendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Full => write!(f, "transport buffer full"),
+            Self::TooLarge => write!(f, "datagram_too_large"),
+            Self::Closed => write!(f, "connection closed"),
+        }
+    }
+}
+
+impl std::error::Error for TrySendError {}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Non-blocking DATAGRAM submit: never awaits transport capacity.
 ///
-/// Drops packets larger than the connection's current `max_datagram_size`.
-pub async fn send_datagram(conn: &Connection, packet: Bytes) -> anyhow::Result<()> {
+/// Returns [`TrySendError::Full`] when the QUIC DATAGRAM buffer cannot accept
+/// the packet so the flow scheduler can drop/retry per AQM policy instead of
+/// head-of-line blocking every other flow on one stale packet.
+pub fn try_send_datagram(conn: &Connection, packet: Bytes) -> Result<(), TrySendError> {
+    if conn.close_reason().is_some() {
+        return Err(TrySendError::Closed);
+    }
     if let Some(max) = conn.max_datagram_size()
         && packet.len() > max
     {
-        anyhow::bail!(
-            "datagram_too_large: packet {} > max_datagram_size {}",
-            packet.len(),
-            max
-        );
+        return Err(TrySendError::TooLarge);
     }
     if conn.datagram_send_buffer_space() == 0 {
-        conn.send_datagram_wait(packet)
-            .await
-            .context("send_datagram_wait (datagram buffer full or connection closed)")?;
-        return Ok(());
+        return Err(TrySendError::Full);
     }
-    conn.send_datagram(packet)
-        .context("send_datagram (packet too big or unsupported)")?;
-    Ok(())
+    conn.send_datagram(packet).map_err(|_| TrySendError::Closed)
+}
+
+/// Send a datagram without ever awaiting transport capacity.
+///
+/// Replaces the old `send_datagram_wait` semantics: when the QUIC DATAGRAM
+/// buffer is full the packet is dropped (caller records `transport_full`)
+/// instead of converting one stale packet into an arbitrarily long awaited
+/// future that blocks the whole peer scheduler.
+pub async fn send_datagram(conn: &Connection, packet: Bytes) -> anyhow::Result<()> {
+    try_send_datagram(conn, packet).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 #[cfg(test)]

@@ -29,6 +29,7 @@ mod system_dns;
 mod system_firewall;
 mod system_info;
 mod system_routes;
+mod tun_fast;
 mod tun_io;
 mod underlay;
 #[cfg(unix)]
