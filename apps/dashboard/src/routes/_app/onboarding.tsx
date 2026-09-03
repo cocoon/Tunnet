@@ -22,7 +22,7 @@ function OnboardingPage() {
     }
   }, [isPending, navigate, organizations.length]);
 
-  if (isPending || organizations.length > 0) {
+  if (!isPending && organizations.length > 0) {
     return <main className="bg-background min-h-svh" aria-busy="true" />;
   }
 

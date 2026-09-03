@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "management:dev": "bun --env-file=.env --filter @tunnet/management dev",
-    "management:start": "bun --env-file=.env --filter @tunnet/management start",
+    "management:start": "cd apps/management && bun --env-file=../../.env run start",
     "dash:dev": "bun --env-file=.env --filter @tunnet/dashboard dev",
     "dash:build": "bun --env-file=.env --filter @tunnet/dashboard build",
     "cloud:dev": "bun --env-file=.env --filter @tunnet/cloud dev",

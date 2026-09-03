@@ -23,7 +23,7 @@ import { cn } from "@tunnet/ui/lib/utils";
 import { ArrowLeftIcon, CheckIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { useFeature } from "@/hooks/use-entitlements";
+import { useEntitlements, useFeature } from "@/hooks/use-entitlements";
 import { authClient } from "@/lib/auth-client";
 import { getDashboardUrl } from "@/lib/env";
 import slugify from "@/lib/slugify";
@@ -90,9 +90,11 @@ export function CreateOrganizationDialog({
 }: CreateOrganizationDialogProps) {
   const queryClient = useQueryClient();
   const isCloud = useFeature("openSignUp");
+  const { isPending: entitlementsPending } = useEntitlements();
   const [loading, setLoading] = useState(false);
   const [name, setName] = useState("");
   const [step, setStep] = useState<Step>("name");
+  const submitDisabled = loading || !name.trim() || entitlementsPending;
 
   useEffect(() => {
     if (!open) return;
@@ -179,6 +181,7 @@ export function CreateOrganizationDialog({
 
   function goToPlanStep(e: React.FormEvent) {
     e.preventDefault();
+    if (entitlementsPending || loading) return;
     const trimmed = name.trim();
     if (!trimmed) return;
     if (!slugify(trimmed, 48)) {
@@ -258,14 +261,16 @@ export function CreateOrganizationDialog({
               ) : null}
               <Button
                 type="submit"
-                disabled={loading || !name.trim()}
+                disabled={submitDisabled}
                 className="min-w-28"
               >
                 {loading
                   ? "Creating..."
-                  : isCloud
-                    ? "Continue"
-                    : "Create organization"}
+                  : entitlementsPending
+                    ? "Loading..."
+                    : isCloud
+                      ? "Continue"
+                      : "Create organization"}
               </Button>
             </DialogFooter>
           </form>

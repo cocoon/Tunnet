@@ -184,6 +184,14 @@ function buildAuth(license: LicenseManager) {
   const isCloudBilling = license.snapshot().tier === "cloud";
   setCloudBillingEnabled(isCloudBilling);
 
+  async function countActiveMemberships(userId: string) {
+    const memberships = await db.query.member.findMany({
+      where: eq(schema.member.userId, userId),
+      with: { organization: true },
+    });
+    return memberships.filter((m) => !m.organization?.deletedAt);
+  }
+
   async function canUserCreateOrganization(user: {
     id: string;
     emailVerified?: boolean | null;
@@ -193,11 +201,11 @@ function buildAuth(license: LicenseManager) {
       const cap = ownershipCapForUser(Boolean(user.emailVerified));
       return owned < cap;
     }
-    const memberships = await db.query.member.findMany({
-      where: eq(schema.member.userId, user.id),
-      with: { organization: true },
-    });
-    const active = memberships.filter((m) => !m.organization?.deletedAt);
+    const active = await countActiveMemberships(user.id);
+    // Non-cloud fresh install: the first organization must always be
+    // creatable so the onboarding name prompt can never be blocked,
+    // even if license limits are misconfigured (e.g. 0).
+    if (active.length === 0) return true;
     return active.length + 1 <= license.limit("organizations");
   }
 
@@ -210,11 +218,8 @@ function buildAuth(license: LicenseManager) {
       const cap = ownershipCapForUser(Boolean(user.emailVerified));
       return owned >= cap;
     }
-    const memberships = await db.query.member.findMany({
-      where: eq(schema.member.userId, user.id),
-      with: { organization: true },
-    });
-    const active = memberships.filter((m) => !m.organization?.deletedAt);
+    const active = await countActiveMemberships(user.id);
+    if (active.length === 0) return false;
     return active.length >= license.limit("organizations");
   }
 
