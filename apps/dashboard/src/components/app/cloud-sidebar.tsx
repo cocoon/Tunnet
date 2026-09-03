@@ -77,7 +77,10 @@ export function CloudSidebar() {
   return (
     <Sidebar collapsible="icon" variant="inset">
       <SidebarHeader className="border-b border-sidebar-border">
-        <Link to="/cloud" className="flex items-center gap-2 overflow-hidden">
+        <Link
+          to="/cloud"
+          className="flex items-center gap-2 overflow-hidden group-data-[state=collapsed]/sidebar:justify-center"
+        >
           <img src="/logo.png" alt="Tunnet Cloud" className="size-8 shrink-0" />
           <div className="min-w-0 flex-1 group-data-[state=collapsed]/sidebar:hidden">
             <p className="truncate text-sm font-semibold">Tunnet Cloud</p>

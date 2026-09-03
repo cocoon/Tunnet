@@ -92,7 +92,7 @@ export function SettingsDialog({
               </h2>
               <DialogCloseButton onClose={() => onOpenChange(false)} />
             </div>
-            <div className="settings-scroll min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-5 py-4">
+            <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-5 py-4">
               {active.id === "diagnostics" ? (
                 <DiagnosticsPanel />
               ) : (

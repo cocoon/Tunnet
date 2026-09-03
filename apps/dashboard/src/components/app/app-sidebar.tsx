@@ -13,6 +13,7 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
   SidebarRail,
+  useSidebar,
 } from "@tunnet/ui/components/sidebar";
 import { type ComponentType, useEffect, useMemo, useState } from "react";
 import {
@@ -22,7 +23,9 @@ import {
   HiOutlineClipboardDocumentList,
   HiOutlineCog6Tooth,
   HiOutlineCommandLine,
+  HiOutlineCpuChip,
   HiOutlineCube,
+  HiOutlineGlobeAlt,
   HiOutlineKey,
   HiOutlineLockClosed,
   HiOutlineServer,
@@ -51,6 +54,7 @@ type NavItem = {
 type NavSection = {
   id: string;
   label: string;
+  icon: NavIcon;
   items: NavItem[];
   defaultOpen?: boolean;
 };
@@ -66,6 +70,7 @@ const navSections: NavSection[] = [
   {
     id: "mesh",
     label: "Mesh",
+    icon: HiOutlineGlobeAlt,
     defaultOpen: true,
     items: [
       { to: "/networks", label: "Networks", icon: HiOutlineShare },
@@ -75,6 +80,7 @@ const navSections: NavSection[] = [
   {
     id: "fleet",
     label: "Fleet",
+    icon: HiOutlineCpuChip,
     defaultOpen: true,
     items: [
       { to: "/machines", label: "Machines", icon: HiOutlineServer },
@@ -85,6 +91,7 @@ const navSections: NavSection[] = [
   {
     id: "connectivity",
     label: "Connectivity",
+    icon: HiOutlineBolt,
     defaultOpen: true,
     items: [
       {
@@ -114,6 +121,7 @@ const navSections: NavSection[] = [
   {
     id: "security",
     label: "Security",
+    icon: HiOutlineShieldCheck,
     defaultOpen: false,
     items: [
       { to: "/posture", label: "Posture", icon: HiOutlineShieldCheck },
@@ -124,6 +132,7 @@ const navSections: NavSection[] = [
   {
     id: "admin",
     label: "Administration",
+    icon: HiOutlineCog6Tooth,
     defaultOpen: false,
     items: [
       { to: "/users", label: "Users", icon: HiOutlineUsers },
@@ -169,18 +178,26 @@ function CollapsibleNavSection({
 }) {
   const hasActive = sectionContainsActive(pathname, section);
   const [open, setOpen] = useState(section.defaultOpen || hasActive);
+  const { state, isMobile } = useSidebar();
+  const collapsedRail = !isMobile && state === "collapsed";
 
   useEffect(() => {
     if (hasActive) setOpen(true);
   }, [hasActive]);
+
+  const SectionIcon = section.icon;
 
   return (
     <SidebarGroup>
       <SidebarMenu>
         <SidebarMenuItem>
           <SidebarMenuButton
+            icon={<SectionIcon className="size-4" />}
             ariaExpanded={open}
-            onSelect={() => setOpen((value) => !value)}
+            onSelect={() => {
+              if (collapsedRail) setOpen(true);
+              else setOpen((value) => !value);
+            }}
           >
             {section.label}
           </SidebarMenuButton>
@@ -242,7 +259,7 @@ export function AppSidebar() {
       <SidebarHeader className="border-b border-sidebar-border">
         <Link
           to="/"
-          className="flex items-center gap-2.5 overflow-hidden rounded-lg py-1 transition-colors"
+          className="flex items-center gap-2.5 overflow-hidden rounded-lg py-1 transition-colors group-data-[state=collapsed]/sidebar:justify-center"
         >
           <img
             src="/logo.png"

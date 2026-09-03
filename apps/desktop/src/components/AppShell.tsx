@@ -119,7 +119,7 @@ export function AppShell() {
         <SidebarHeader className="border-b border-border">
           <Link
             to="/app"
-            className="flex items-center gap-2 overflow-hidden rounded-lg py-1"
+            className="flex items-center gap-2 overflow-hidden rounded-lg py-1 group-data-[state=collapsed]/sidebar:justify-center"
           >
             <img src="/logo.png" alt="Tunnet" className="size-7 shrink-0" />
             <div className="flex min-w-0 items-center gap-2 group-data-[state=collapsed]/sidebar:hidden">

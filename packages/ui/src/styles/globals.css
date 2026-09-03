@@ -169,3 +169,26 @@ body,
 body {
   margin: 0;
 }
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #525252 transparent;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #525252;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+}
