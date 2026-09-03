@@ -56,6 +56,12 @@ jobs:
         with:
           shared-key: test-${{ matrix.os }}
 
+      - name: Install mold
+        if: runner.os == 'Linux'
+        uses: rui314/setup-mold@v1
+        with:
+          make-default: false
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
