@@ -88,8 +88,27 @@ function Get-Percentiles([double[]]$Samples) {
 }
 
 function Invoke-IperfJson([string]$Args, [string]$OutFile) {
-    & $iperf3 ($Args.Split(" ") + "--json") 2>$null | Out-File $OutFile -Encoding utf8
-    try { return Get-Content $OutFile -Raw | ConvertFrom-Json } catch { return $null }
+    # Every invocation captures command + exit code + stdout + stderr +
+    # JSON parse status. No generic ERROR: failures carry their cause.
+    $errFile = "$OutFile.stderr.txt"
+    $out = & $iperf3 ($Args.Split(" ") + "--json") 2> $errFile
+    $exitCode = $LASTEXITCODE
+    $stdout = ($out | Out-String)
+    $stdout | Out-File $OutFile -Encoding utf8
+    $stderr = ""
+    try { $stderr = Get-Content $errFile -Raw -ErrorAction SilentlyContinue } catch {}
+    if ([string]::IsNullOrWhiteSpace($stdout)) {
+        return [ordered]@{ ok = $false; json = $null; exitCode = $exitCode; error = "empty stdout (exit=$exitCode) stderr=$($stderr.Trim())" }
+    }
+    try {
+        $j = $stdout | ConvertFrom-Json
+        if ($j.error) {
+            return [ordered]@{ ok = $false; json = $j; exitCode = $exitCode; error = "iperf error: $($j.error)" }
+        }
+        return [ordered]@{ ok = $true; json = $j; exitCode = $exitCode; error = "" }
+    } catch {
+        return [ordered]@{ ok = $false; json = $null; exitCode = $exitCode; error = "JSON parse failed (exit=$exitCode): $($_.Exception.Message) stderr=$($stderr.Trim())" }
+    }
 }
 
 # High-frequency latency probe: rapid ping for p99.9-grade sample counts.
@@ -110,7 +129,11 @@ Write-Host "Peer: $Peer | Duration: ${Duration}s | Repeats: $Repeats | Results: 
 Write-Host "[0] Connectivity + warmup..." -ForegroundColor Yellow
 $ping = Test-Connection -ComputerName $Peer -Count 4 -ErrorAction SilentlyContinue
 if (-not $ping) { Write-Host "  FAIL: $Peer unreachable" -ForegroundColor Red; exit 1 }
-& $iperf3 -c $Peer -t 5 -P 2 2>&1 | Out-Null
+& $iperf3 -c $Peer -p $ServerPortUp -t 5 -P 2 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  FAIL: warmup iperf3 exited $LASTEXITCODE (is the server listening on port $ServerPortUp?)" -ForegroundColor Red
+    exit 1
+}
 Write-Host "  OK, warmed up"
 
 # --- idle latency: 1200 samples for real p99.9 ---
@@ -131,8 +154,9 @@ $cap = @{ up = 0.0; down = 0.0 }
 foreach ($rep in 1..$Repeats) {
     foreach ($c in $tpCases) {
         $pathBefore = Get-PathState
-        $j = Invoke-IperfJson $c.args "$ResultsDir\$($c.name)-r$rep.json"
-        if ($j -and -not $j.error) {
+        $r = Invoke-IperfJson $c.args "$ResultsDir\$($c.name)-r$rep.json"
+        if ($r.ok) {
+            $j = $r.json
             $mbps = [math]::Round($j.end.sum_received.bits_per_second / 1e6, 1)
             $retr = 0; try { $retr = [int]$j.end.sum_sent.retransmits } catch {}
             $sentMbps = 0; try { $sentMbps = [math]::Round($j.end.sum_sent.bits_per_second / 1e6, 1) } catch {}
@@ -141,13 +165,19 @@ foreach ($rep in 1..$Repeats) {
                 if ($mbps -gt $cap[$c.dir]) { $cap[$c.dir] = $mbps }
             }
             Write-Row @{ scenario = $c.name; direction = $c.dir; repeat = $rep; offered_mbps = $null
-                actual_mbps = $mbps; sent_mbps = $sentMbps; retransmits = $retr; path = $pathBefore }
-        } else { Write-Host "  $($c.name) r$rep : ERROR" -ForegroundColor Red }
+                actual_mbps = $mbps; sent_mbps = $sentMbps; retransmits = $retr; path = $pathBefore; valid = $true }
+        } else {
+            Write-Host "  $($c.name) r$rep : FAILED: $($r.error)" -ForegroundColor Red
+            Write-Row @{ scenario = $c.name; direction = $c.dir; repeat = $rep; offered_mbps = $null
+                actual_mbps = -1; sent_mbps = -1; retransmits = -1; path = $pathBefore
+                note = "TCP FAILED: $($r.error)"; valid = $false }
+        }
     }
     # Bidirectional: parse both directions explicitly (v2 bug: bidir was unread).
     $pathBefore = Get-PathState
-    $j = Invoke-IperfJson "-c $Peer -p $ServerPortUp -t $Duration -P 4 --bidir" "$ResultsDir\tcp-bidir-r$rep.json"
-    if ($j -and -not $j.error) {
+    $r = Invoke-IperfJson "-c $Peer -p $ServerPortUp -t $Duration -P 4 --bidir" "$ResultsDir\tcp-bidir-r$rep.json"
+    if ($r.ok) {
+        $j = $r.json
         # iperf3 --bidir JSON: sum_sent/sum_received cover the client direction;
         # server-side streams appear under server_output_text; parse both.
         $upMbps = 0; $downMbps = 0; $retr = 0
@@ -163,11 +193,21 @@ foreach ($rep in 1..$Repeats) {
         } catch {}
         Write-Host "  tcp-bidir r$rep : up=${upMbps}Mbps down=${downMbps}Mbps (retr=$retr)"
         Write-Row @{ scenario = "tcp-bidir"; direction = "bidir"; repeat = $rep
-            actual_mbps = $upMbps; down_mbps = $downMbps; retransmits = $retr; path = $pathBefore }
+            actual_mbps = $upMbps; down_mbps = $downMbps; retransmits = $retr; path = $pathBefore; valid = $true }
+    } else {
+        Write-Host "  tcp-bidir r$rep : FAILED: $($r.error)" -ForegroundColor Red
+        Write-Row @{ scenario = "tcp-bidir"; direction = "bidir"; repeat = $rep
+            actual_mbps = -1; down_mbps = -1; retransmits = -1; path = $pathBefore
+            note = "TCP FAILED: $($r.error)"; valid = $false }
     }
 }
-if ($cap.up -eq 0) { $cap.up = 50.0 }
-if ($cap.down -eq 0) { $cap.down = 50.0 }
+# No invented capacity: if the TCP matrix failed, every capacity-dependent
+# sweep would be built on fiction. Stop loudly instead.
+if ($cap.up -eq 0 -or $cap.down -eq 0) {
+    Write-Host "  FATAL: TCP capacity measurement failed (up=$($cap.up) down=$($cap.down)). Refusing to invent 50 Mbps; fix the TCP path first." -ForegroundColor Red
+    Write-Host "Results so far: $Jsonl" -ForegroundColor Yellow
+    exit 1
+}
 Write-Host "  measured capacity: up=$($cap.up)Mbps down=$($cap.down)Mbps"
 
 # --- loaded latency per direction at fractions of directional capacity ---
@@ -188,26 +228,36 @@ foreach ($d in $dirs) {
         # the "download" test silently measures upload load.
         $isDown = ($d.name -eq "download")
         $port = $d.port
+        $loadFile = "$ResultsDir\load-$($d.name)-$F.json"
         $job = Start-Job -ScriptBlock {
-            param($exe, $p, $dd, $r, $rev, $pp)
-            if ($rev) { & $exe -c $p -p $pp -t $dd -u -b "${r}M" -R --json 2>&1 }
-            else { & $exe -c $p -p $pp -t $dd -u -b "${r}M" --json 2>&1 }
-        } -ArgumentList $iperf3, $Peer, $Duration, $rate, $isDown, $port
+            param($exe, $p, $dd, $r, $rev, $pp, $out)
+            if ($rev) { & $exe -c $p -p $pp -t $dd -u -b "${r}M" -R --json 2>&1 | Out-File $out -Encoding utf8 }
+            else { & $exe -c $p -p $pp -t $dd -u -b "${r}M" --json 2>&1 | Out-File $out -Encoding utf8 }
+            if ($LASTEXITCODE -ne 0) { "EXIT:$LASTEXITCODE" | Out-File "$out.exit" -Encoding utf8 }
+        } -ArgumentList $iperf3, $Peer, $Duration, $rate, $isDown, $port, $loadFile
         Start-Sleep 2
         $lat = Measure-Latency 200 5
-        $loadJson = Receive-Job $job -Wait -AutoRemoveJob | Out-String
+        $null = Receive-Job $job -Wait -AutoRemoveJob
+        $loadJson = ""
+        $jobExit = $null
+        if (Test-Path $loadFile) { $loadJson = Get-Content $loadFile -Raw }
+        if (Test-Path "$loadFile.exit") { $jobExit = (Get-Content "$loadFile.exit" -Raw).Trim() }
         $valid = $true
+        $loadErr = ""
+        if ([string]::IsNullOrWhiteSpace($loadJson)) { $valid = $false; $loadErr = "no load output (job crashed?)" }
+        if ($jobExit) { $valid = $false; $loadErr = "load client $jobExit" }
         try {
+            if ([string]::IsNullOrWhiteSpace($loadJson)) { throw "empty load output" }
             $lj = $loadJson | ConvertFrom-Json
             if ($lj.error) { throw "iperf error: $($lj.error)" }
             $actual = [math]::Round($lj.end.sum.bits_per_second / 1e6, 1)
             $loss = [math]::Round($lj.end.sum.lost_percent, 2)
-        } catch { $actual = -1; $loss = -1; $valid = $false }
+        } catch { $actual = -1; $loss = -1; $valid = $false; if (-not $loadErr) { $loadErr = $_.Exception.Message } }
         $pathAfter = Get-PathState
         $note = ""
         if ($pathBefore.mode -ne $pathAfter.mode) { $note = "PATH CHANGED mid-run; result flagged" }
         if ($actual -gt 0 -and $actual -lt $rate * 0.7 -and $f -le 1.0) { $note += " under-delivered load" }
-        if (-not $valid) { $note += " LOAD FAILED: row invalid, values are placeholders" }
+        if (-not $valid) { $note += " LOAD FAILED ($loadErr): row invalid, values are placeholders" }
         Write-Host "  $($d.name) ${pct}%: actual=${actual}Mbps loss=${loss}% p50=$($lat.p50) p95=$($lat.p95) p99=$($lat.p99) max=$($lat.max) valid=$valid $note"
         Write-Row @{ scenario = "loaded-latency"; direction = $d.name; fraction = $f
             offered_mbps = $rate; actual_mbps = $actual; loss_pct = $loss
@@ -225,30 +275,48 @@ foreach ($f in @(0.25, 0.50, 0.75, 0.90, 1.00)) {
     $rateDown = [math]::Round($cap.down * $f, 1)
     $pct = [int]($f * 100)
     $pathBefore = Get-PathState
+    $upFile = "$ResultsDir\load-bidi-$f-up.json"
+    $downFile = "$ResultsDir\load-bidi-$f-down.json"
     $jobUp = Start-Job -ScriptBlock {
-        param($exe, $p, $dd, $r, $pp) & $exe -c $p -p $pp -t $dd -u -b "${r}M" --json 2>&1
-    } -ArgumentList $iperf3, $Peer, $Duration, $rateUp, $ServerPortUp
+        param($exe, $p, $dd, $r, $pp, $out) & $exe -c $p -p $pp -t $dd -u -b "${r}M" --json 2>&1 | Out-File $out -Encoding utf8
+        if ($LASTEXITCODE -ne 0) { "EXIT:$LASTEXITCODE" | Out-File "$out.exit" -Encoding utf8 }
+    } -ArgumentList $iperf3, $Peer, $Duration, $rateUp, $ServerPortUp, $upFile
     $jobDown = Start-Job -ScriptBlock {
-        param($exe, $p, $dd, $r, $pp) & $exe -c $p -p $pp -t $dd -u -b "${r}M" -R --json 2>&1
-    } -ArgumentList $iperf3, $Peer, $Duration, $rateDown, $ServerPortDown
+        param($exe, $p, $dd, $r, $pp, $out) & $exe -c $p -p $pp -t $dd -u -b "${r}M" -R --json 2>&1 | Out-File $out -Encoding utf8
+        if ($LASTEXITCODE -ne 0) { "EXIT:$LASTEXITCODE" | Out-File "$out.exit" -Encoding utf8 }
+    } -ArgumentList $iperf3, $Peer, $Duration, $rateDown, $ServerPortDown, $downFile
     Start-Sleep 2
     $lat = Measure-Latency 200 5
-    $upJson = Receive-Job $jobUp -Wait -AutoRemoveJob | Out-String
-    $downJson = Receive-Job $jobDown -Wait -AutoRemoveJob | Out-String
+    $null = Receive-Job $jobUp -Wait -AutoRemoveJob
+    $null = Receive-Job $jobDown -Wait -AutoRemoveJob
+    $upJson = ""; $downJson = ""
+    if (Test-Path $upFile) { $upJson = Get-Content $upFile -Raw }
+    if (Test-Path $downFile) { $downJson = Get-Content $downFile -Raw }
+    $exitUp = $null; $exitDown = $null
+    if (Test-Path "$upFile.exit") { $exitUp = (Get-Content "$upFile.exit" -Raw).Trim() }
+    if (Test-Path "$downFile.exit") { $exitDown = (Get-Content "$downFile.exit" -Raw).Trim() }
     $actualUp = -1; $lossUp = -1; $actualDown = -1; $lossDown = -1
     $errUp = $null; $errDown = $null
-    try {
-        $uj = $upJson | ConvertFrom-Json
-        if ($uj.error) { throw "iperf error: $($uj.error)" }
-        $actualUp = [math]::Round($uj.end.sum.bits_per_second / 1e6, 1)
-        $lossUp = [math]::Round($uj.end.sum.lost_percent, 2)
-    } catch { $errUp = $_.Exception.Message }
-    try {
-        $dj = $downJson | ConvertFrom-Json
-        if ($dj.error) { throw "iperf error: $($dj.error)" }
-        $actualDown = [math]::Round($dj.end.sum.bits_per_second / 1e6, 1)
-        $lossDown = [math]::Round($dj.end.sum.lost_percent, 2)
-    } catch { $errDown = $_.Exception.Message }
+    if ([string]::IsNullOrWhiteSpace($upJson)) { $errUp = "no up-load output (job crashed?)" }
+    if ($exitUp) { $errUp = "up-load client $exitUp" }
+    if ([string]::IsNullOrWhiteSpace($downJson)) { $errDown = "no down-load output (job crashed?)" }
+    if ($exitDown) { $errDown = "down-load client $exitDown" }
+    if (-not $errUp) {
+        try {
+            $uj = $upJson | ConvertFrom-Json
+            if ($uj.error) { throw "iperf error: $($uj.error)" }
+            $actualUp = [math]::Round($uj.end.sum.bits_per_second / 1e6, 1)
+            $lossUp = [math]::Round($uj.end.sum.lost_percent, 2)
+        } catch { $errUp = $_.Exception.Message }
+    }
+    if (-not $errDown) {
+        try {
+            $dj = $downJson | ConvertFrom-Json
+            if ($dj.error) { throw "iperf error: $($dj.error)" }
+            $actualDown = [math]::Round($dj.end.sum.bits_per_second / 1e6, 1)
+            $lossDown = [math]::Round($dj.end.sum.lost_percent, 2)
+        } catch { $errDown = $_.Exception.Message }
+    }
     $pathAfter = Get-PathState
     $note = ""
     if ($pathBefore.mode -ne $pathAfter.mode) { $note = "PATH CHANGED mid-run; result flagged" }
@@ -265,20 +333,53 @@ foreach ($f in @(0.25, 0.50, 0.75, 0.90, 1.00)) {
         latency = $lat; path = $pathBefore; path_after = $pathAfter; note = $note.Trim(); valid = $valid }
 }
 
-# --- UDP sweep: rates x sizes, delivered + pps + loss + jitter ---
-Write-Host "[4] UDP sweep..." -ForegroundColor Yellow
-foreach ($f in @(0.25, 0.50, 1.00)) {
-    $rate = [math]::Round($cap.up * $f, 1)
-    foreach ($len in @(64, 256, 1200)) {
-        $j = Invoke-IperfJson "-c $Peer -p $ServerPortUp -u -b ${rate}M -l $len -t $Duration" "$ResultsDir\udp-${rate}M-${len}B.json"
-        if ($j -and -not $j.error) {
-            $s = $j.end.sum
-            $pps = [math]::Round($s.packets_received / $Duration, 0)
-            $del = [math]::Round($s.bits_per_second / 1e6, 1)
-            Write-Host ("  offered={0}Mbps len={1}B delivered={2}Mbps pps={3} loss={4}% jitter={5}ms" -f $rate, $len, $del, $pps, [math]::Round($s.lost_percent, 2), [math]::Round($s.jitter_ms, 3))
-            Write-Row @{ scenario = "udp"; offered_mbps = $rate; packet_len = $len
-                actual_mbps = $del; pps = $pps; loss_pct = [math]::Round($s.lost_percent, 2)
-                jitter_ms = [math]::Round($s.jitter_ms, 3); path = (Get-PathState) }
+# --- UDP sweep: rates x sizes x directions, sender vs receiver split ---
+# Sizes span single-frame (512, 900) and segmented (1200, 1460, 2700)
+# dataplane behavior; both directions run so upload/download asymmetries
+# (like the Linux→Windows collapse) show up with numbers, not vibes.
+# `actual_mbps` is RECEIVER-side delivered throughput (sum_received), never
+# the sender offer: iperf3 UDP `sum` can be sender-side, and misreading it
+# once reported "actual=50Mbps loss=92%" for ~3.8 Mbps delivered.
+Write-Host "[4] UDP sweep (sizes x directions)..." -ForegroundColor Yellow
+$udpDirs = @(
+    @{ name = "up"; port = $ServerPortUp; extra = "" },
+    @{ name = "down"; port = $ServerPortDown; extra = "-R" }
+)
+foreach ($ud in $udpDirs) {
+    foreach ($f in @(0.25, 0.50, 1.00)) {
+        $rate = [math]::Round($cap.up * $f, 1)
+        foreach ($len in @(512, 900, 1200, 1460, 2700)) {
+            $args = "-c $Peer -p $($ud.port) -u -b ${rate}M -l $len -t $Duration $($ud.extra)".Trim()
+            $r = Invoke-IperfJson $args "$ResultsDir\udp-$($ud.name)-${rate}M-${len}B.json"
+            if ($r.ok) {
+                $j = $r.json
+                # Sender side (offer) vs receiver side (delivered): read
+                # both explicitly; a missing receiver summary invalidates
+                # the row instead of masquerading the offer as delivered.
+                $send = $null; $recv = $null
+                try { $send = $j.end.sum } catch {}
+                try { $recv = $j.end.sum_received } catch {}
+                if ($null -eq $recv) { throw "no sum_received in iperf JSON" }
+                $sentMbps = [math]::Round($send.bits_per_second / 1e6, 1)
+                $del = [math]::Round($recv.bits_per_second / 1e6, 1)
+                $ppsSent = $null; $ppsRecv = $null
+                try { $ppsSent = [math]::Round($send.packets / $Duration, 0) } catch {}
+                try { $ppsRecv = [math]::Round($recv.packets_received / $Duration, 0) } catch {}
+                if ($null -eq $ppsRecv) { try { $ppsRecv = [math]::Round($recv.packets / $Duration, 0) } catch {} }
+                $loss = -1; $jitter = $null
+                try { $loss = [math]::Round($recv.lost_percent, 2) } catch {}
+                try { $jitter = [math]::Round($recv.jitter_ms, 3) } catch {}
+                Write-Host ("  $($ud.name) offered={0}Mbps sent={1}Mbps delivered={2}Mbps pps_sent={3} pps_recv={4} loss={5}% jitter={6}ms len={7}B" -f $rate, $sentMbps, $del, $ppsSent, $ppsRecv, $loss, $jitter, $len)
+                Write-Row @{ scenario = "udp"; direction = $ud.name; offered_mbps = $rate; packet_len = $len
+                    sent_mbps = $sentMbps; actual_mbps = $del; pps_sent = $ppsSent; pps_received = $ppsRecv
+                    loss_pct = $loss; jitter_ms = $jitter; path = (Get-PathState); valid = $true }
+            } else {
+                Write-Host "  $($ud.name) offered=${rate}Mbps len=${len}B : FAILED: $($r.error)" -ForegroundColor Red
+                Write-Row @{ scenario = "udp"; direction = $ud.name; offered_mbps = $rate; packet_len = $len
+                    sent_mbps = -1; actual_mbps = -1; pps_sent = $null; pps_received = $null
+                    loss_pct = -1; jitter_ms = $null; path = (Get-PathState)
+                    note = "UDP FAILED: $($r.error)"; valid = $false }
+            }
         }
     }
 }

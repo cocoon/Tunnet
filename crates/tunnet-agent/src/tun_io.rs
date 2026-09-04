@@ -33,12 +33,27 @@ pub fn build_tun(
     mtu: u16,
 ) -> anyhow::Result<AsyncDevice> {
     // Fast-path builder: Linux enables offload; Windows uses the Wintun ring.
+    // Diagnostic override for A/B runs: TUNNET_TUN_OFFLOAD=0 disables
+    // tun-rs offload+GSO (plain single-packet TUN I/O instead).
+    #[cfg(target_os = "linux")]
+    let offload = std::env::var("TUNNET_TUN_OFFLOAD")
+        .map(|v| {
+            !matches!(
+                v.to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(true);
     let builder = DeviceBuilder::new()
         .name(ifname)
         .ipv4(ipv4, prefix, None)
         .mtu(mtu);
     #[cfg(target_os = "linux")]
-    let builder = builder.offload(true);
+    let builder = if offload {
+        builder.offload(true)
+    } else {
+        builder
+    };
     #[cfg(windows)]
     let builder = {
         let path = crate::wintun::materialize()?;
@@ -154,15 +169,32 @@ fn handle_outbound_one(
     }
 
     let len = packet.len() as i64;
-    let dropped = {
+    // Every shed/evicted packet is reported (gauges + telemetry) — the
+    // scheduler never drops silently (see EnqueueOutcome).
+    let outcome = {
         let mut sched = fast.scheduler.lock();
-        sched.enqueue(packet, std::time::Instant::now())
+        let outcome = sched.enqueue(packet, std::time::Instant::now());
+        let deltas = sched.drain_drops();
+        (outcome, deltas)
     };
-    if let Some(reason) = dropped {
-        metrics.dropped_inc(reason.as_str());
-        metrics.sched_drop_inc(reason.as_str());
-        return None;
+    match outcome.0 {
+        tunnet_core::scheduler::EnqueueOutcome::Accepted => {}
+        tunnet_core::scheduler::EnqueueOutcome::AcceptedEvicted {
+            reason,
+            evicted_len,
+        } => {
+            metrics.queue_add(-1, -(evicted_len as i64), 0);
+            metrics.dropped_inc(reason.as_str());
+            metrics.sched_drop_inc(reason.as_str());
+        }
+        tunnet_core::scheduler::EnqueueOutcome::Rejected { reason } => {
+            metrics.dropped_inc(reason.as_str());
+            metrics.sched_drop_inc(reason.as_str());
+            report_sched_deltas(metrics, outcome.1);
+            return None;
+        }
     }
+    report_sched_deltas(metrics, outcome.1);
     metrics.queue_add(1, len, 0);
     ensure_pump(
         &fast,
@@ -172,6 +204,12 @@ fn handle_outbound_one(
         meter.clone(),
     );
     Some(fast)
+}
+
+/// Report drained CoDel/emergency deltas (dequeue-side drops with no
+/// enqueue decision site).
+fn report_sched_deltas(metrics: &AgentMetrics, deltas: tunnet_core::scheduler::SchedDropDeltas) {
+    metrics.sched_drops_add(deltas.codel, deltas.emergency);
 }
 
 /// Mutable packet bytes for NAT, materializing pooled/shared storage.
@@ -251,14 +289,30 @@ async fn send_reject_framed(
         return;
     };
     let len = packet.len() as i64;
-    let dropped = {
+    let (outcome, deltas) = {
         let mut sched = fast.scheduler.lock();
-        sched.enqueue(packet, std::time::Instant::now())
+        let outcome = sched.enqueue(packet, std::time::Instant::now());
+        let deltas = sched.drain_drops();
+        (outcome, deltas)
     };
-    if let Some(reason) = dropped {
-        metrics.dropped_inc(reason.as_str());
-        return;
+    match outcome {
+        tunnet_core::scheduler::EnqueueOutcome::Accepted => {}
+        tunnet_core::scheduler::EnqueueOutcome::AcceptedEvicted {
+            reason,
+            evicted_len,
+        } => {
+            metrics.queue_add(-1, -(evicted_len as i64), 0);
+            metrics.dropped_inc(reason.as_str());
+            metrics.sched_drop_inc(reason.as_str());
+        }
+        tunnet_core::scheduler::EnqueueOutcome::Rejected { reason } => {
+            metrics.dropped_inc(reason.as_str());
+            metrics.sched_drop_inc(reason.as_str());
+            report_sched_deltas(metrics, deltas);
+            return;
+        }
     }
+    report_sched_deltas(metrics, deltas);
     metrics.queue_add(1, len, 0);
     ensure_pump(
         fast,
@@ -1152,7 +1206,7 @@ mod tests {
                 .scheduler
                 .lock()
                 .enqueue(pkt, std::time::Instant::now())
-                .is_none()
+                .is_accepted()
         );
         ensure_pump(
             &member,

@@ -591,14 +591,24 @@ impl PeerRegistry {
     }
 
     /// Adaptive transport-full backoff (§0.7): RTT/4 clamped to
-    /// [100µs, 2ms]. No fixed 5 ms stall, no spin, no send_datagram_wait.
-    /// New enqueues notify immediately, so this timeout is only the
-    /// no-new-work fallback. (A public `datagrams_unblocked` waiter in
-    /// Iroh/noq would be the cleaner upstream primitive; investigated,
-    /// not available — the internal Notify stays private.)
+    /// [100µs, max]. The ceiling defaults to 2 ms and can be raised for
+    /// A/B runs via `TUNNET_PUMP_BACKOFF_MAX_US` (diagnostic only). No
+    /// fixed 5 ms stall, no spin, no send_datagram_wait. New enqueues
+    /// notify immediately, so this timeout is only the no-new-work
+    /// fallback. (A public `datagrams_unblocked` waiter in Iroh/noq would
+    /// be the cleaner upstream primitive; investigated, not available —
+    /// the internal Notify stays private.)
     pub fn backoff_for(transport: &PeerTransportState) -> Duration {
+        static MAX_MICROS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        let max = *MAX_MICROS.get_or_init(|| {
+            std::env::var("TUNNET_PUMP_BACKOFF_MAX_US")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|v| *v >= 100)
+                .unwrap_or(2000)
+        });
         let rtt_ms = transport.rtt_ms.load(Ordering::Relaxed);
-        let micros = rtt_ms.saturating_mul(250).clamp(100, 2000);
+        let micros = rtt_ms.saturating_mul(250).clamp(100, max);
         Duration::from_micros(micros)
     }
 }

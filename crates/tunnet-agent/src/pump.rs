@@ -328,6 +328,11 @@ async fn run_peer_pump(ctx: PumpCtx) {
                 reconcile(&fast, &metrics, &mut last_levels);
             }
         }
+        // Report dequeue-side drops (CoDel/emergency inside next()): they
+        // have no enqueue decision site, so the pump drains them here.
+        // Deltas partition across lock holders; the sum stays exact.
+        let deltas = fast.scheduler.lock().drain_drops();
+        metrics.sched_drops_add(deltas.codel, deltas.emergency);
     }
 }
 

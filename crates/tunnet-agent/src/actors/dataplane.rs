@@ -317,6 +317,35 @@ impl DataPlaneActor {
         self.status.set_restarting(false);
         self.status.set_outbound_alive(true);
         self.status.set_generation(generation);
+        // Eager preconnect (keep-alive): dial every known peer NOW so the
+        // first real packet doesn't pay connection setup (the classic
+        // first-ping-timeout). Best-effort and bounded: skipped peers are
+        // still dialed on demand by the pump. Skipped entirely without
+        // keep-alive.
+        if self.node.tunnel_pool.keep_alive() {
+            let pool = self.node.tunnel_pool.clone();
+            let routes = self.node.routes.clone();
+            let local = pool.endpoint().id();
+            tokio::spawn(async move {
+                let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
+                let mut set = tokio::task::JoinSet::new();
+                for peer in routes.peers() {
+                    if peer.endpoint == local {
+                        continue;
+                    }
+                    let Ok(permit) = sem.clone().try_acquire_owned() else {
+                        continue;
+                    };
+                    let pool = pool.clone();
+                    let ep = peer.endpoint;
+                    set.spawn(async move {
+                        let _permit = permit;
+                        let _ = pool.get(ep).await;
+                    });
+                }
+                while set.join_next().await.is_some() {}
+            });
+        }
         let _ = self.events.send(LocalEvent::DataPlaneChanged { up: true });
         tracing::info!("data plane up");
         Ok(())

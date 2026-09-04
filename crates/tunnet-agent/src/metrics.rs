@@ -280,6 +280,17 @@ impl AgentMetrics {
         self.dropped_inc(reason);
     }
 
+    /// Report drained scheduler drop deltas (CoDel/emergency drops observed
+    /// inside dequeue, which have no enqueue decision site to report them).
+    pub fn sched_drops_add(&self, codel: u64, emergency: u64) {
+        if codel > 0 {
+            self.drop_sched_codel.increment(codel);
+        }
+        if emergency > 0 {
+            self.drop_sched_stale.increment(emergency);
+        }
+    }
+
     /// Aggregate queue levels across all peers (signed deltas, never
     /// overwrites another peer's values).
     pub fn queue_add(&self, packets: i64, bytes: i64, flows: i64) {

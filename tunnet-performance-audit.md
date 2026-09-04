@@ -1735,3 +1735,47 @@ Validation after fix: `fmt --check`, workspace `check`, workspace
 Linux; `nextest --workspace`: 410 passed, 1 skipped (Windows);
 Linux 325 green (minus the proven-environmental DNS test).
 
+
+# 18. Under-load diagnosis pass (2026-09-04) — scheduler visibility, bench honesty, knobs
+
+Context: after §17 the black hole was gone (ping 4/4), but benchmarks showed Linux→Windows collapsing under sustained load (86–93% UDP loss, ~2–4 Mbps delivered ceiling) while Windows→Linux did 55 Mbps at 0% loss, plus an all-ERROR TCP matrix. This pass makes every drop visible, stops the benchmark from lying, and adds diagnostic knobs — before any tuning guesses.
+
+## 18.1 Silent scheduler eviction now reported (scheduler.rs, tun_io.rs, pump.rs, metrics.rs)
+
+- `enqueue` returned `None` after evicting the flow's stalest head at `FLOW_PACKET_CAP=64`: a real loss mechanism invisible to gauges and telemetry (only `drops_cap` moved, consumed by tests alone).
+- New `EnqueueOutcome::{Accepted, AcceptedEvicted{reason, evicted_len}, Rejected{reason}}`: every shed/evicted packet is reported with its reason, and evictions carry the victim length so gauges reconcile exactly (previously the victim's +1/+len leaked). Both agent enqueue sites reconcile gauges and report `dropped_inc` + `sched_drop_inc` for evictions/rejections.
+- `drain_drops()` surfaces CoDel/emergency drops (which happen inside `next()` with no enqueue decision site): drained by the pump every iteration and after every agent enqueue; deltas partition across lock holders so the sum stays exact, never double-counted. New `sched_drops_add(codel, emergency)` counted sink.
+- Tests: `eviction_reports_victim_for_gauge_reconcile`, `drain_drops_reports_codel_then_quiet` (plus exact-once semantics), `memory_bounds_enforced_without_scan` rewritten to the reporting model (packet conservation: retained + rejected + evicted == offered).
+
+## 18.2 Diagnostic A/B knobs (env, documented, CI must leave them unset)
+
+- TUNNET_FLOW_PACKET_CAP (default 64): per-flow cap override (64 vs 256 runs). Read in PeerScheduler::new; set_flow_packet_cap for programmatic use.
+- TUNNET_TUN_OFFLOAD=0: disables tun-rs offload+GSO (plain TUN I/O). Safe both ways: the writer layout works with and without vnet, and 
+ecv_multiple degrades to the single-packet path.
+- TUNNET_QUIC_DATAGRAM_BUFFER_KB (default 64): QUIC DATAGRAM staging (64/128/256 runs), clamped to [4 KiB, 1 MiB].
+- TUNNET_PUMP_BACKOFF_MAX_US (default 2000): transport-full backoff ceiling (OnceLock, stall path only).
+- With these + the §18.1 counters (sched_flow_cap, sched_peer_bytes/packets, sched_codel, sched_emergency, 	ransport_full), a loaded run attributes every missing packet to exactly one cause instead of guessing.
+
+## 18.3 Eager preconnect (actors/dataplane.rs)
+
+- On bring-up with keep-alive, dial every known routed peer concurrently (semaphore 8, skip-when-full, errors ignored — the pump still dials on demand). Kills the classic first-ping-timeout: the first real packet no longer pays connection setup. Skipped entirely without keep-alive.
+
+## 18.4 bench.ps1 honesty rework
+
+- Invoke-IperfJson returns {ok, json, exitCode, error}: command, exit code, stdout, stderr file, and JSON parse status travel with every invocation. No more `2>$null` + bare `ERROR`.
+- Warmup checks the exit code (fails loudly if no server listens).
+- The 50.0 capacity fallback is deleted: TCP matrix failure now STOPS the benchmark (`exit 1`) instead of building all sweeps on an invented number.
+- UDP reports offered / sent_mbps / actual_mbps(=receiver sum_received) / pps_sent / pps_received / loss / jitter with defensive field access (iperf JSON field names vary by version; a missing receiver summary invalidates the row rather than promoting the sender offer — the exact `actual=50Mbps loss=92%` misread).
+- UDP sweep is now sizes (512/900/1200/1460/2700: single vs segmented separation) x directions (up + -R down).
+- Loaded-latency jobs write result files + exit markers; crashes, bad exits, and parse failures mark `valid=false` with the cause in the note. Bidir rows require BOTH directions; 200-sample p999=null stays documented-by-design. Parser-verified.
+
+## 18.5 bench.sh parity
+
+- Warmup exit-checked; TCP capacity failure stops (same rule, no invented 50); UDP uses sum_received with sender/receiver split, pps both sides, `valid` flag, and error capture; UDP sweep is sizes x directions like ps1. `bash -n clean.
+
+## 18.6 What the numbers say so far (unverified hypotheses, for the A/B)
+
+- Plateau shape (~2–4 Mbps delivered regardless of offer) fits a sender-side ceiling: 64-packet flow cap with silent head-eviction + 64 KiB QUIC staging + backoff sleeps. The §18.1 counters will confirm or refute on the next loaded run — no tuning applied yet.
+- TCP matrix all-ERROR is still unexplained (likely server-side: no iperf3 listener on the peer, or control-channel blocking); the new error capture will name it on the next run.
+
+Validation: fmt/check/clippy clean both platforms; `nextest --workspace` 412 passed Windows; Linux 327 green; both bench scripts syntax-verified.

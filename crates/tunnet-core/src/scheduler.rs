@@ -47,8 +47,19 @@ pub const EMERGENCY_CEILING: Duration = Duration::from_millis(1000);
 pub const PEER_BYTE_CAP: usize = 256 * 1024;
 /// Hard packet cap per peer (memory bound for tiny packets).
 pub const PEER_PACKET_CAP: usize = 512;
-/// Per-flow packet cap (one flow cannot dominate peer memory).
+/// Per-flow packet cap default (diagnostic override via
+/// `TUNNET_FLOW_PACKET_CAP`, e.g. 64 vs 256 A/B runs). One flow cannot
+/// dominate peer memory.
 pub const FLOW_PACKET_CAP: usize = 64;
+
+/// Default per-flow packet cap, honoring the diagnostic override.
+fn flow_packet_cap_default() -> usize {
+    std::env::var("TUNNET_FLOW_PACKET_CAP")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v >= 8)
+        .unwrap_or(FLOW_PACKET_CAP)
+}
 /// New flows stay "sparse" until they send this many bytes.
 pub const NEW_FLOW_BYTE_BUDGET: usize = 16 * 1024;
 /// Sparse flow sojourn bar: heads older than this are not "interactive".
@@ -186,9 +197,55 @@ pub struct PeerScheduler {
     bytes: usize,
     packets: usize,
     quantum: usize,
+    /// Per-flow packet cap (diagnostic override via TUNNET_FLOW_PACKET_CAP).
+    flow_packet_cap: usize,
     target: Duration,
     interval: Duration,
     counters: SchedCounters,
+    /// Baselines for [`Self::drain_drops`]: cumulative counters already
+    /// reported to telemetry (codel, emergency). Split across however many
+    /// threads drain — the sum stays exact, never double-counted.
+    reported_codel: u64,
+    reported_emergency: u64,
+}
+
+/// Enqueue decision. EVERY shed or evicted packet is reported here — there
+/// are no invisible drops: the caller reconciles gauges and telemetry for
+/// both the admitted packet and any evicted one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnqueueOutcome {
+    /// Admitted (gauges: +1 packet, +len bytes).
+    Accepted,
+    /// Admitted, but an older packet was evicted to make room (gauges: +1
+    /// packet/+len for the newcomer AND -1/-evicted_len for the victim;
+    /// report `reason` to telemetry).
+    AcceptedEvicted {
+        reason: DropReason,
+        evicted_len: usize,
+    },
+    /// Shed (report `reason` to telemetry; gauges untouched).
+    Rejected { reason: DropReason },
+}
+
+impl EnqueueOutcome {
+    pub fn is_accepted(self) -> bool {
+        matches!(self, Self::Accepted | Self::AcceptedEvicted { .. })
+    }
+}
+
+/// CoDel/emergency drops since the last drain (see [`Self::drain_drops`]).
+/// Cap-pressure sheds are reported at the enqueue decision site instead
+/// (see [`EnqueueOutcome`]), so the two paths never double-count.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SchedDropDeltas {
+    pub codel: u64,
+    pub emergency: u64,
+}
+
+impl SchedDropDeltas {
+    pub fn is_empty(self) -> bool {
+        self.codel == 0 && self.emergency == 0
+    }
 }
 
 impl PeerScheduler {
@@ -206,14 +263,22 @@ impl PeerScheduler {
             bytes: 0,
             packets: 0,
             quantum: quantum.max(512),
+            flow_packet_cap: flow_packet_cap_default(),
             target,
             interval: interval.max(Duration::from_millis(1)),
             counters: SchedCounters::default(),
+            reported_codel: 0,
+            reported_emergency: 0,
         }
     }
 
     pub fn set_quantum(&mut self, quantum: usize) {
         self.quantum = quantum.max(512);
+    }
+
+    /// Override the per-flow packet cap (diagnostic A/B only).
+    pub fn set_flow_packet_cap(&mut self, cap: usize) {
+        self.flow_packet_cap = cap.max(8);
     }
 
     pub fn levels(&self) -> (u64, u64, u64) {
@@ -226,6 +291,20 @@ impl PeerScheduler {
 
     pub fn counters(&self) -> SchedCounters {
         self.counters
+    }
+
+    /// Take unreported CoDel/emergency drops since the last drain (for
+    /// telemetry; call after `next()` batches and after enqueues). Safe to
+    /// call from multiple threads sharing the scheduler lock: deltas are
+    /// partitioned, the sum stays exact.
+    pub fn drain_drops(&mut self) -> SchedDropDeltas {
+        let out = SchedDropDeltas {
+            codel: self.counters.drops_codel - self.reported_codel,
+            emergency: self.counters.drops_emergency - self.reported_emergency,
+        };
+        self.reported_codel = self.counters.drops_codel;
+        self.reported_emergency = self.counters.drops_emergency;
+        out
     }
 
     pub fn is_empty(&self) -> bool {
@@ -248,9 +327,12 @@ impl PeerScheduler {
         out
     }
 
-    /// Enqueue a logical packet. Returns the drop reason when shed.
+    /// Enqueue a logical packet. The outcome reports EVERYTHING: admission,
+    /// eviction (with the victim's length for gauge reconciliation), or
+    /// rejection with its reason. Callers must reconcile gauges and report
+    /// telemetry for evictions/rejections — no invisible drops.
     /// `now` should be the packet's observation time (usually Instant::now()).
-    pub fn enqueue(&mut self, packet: LogicalPacket, now: Instant) -> Option<DropReason> {
+    pub fn enqueue(&mut self, packet: LogicalPacket, now: Instant) -> EnqueueOutcome {
         let flow = packet.flow;
         let len = packet.len();
         // Memory bounds first: probe a bounded number of flows for an
@@ -259,35 +341,54 @@ impl PeerScheduler {
         if self.packets >= PEER_PACKET_CAP || self.bytes + len > PEER_BYTE_CAP {
             if !self.evict_one(now) && self.packets >= PEER_PACKET_CAP {
                 self.counters.drops_cap += 1;
-                return Some(DropReason::PeerPacketCap);
+                return EnqueueOutcome::Rejected {
+                    reason: DropReason::PeerPacketCap,
+                };
             }
             if self.bytes + len > PEER_BYTE_CAP {
                 self.counters.drops_cap += 1;
-                return Some(if self.packets >= PEER_PACKET_CAP {
-                    DropReason::PeerPacketCap
-                } else {
-                    DropReason::PeerByteCap
-                });
+                return EnqueueOutcome::Rejected {
+                    reason: if self.packets >= PEER_PACKET_CAP {
+                        DropReason::PeerPacketCap
+                    } else {
+                        DropReason::PeerByteCap
+                    },
+                };
             }
         }
         let is_new_flow = !self.flows.contains_key(&flow);
+        let flow_cap = self.flow_packet_cap;
         let q = self
             .flows
             .entry(flow)
             .or_insert_with(|| FlowQueue::new(now));
-        if q.packets.len() >= FLOW_PACKET_CAP {
+        if q.packets.len() >= flow_cap {
             // Per-flow cap: drop the flow's own stalest head (tail stays
-            // fresh: retransmits and sparse signals survive).
+            // fresh: retransmits and sparse signals survive). REPORTED via
+            // the outcome (with victim length) — never silent.
             if let Some(old) = q.packets.pop_front() {
-                q.bytes -= old.len;
-                self.bytes -= old.len;
+                let evicted_len = old.len;
+                q.bytes -= evicted_len;
+                self.bytes -= evicted_len;
                 self.packets -= 1;
                 self.counters.drops_cap += 1;
+                q.bytes += len;
+                q.packets.push_back(QueuedPacket { packet, len });
+                self.bytes += len;
+                self.packets += 1;
+                self.counters.enqueued += 1;
+                if is_new_flow && !self.new_list.contains(&flow) && !self.old_list.contains(&flow) {
+                    self.new_list.push_back(flow);
+                }
+                return EnqueueOutcome::AcceptedEvicted {
+                    reason: DropReason::FlowCap,
+                    evicted_len,
+                };
             }
-            if q.packets.len() >= FLOW_PACKET_CAP {
-                self.counters.drops_cap += 1;
-                return Some(DropReason::FlowCap);
-            }
+            self.counters.drops_cap += 1;
+            return EnqueueOutcome::Rejected {
+                reason: DropReason::FlowCap,
+            };
         }
         q.bytes += len;
         q.packets.push_back(QueuedPacket { packet, len });
@@ -297,7 +398,7 @@ impl PeerScheduler {
         if is_new_flow && !self.new_list.contains(&flow) && !self.old_list.contains(&flow) {
             self.new_list.push_back(flow);
         }
-        None
+        EnqueueOutcome::Accepted
     }
 
     /// Bounded cap-pressure eviction: inspect at most CAP_PROBE_BOUND flows
@@ -764,7 +865,7 @@ mod tests {
             let mut s = PeerScheduler::new(quantum);
             assert!(
                 s.enqueue(logical(&p, 1111, size - 28), Instant::now())
-                    .is_none()
+                    .is_accepted()
             );
             demote_all(&mut s);
             let mut empties = 0u32;
@@ -800,7 +901,7 @@ mod tests {
         let mut s = PeerScheduler::new(1200);
         let want = logical(&p, 1111, 2800 - 28);
         let (flow, len) = (want.flow, want.len());
-        assert!(s.enqueue(want, Instant::now()).is_none());
+        assert!(s.enqueue(want, Instant::now()).is_accepted());
         let (f, l) = match s.next(Instant::now()) {
             Dequeue::Send(burst) => {
                 assert_eq!(burst.packets.len(), 1);
@@ -853,15 +954,17 @@ mod tests {
         let mut bytes = [0u64; 2];
         for _ in 0..calls {
             while qlen(&s, 1111) < 12 {
-                if s.enqueue(logical(&p, 1111, big_payload), Instant::now())
-                    .is_some()
+                if !s
+                    .enqueue(logical(&p, 1111, big_payload), Instant::now())
+                    .is_accepted()
                 {
                     break;
                 }
             }
             while qlen(&s, 2222) < 64 {
-                if s.enqueue(logical(&p, 2222, small_payload), Instant::now())
-                    .is_some()
+                if !s
+                    .enqueue(logical(&p, 2222, small_payload), Instant::now())
+                    .is_accepted()
                 {
                     break;
                 }
@@ -935,8 +1038,9 @@ mod tests {
         for _ in 0..600 {
             for (i, (sport, size)) in sizes.iter().enumerate() {
                 while qlen(&s, *sport) < depths[i] {
-                    if s.enqueue(logical(&p, *sport, *size), Instant::now())
-                        .is_some()
+                    if !s
+                        .enqueue(logical(&p, *sport, *size), Instant::now())
+                        .is_accepted()
                     {
                         break;
                     }
@@ -965,11 +1069,79 @@ mod tests {
     }
 
     #[test]
+    fn eviction_reports_victim_for_gauge_reconcile() {
+        // The silent-drop bug: flow-cap eviction used to return None.
+        // Now the victim length rides the outcome so gauges stay exact.
+        let p = pool();
+        let mut s = PeerScheduler::new(1536);
+        let one = logical(&p, 1111, 100).len();
+        for _ in 0..64 {
+            assert!(
+                s.enqueue(logical(&p, 1111, 100), Instant::now())
+                    .is_accepted()
+            );
+        }
+        match s.enqueue(logical(&p, 1111, 100), Instant::now()) {
+            EnqueueOutcome::AcceptedEvicted {
+                reason,
+                evicted_len,
+            } => {
+                assert_eq!(reason, DropReason::FlowCap);
+                assert_eq!(evicted_len, one);
+            }
+            other => panic!("expected eviction report, got {other:?}"),
+        }
+        // Still exactly at cap (evict-one-accept-one is net-zero).
+        assert_eq!(s.levels().0 as usize, 64);
+        assert_eq!(s.counters().drops_cap, 1);
+        // No codel/emergency involved.
+        assert!(s.drain_drops().is_empty());
+    }
+
+    #[test]
+    fn drain_drops_reports_codel_then_quiet() {
+        // CoDel drops surface through drain_drops exactly once.
+        let target = Duration::from_millis(2);
+        let interval = Duration::from_millis(10);
+        let p = pool();
+        let mut s = PeerScheduler::with_params(1536, target, interval);
+        let t0 = Instant::now() - interval - Duration::from_millis(5);
+        for _ in 0..10 {
+            let mut pkt = logical(&p, 1111, 1200);
+            pkt.enqueued_at = t0;
+            assert!(s.enqueue(pkt, t0).is_accepted());
+        }
+        demote_all(&mut s);
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut reported = 0u64;
+        while Instant::now() < deadline {
+            match s.next(Instant::now()) {
+                Dequeue::Send(burst) => {
+                    for (pkt, _) in burst.packets.into_iter().rev() {
+                        s.requeue_head(pkt.flow, *pkt);
+                    }
+                }
+                Dequeue::Empty => {}
+            }
+            reported += s.drain_drops().codel;
+            if reported > 0 {
+                break;
+            }
+        }
+        assert!(reported > 0, "CoDel drops must surface via drain");
+        // Second drain is quiet (deltas partition, never double-count).
+        assert!(s.drain_drops().is_empty());
+    }
+
+    #[test]
     fn per_flow_order_preserved() {
         let p = pool();
         let mut s = PeerScheduler::new(1536);
         for _ in 0..5 {
-            assert!(s.enqueue(logical(&p, 1111, 100), Instant::now()).is_none());
+            assert!(
+                s.enqueue(logical(&p, 1111, 100), Instant::now())
+                    .is_accepted()
+            );
         }
         let out = drain_all(&mut s);
         assert_eq!(out.len(), 5);
@@ -982,7 +1154,10 @@ mod tests {
         let p = pool();
         let mut s = PeerScheduler::new(1536);
         for _ in 0..20 {
-            assert!(s.enqueue(logical(&p, 1111, 1200), Instant::now()).is_none());
+            assert!(
+                s.enqueue(logical(&p, 1111, 1200), Instant::now())
+                    .is_accepted()
+            );
         }
         // Age the bulk flow out of sparsity, as the pump would via demotion.
         let bulk_key = {
@@ -994,7 +1169,10 @@ mod tests {
             s.old_list.push_back(k);
             k
         };
-        assert!(s.enqueue(logical(&p, 2222, 100), Instant::now()).is_none());
+        assert!(
+            s.enqueue(logical(&p, 2222, 100), Instant::now())
+                .is_accepted()
+        );
         match s.next(Instant::now()) {
             Dequeue::Send(burst) => assert_ne!(burst.packets[0].0.flow, bulk_key),
             Dequeue::Empty => panic!("expected sparse packet"),
@@ -1009,7 +1187,7 @@ mod tests {
             for _ in 0..4 {
                 assert!(
                     s.enqueue(logical(&p, sport, 1200), Instant::now())
-                        .is_none()
+                        .is_accepted()
                 );
             }
         }
@@ -1043,7 +1221,7 @@ mod tests {
         for _ in 0..10 {
             let mut pkt = logical(&p, 1111, 1200);
             pkt.enqueued_at = t0;
-            assert!(s.enqueue(pkt, t0).is_none());
+            assert!(s.enqueue(pkt, t0).is_accepted());
         }
         // Demote to old so CoDel (not sparse preference) governs.
         demote_all(&mut s);
@@ -1078,7 +1256,10 @@ mod tests {
         let p = pool();
         let mut s = PeerScheduler::new(1536);
         for _ in 0..8 {
-            assert!(s.enqueue(logical(&p, 1111, 200), Instant::now()).is_none());
+            assert!(
+                s.enqueue(logical(&p, 1111, 200), Instant::now())
+                    .is_accepted()
+            );
         }
         let out = drain_all(&mut s);
         assert_eq!(out.len(), 8);
@@ -1091,26 +1272,33 @@ mod tests {
         let p = pool();
         let mut s = PeerScheduler::new(1536);
         let offered = PEER_PACKET_CAP + 64;
-        let mut shed = 0;
+        let mut admitted = 0usize;
+        let mut evicted_victims = 0usize;
+        let mut rejected = 0usize;
         for i in 0..offered {
-            if s.enqueue(logical(&p, 1000 + (i % 8) as u16, 1400), Instant::now())
-                .is_some()
-            {
-                shed += 1;
+            match s.enqueue(logical(&p, 1000 + (i % 8) as u16, 1400), Instant::now()) {
+                EnqueueOutcome::Accepted => admitted += 1,
+                EnqueueOutcome::AcceptedEvicted { .. } => {
+                    admitted += 1;
+                    evicted_victims += 1;
+                }
+                EnqueueOutcome::Rejected { .. } => rejected += 1,
             }
         }
         let (packets, bytes, _) = s.levels();
         assert!((packets as usize) <= PEER_PACKET_CAP);
         assert!((bytes as usize) <= PEER_BYTE_CAP + 1500);
-        // Every offered packet is either retained or shed exactly once:
-        // hard drops (shed) plus per-flow AQM evictions (the rest of
-        // drops_cap) plus emergency drops must reconcile with offered.
+        // Packet conservation under the reporting model: every admission
+        // is either still retained or was later evicted; every offered
+        // packet is retained, rejected, or an evicted victim — each
+        // reported exactly once.
+        assert_eq!(admitted, (packets as usize) + evicted_victims);
+        assert_eq!((packets as usize) + rejected + evicted_victims, offered);
         let c = s.counters();
-        assert!(c.drops_cap as usize >= shed);
-        assert_eq!(
-            (packets as usize) + (c.drops_cap as usize) + (c.drops_emergency as usize),
-            offered
-        );
+        assert_eq!(c.drops_cap as usize, rejected + evicted_victims);
+        assert_eq!(c.drops_emergency, 0);
+        // Fresh traffic: no CoDel/emergency drops to drain.
+        assert!(s.drain_drops().is_empty());
     }
 
     #[test]
@@ -1137,7 +1325,7 @@ mod tests {
         for _ in 0..20 {
             let mut t = LP::from_slice(&tcp_raw).unwrap();
             t.enqueued_at = Instant::now();
-            assert!(s.enqueue(t, Instant::now()).is_none());
+            assert!(s.enqueue(t, Instant::now()).is_accepted());
         }
         // Bulk is backlogged (demoted as the pump would), so the fresh ICMP
         // flow must jump it.
@@ -1150,7 +1338,7 @@ mod tests {
         for k in s.flows.keys().cloned().collect::<Vec<_>>() {
             s.old_list.push_back(k);
         }
-        assert!(s.enqueue(icmp, Instant::now()).is_none());
+        assert!(s.enqueue(icmp, Instant::now()).is_accepted());
         match s.next(Instant::now()) {
             Dequeue::Send(burst) => assert_ne!(burst.packets[0].0.flow, tcp.flow),
             Dequeue::Empty => panic!("expected icmp"),
@@ -1165,9 +1353,15 @@ mod tests {
         let mut a = PeerScheduler::new(1536);
         let mut b = PeerScheduler::new(1536);
         for _ in 0..3 {
-            assert!(a.enqueue(logical(&p, 1111, 100), Instant::now()).is_none());
+            assert!(
+                a.enqueue(logical(&p, 1111, 100), Instant::now())
+                    .is_accepted()
+            );
         }
-        assert!(b.enqueue(logical(&p, 9999, 100), Instant::now()).is_none());
+        assert!(
+            b.enqueue(logical(&p, 9999, 100), Instant::now())
+                .is_accepted()
+        );
         // Simulate transport-full on A: dequeue (sparse serves one packet)
         // then requeue the burst.
         let burst = match a.next(Instant::now()) {

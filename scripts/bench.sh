@@ -94,7 +94,7 @@ echo "Peer: $PEER | Duration: ${DURATION}s | Repeats: $REPEATS | Results: $RESUL
 # --- connectivity + warmup ---
 echo "[0] Connectivity + warmup..."
 ping -c 4 "$PEER" > /dev/null 2>&1 || { echo "  FAIL: $PEER unreachable"; exit 1; }
-iperf3 -c "$PEER" -t 5 -P 2 > /dev/null 2>&1
+iperf3 -c "$PEER" -p "$PORT_UP" -t 5 -P 2 > /dev/null 2>&1 || { echo "  FAIL: warmup iperf3 failed (is the server listening on port $PORT_UP?)"; exit 1; }
 echo "  OK, warmed up"
 
 # --- idle latency: 1200 samples for real p99.9 ---
@@ -176,8 +176,13 @@ row['meta'] = json.loads(os.environ['BENCH_META'])
 open(os.environ['BENCH_JSONL'], 'a').write(json.dumps(row) + chr(10))
 EOF
 done
-CAP_UP=$(python3 -c "print($CAP_UP if $CAP_UP>0 else 50)")
-CAP_DOWN=$(python3 -c "print($CAP_DOWN if $CAP_DOWN>0 else 50)")
+# No invented capacity: if the TCP matrix failed, every capacity-dependent
+# sweep would be built on fiction. Stop loudly instead.
+if ! python3 -c "import sys; sys.exit(0 if float('$CAP_UP')>0 and float('$CAP_DOWN')>0 else 1)"; then
+  echo "  FATAL: TCP capacity measurement failed (up=${CAP_UP} down=${CAP_DOWN}). Refusing to invent 50 Mbps; fix the TCP path first."
+  echo "Results so far: $JSONL"
+  exit 1
+fi
 echo "  measured capacity: up=${CAP_UP}Mbps down=${CAP_DOWN}Mbps"
 
 # --- loaded latency per direction at fractions of directional capacity ---
@@ -304,30 +309,61 @@ open(os.environ['BENCH_JSONL'], 'a').write(json.dumps(row) + chr(10))
 EOF
 done
 
-# --- UDP sweep: rates x sizes ---
-echo "[4] UDP sweep..."
-for F in 0.25 0.50 1.00; do
-  RATE=$(python3 -c "print(round(float('$CAP_UP')*float('$F'),1))")
-  for LEN in 64 256 1200; do
-    path_json > "$RESULTS_DIR/udp.path"
-    run_iperf "udp-${RATE}M-${LEN}B" -p "$PORT_UP" -u -b "${RATE}M" -l "$LEN"
-    python3 - "$RESULTS_DIR/udp-${RATE}M-${LEN}B.json" "$RESULTS_DIR/udp.path" "$RATE" "$LEN" <<'EOF'
+# --- UDP sweep: rates x sizes x directions, sender vs receiver split ---
+# Sizes span single-frame (512, 900) and segmented (1200, 1460, 2700)
+# dataplane behavior; both directions run. `actual_mbps` is RECEIVER-side
+# delivered throughput (sum_received), never the sender offer.
+echo "[4] UDP sweep (sizes x directions)..."
+for dir in "up:$PORT_UP:" "down:$PORT_DOWN:-R"; do
+  name="${dir%%:*}"; rest="${dir#*:}"; port="${rest%%:*}"; extra="${rest#*:}"
+  for F in 0.25 0.50 1.00; do
+    RATE=$(python3 -c "print(round(float('$CAP_UP')*float('$F'),1))")
+    for LEN in 512 900 1200 1460 2700; do
+      path_json > "$RESULTS_DIR/udp.path"
+      # shellcheck disable=SC2086
+      run_iperf "udp-$name-${RATE}M-${LEN}B" -p "$port" -u -b "${RATE}M" -l "$LEN" $extra
+      python3 - "$RESULTS_DIR/udp-$name-${RATE}M-${LEN}B.json" "$RESULTS_DIR/udp.path" "$RATE" "$LEN" "$name" <<'EOF'
 import json,sys,datetime,os
-ipath, ppath, rate, length = sys.argv[1], sys.argv[2], float(sys.argv[3]), int(sys.argv[4])
-d = json.load(open(ipath))
+ipath, ppath, rate, length, direction = sys.argv[1], sys.argv[2], float(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
+valid = True
+err = ''
+try:
+    d = json.load(open(ipath))
+    if isinstance(d.get('error'), str):
+        raise ValueError(d['error'])
+    send = d['end']['sum']
+    recv = d['end']['sum_received']
+except Exception as e:
+    valid = False
+    err = f'UDP FAILED: {e}'[:200]
+    send, recv = {}, {}
 path = json.load(open(ppath))
-s = d['end']['sum']
-pps = round(s.get('packets_received', 0)/float(os.environ.get('BENCH_DURATION', '10')))
-row = {'scenario': 'udp', 'offered_mbps': rate, 'packet_len': length,
-       'actual_mbps': round(s['bits_per_second']/1e6, 1), 'pps': pps,
-       'loss_pct': round(s.get('lost_percent', -1), 2),
-       'jitter_ms': round(s.get('jitter_ms', -1), 3), 'path': path}
-print(f"  offered={rate}Mbps len={length}B delivered={row['actual_mbps']}Mbps pps={pps} loss={row['loss_pct']}% jitter={row['jitter_ms']}ms")
+def num(o, *keys, default=-1):
+    for k in keys:
+        try:
+            v = o[k]
+            if v is not None:
+                return v
+        except Exception:
+            pass
+    return default
+sent_mbps = round(num(send, 'bits_per_second')/1e6, 1) if valid else -1
+actual = round(num(recv, 'bits_per_second')/1e6, 1) if valid else -1
+pps_sent = round(num(send, 'packets', default=0)/float(os.environ.get('BENCH_DURATION', '10'))) if valid else -1
+pps_recv = round(num(recv, 'packets_received', 'packets', default=0)/float(os.environ.get('BENCH_DURATION', '10'))) if valid else -1
+loss = round(num(recv, 'lost_percent'), 2) if valid else -1
+jitter = round(num(recv, 'jitter_ms'), 3) if valid else -1
+note = '' if valid else err
+print(f"  {direction} offered={rate}Mbps sent={sent_mbps}Mbps delivered={actual}Mbps pps_sent={pps_sent} pps_recv={pps_recv} len={length}B loss={loss}% jitter={jitter}ms valid={valid} {note}")
+row = {'scenario': 'udp', 'direction': direction, 'offered_mbps': rate, 'packet_len': length,
+       'sent_mbps': sent_mbps, 'actual_mbps': actual, 'pps_sent': pps_sent, 'pps_received': pps_recv,
+       'loss_pct': loss, 'jitter_ms': jitter, 'path': path, 'note': note, 'valid': valid}
 row['ts'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 row['product'] = os.environ['BENCH_PRODUCT']
 row['meta'] = json.loads(os.environ['BENCH_META'])
 open(os.environ['BENCH_JSONL'], 'a').write(json.dumps(row) + chr(10))
 EOF
+    done
   done
 done
 
