@@ -1,4 +1,4 @@
-//! Dataplane v2 packet ownership: zero/minimal-copy logical packets.
+//! Dataplane packet ownership: zero/minimal-copy logical packets.
 //!
 //! One packet owner moves through TUN receive → parse → scheduler →
 //! segmentation → Iroh without repeated allocation:
@@ -19,11 +19,11 @@ use bytes::Bytes;
 
 use super::{FlowKey, PacketMeta, parse};
 
-/// Headroom reserved at the front of every pooled buffer for the v2 frame
-/// header, so single-frame encoding never copies the payload.
+/// Headroom reserved at the front of every pooled buffer for the tunnel
+/// frame header, so single-frame encoding never copies the payload.
 pub const FRAME_HEADROOM: usize = 32;
 
-/// Logical/virtual MTU default for Dataplane v2.
+/// Logical/virtual MTU default for the dataplane.
 pub const DEFAULT_VIRTUAL_MTU: usize = 2800;
 /// Hard ceiling for a logical packet (framing `total_len` is u16-compatible).
 pub const MAX_LOGICAL_LEN: usize = 9000;
@@ -237,7 +237,7 @@ impl Drop for PooledBuffer {
     }
 }
 
-/// Ownership of logical packet bytes through the v2 pipeline.
+/// Ownership of logical packet bytes through the dataplane pipeline.
 #[derive(Debug)]
 pub enum PacketOwner {
     /// Pooled heap storage; converts to `Bytes` via `from_owner` (no copy).

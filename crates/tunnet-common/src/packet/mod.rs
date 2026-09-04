@@ -28,7 +28,7 @@ pub use frag::{
 };
 pub use frame::{
     DecodeError, Frame, KIND_SEGMENT, KIND_SINGLE, MAX_SEGMENTS, MIN_SEGMENT_PAYLOAD,
-    SEGMENT_OVERHEAD, SINGLE_OVERHEAD, SegmentHeader, decode, encode_segment_prefix,
+    SEGMENT_OVERHEAD, SINGLE_OVERHEAD, SegmentHeader, decode_frame, encode_segment_prefix,
     encode_single_prefix, segment_count,
 };
 pub use meta::{FlowKey, PacketMeta, SshNatClass};

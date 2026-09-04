@@ -283,7 +283,7 @@ impl DataPlaneActor {
             .generation_cancel
             .clone()
             .expect("generation token published above");
-        // Shared v2 packet resources for this generation: pooled buffers and
+        // Shared tunnel packet resources for this generation: pooled buffers and
         // the runtime sweeper (tied to the generation token — no leaked tasks
         // across bring-up cycles).
         let packet_pool = tunnet_common::packet::PacketPool::new(128);

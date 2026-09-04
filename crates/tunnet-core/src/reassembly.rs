@@ -14,9 +14,10 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 use bytes::Bytes;
-use tunnet_common::packet::{Frame, MAX_LOGICAL_LEN, MAX_SEGMENTS, SegmentHeader, decode};
+use tunnet_common::packet::{Frame, MAX_LOGICAL_LEN, MAX_SEGMENTS, SegmentHeader, decode_frame};
 
 /// Maximum concurrent reassemblies per peer.
 pub const MAX_ENTRIES_PER_PEER: usize = 32;
@@ -216,12 +217,15 @@ impl ReassemblyTable {
         InsertOut::Complete(out)
     }
 
-    /// Feed a raw DATAGRAM through decode + insert (convenience for the
-    /// inbound path and tests). Singles are returned directly.
+    /// Feed a raw DATAGRAM through frame decode + insert (convenience for the
+    /// inbound path and tests). Singles are returned directly, with their
+    /// bound network.
     pub fn feed_datagram(&mut self, data: Bytes, now: Instant) -> FeedOut {
-        match decode(&data) {
-            Ok(Frame::Single(p)) => FeedOut::Single(p.to_vec()),
-            Ok(Frame::Segment(h, payload)) => {
+        match decode_frame(&data) {
+            Ok(Frame::Single { net, payload: p }) => FeedOut::Single(net, p.to_vec()),
+            Ok(Frame::Segment {
+                header: h, payload, ..
+            }) => {
                 // Retain the payload without copying: slice the DATAGRAM.
                 let start = data.len() - payload.len();
                 let owned = data.slice(start..);
@@ -283,9 +287,24 @@ impl ReassemblyTable {
     }
 }
 
+impl Drop for ReassemblyTable {
+    /// Release outstanding global reservations (§2.2-4): dropping a table
+    /// with pending reassemblies (peer churn) must return its bytes to the
+    /// shared budget, or repeated churn would permanently exhaust the cap
+    /// with no live reassemblies. Invariant: after all operations,
+    /// `global_bytes == sum(bytes of live tables)`.
+    fn drop(&mut self) {
+        let held = self.bytes;
+        self.bytes = 0;
+        self.entries.clear();
+        self.order.clear();
+        self.global_bytes.fetch_sub(held as u64, Ordering::Relaxed);
+    }
+}
+
 #[derive(Debug)]
 pub enum FeedOut {
-    Single(Vec<u8>),
+    Single(Uuid, Vec<u8>),
     Complete(Vec<u8>),
     Pending,
     Duplicate,
@@ -551,13 +570,65 @@ mod tests {
 
     #[test]
     fn feed_single_passthrough() {
+        use tunnet_common::packet::{KIND_SINGLE, SINGLE_OVERHEAD};
         let mut t = table();
         let now = Instant::now();
-        let mut raw = vec![0x20u8];
+        let net = Uuid::from_u128(0x0e);
+        let mut raw = vec![KIND_SINGLE];
+        raw.extend_from_slice(net.as_bytes());
         raw.extend_from_slice(&logical_bytes(200));
         match t.feed_datagram(Bytes::from(raw.clone()), now) {
-            FeedOut::Single(v) => assert_eq!(v, raw[1..]),
+            FeedOut::Single(got_net, v) => {
+                assert_eq!(got_net, net);
+                assert_eq!(v, raw[SINGLE_OVERHEAD..]);
+            }
             other => panic!("expected single, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drop_releases_global_reservation() {
+        // §2.2-4: dropping a table with pending reassemblies returns its
+        // bytes; repeated churn cannot exhaust the cap.
+        let global = Arc::new(AtomicU64::new(0));
+        {
+            let mut t = ReassemblyTable::with_global_cap(global.clone(), 4096);
+            let now = Instant::now();
+            let (h, p) = seg(
+                SegmentHeader {
+                    id: 11,
+                    index: 0,
+                    count: 2,
+                    total: 200,
+                },
+                &[9u8; 100],
+            );
+            assert!(matches!(t.insert(h, p, now), InsertOut::Pending));
+            assert_eq!(global.load(Ordering::Relaxed), 100);
+        }
+        assert_eq!(global.load(Ordering::Relaxed), 0, "drop must release");
+        // Churn stress: create/fill/drop repeatedly, counter returns to 0.
+        for round in 0..25u32 {
+            let mut t = ReassemblyTable::with_global_cap(global.clone(), 4096);
+            let now = Instant::now();
+            for id in 0..8u32 {
+                let (h, p) = seg(
+                    SegmentHeader {
+                        id: round * 100 + id,
+                        index: 0,
+                        count: 2,
+                        total: 200,
+                    },
+                    &[7u8; 100],
+                );
+                let _ = t.insert(h, p, now);
+            }
+            drop(t);
+            assert_eq!(
+                global.load(Ordering::Relaxed),
+                0,
+                "round {round}: counter must return to zero"
+            );
         }
     }
 
@@ -673,6 +744,8 @@ mod tests {
     #[test]
     fn encode_prefix_shapes_match_decoder() {
         // encode_segment_prefix output must always decode (property bridge).
+        use tunnet_common::packet::SEGMENT_OVERHEAD;
+        let net = Uuid::from_u128(0x0f);
         let h = SegmentHeader {
             id: 42,
             index: 1,
@@ -680,11 +753,18 @@ mod tests {
             total: 5000,
         };
         let mut buf = [0u8; 128];
-        let n = encode_segment_prefix(&mut buf, h);
-        assert_eq!(n, 11);
-        buf[11..11 + 64].fill(0xCC);
-        match tunnet_common::packet::decode(&buf[..75]) {
-            Ok(tunnet_common::packet::Frame::Segment(got, _)) => assert_eq!(got, h),
+        let n = encode_segment_prefix(&mut buf, net, h);
+        assert_eq!(n, SEGMENT_OVERHEAD);
+        buf[SEGMENT_OVERHEAD..SEGMENT_OVERHEAD + 64].fill(0xCC);
+        match tunnet_common::packet::decode_frame(&buf[..SEGMENT_OVERHEAD + 64]) {
+            Ok(tunnet_common::packet::Frame::Segment {
+                net: got_net,
+                header: got,
+                ..
+            }) => {
+                assert_eq!(got_net, net);
+                assert_eq!(got, h);
+            }
             other => panic!("unexpected {other:?}"),
         }
     }

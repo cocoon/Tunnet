@@ -1,12 +1,12 @@
-//! Per-peer outbound pump: FQ-CoDel → v2 segmenter → Model A transport.
+//! Per-peer outbound pump: FQ-CoDel → tunnel segmenter → Model A transport.
 //!
-//! Each peer's pump owns one loop over its [`PeerFastState`]:
+//! Each peer's pump owns one loop over its [`PeerMembershipState`]:
 //!
 //! ```text
 //! scheduler.next() → logical packet (or resume stashed cursor)
 //!   → single frame (header in headroom, from_owner, no copy) or
 //!     segments (incremental cursor, pooled staging per segment)
-//!   → fast.try_send_frame (Model A: space must fit the whole frame;
+//!   → transport.try_send_frame (Model A: space must fit the whole frame;
 //!     the frame is returned on failure, so stalls never consume bytes)
 //!   → TransportFull: stash cursor (segmented) or requeue (single),
 //!     adaptive backoff (notify + RTT/4, no fixed 5 ms, no spin)
@@ -28,14 +28,14 @@ use tunnet_common::packet::{
     PacketPool, SEGMENT_OVERHEAD, SINGLE_OVERHEAD, SegmentHeader, encode_segment_prefix,
     encode_single_prefix,
 };
-use tunnet_core::peers::{FastSendError, PeerFastState, PeerRegistry};
+use tunnet_core::peers::{FastSendError, PeerMembershipState, PeerRegistry};
 use tunnet_core::{ConnPool, scheduler::Dequeue};
 
 use crate::metrics::AgentMetrics;
 
 /// Ensure the peer's pump task is running; otherwise wake it.
 pub fn ensure_pump(
-    fast: &Arc<PeerFastState>,
+    fast: &Arc<PeerMembershipState>,
     pool: ConnPool,
     metrics: AgentMetrics,
     bufs: Arc<PacketPool>,
@@ -58,7 +58,7 @@ pub fn ensure_pump(
 }
 
 struct PumpCtx {
-    fast: Arc<PeerFastState>,
+    fast: Arc<PeerMembershipState>,
     pool: ConnPool,
     metrics: AgentMetrics,
     bufs: Arc<PacketPool>,
@@ -67,7 +67,7 @@ struct PumpCtx {
 
 /// Shared transmit context: one struct instead of eight parameters.
 struct Tx<'a> {
-    fast: &'a Arc<PeerFastState>,
+    fast: &'a Arc<PeerMembershipState>,
     pool: &'a ConnPool,
     metrics: &'a AgentMetrics,
     bufs: &'a Arc<PacketPool>,
@@ -96,6 +96,9 @@ struct PartialPacket {
     /// TransportFull resume; reset on restart). Accounted exactly once at
     /// completion, so segmented traffic is never double-charged (§2.1-2).
     wire_bytes: u64,
+    /// Network bound at dequeue from the route's membership. Every frame
+    /// of this packet carries it (§2.2-1).
+    net: uuid::Uuid,
 }
 
 /// Outcome of re-planning a cursor against current MPS.
@@ -111,27 +114,30 @@ enum Replan {
 }
 
 impl PartialPacket {
-    fn new(packet: LogicalPacket, flow: FlowKey, fast: &PeerFastState) -> Self {
+    fn new(packet: LogicalPacket, flow: FlowKey, fast: &PeerMembershipState) -> Self {
         let total = packet.len();
-        let plan = plan_for_mps(total, fast.mps.load(Ordering::Relaxed));
+        let plan = plan_for_mps(total, fast.transport.mps.load(Ordering::Relaxed));
         Self {
             packet: Some(packet),
             flow,
             next_index: 0,
-            frame_id: fast.next_frame_id.fetch_add(1, Ordering::Relaxed),
+            frame_id: fast.transport.next_frame_id.fetch_add(1, Ordering::Relaxed),
             plan,
             total,
             wire_bytes: 0,
+            // Bound at dequeue: every frame of this packet carries this
+            // network, resolved from the route (§2.2-1).
+            net: fast.identity.read().network_id,
         }
     }
 
     /// Adopt a geometry wholesale: fresh id, offset reset, wire accumulator
     /// reset. Old offsets are never reused after this point.
-    fn adopt(&mut self, plan: SegmentPlan, fast: &PeerFastState) {
+    fn adopt(&mut self, plan: SegmentPlan, fast: &PeerMembershipState) {
         self.plan = plan;
         self.next_index = 0;
         self.wire_bytes = 0;
-        self.frame_id = fast.next_frame_id.fetch_add(1, Ordering::Relaxed);
+        self.frame_id = fast.transport.next_frame_id.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Re-plan against current MPS after a TooLarge (MPS already refreshed
@@ -139,8 +145,8 @@ impl PartialPacket {
     /// capacity AND single/segmented shape — not just the count: an MPS
     /// change that keeps the segment count but alters seg_cap still
     /// restarts with a fresh id.
-    fn replan(&mut self, fast: &PeerFastState) -> Replan {
-        let mps = fast.mps.load(Ordering::Relaxed);
+    fn replan(&mut self, fast: &PeerMembershipState) -> Replan {
+        let mps = fast.transport.mps.load(Ordering::Relaxed);
         match plan_for_mps(self.total, mps) {
             SegmentPlan::Impossible => Replan::Impossible,
             plan if plan == self.plan => Replan::Retry,
@@ -162,6 +168,9 @@ async fn run_peer_pump(ctx: PumpCtx) {
     } = ctx;
     let peer = fast.identity.read().endpoint;
     let mut partial: Option<PartialPacket> = None;
+    // Unstarted remainder of the current DRR burst (gauges debited at
+    // dequeue; requeued with re-credit on stall, drained packet by packet).
+    let mut pending: std::collections::VecDeque<PartialPacket> = std::collections::VecDeque::new();
     // Ownership epoch at pump start; teardown advances it so this task
     // drains and exits instead of parking on a dead generation.
     let epoch0 = fast.epoch.load(Ordering::Relaxed);
@@ -169,7 +178,7 @@ async fn run_peer_pump(ctx: PumpCtx) {
     // are sums; per-pump deltas keep them correct without overwrites).
     let mut last_levels: (i64, i64, i64) = (0, 0, 0);
     let reconcile =
-        |fast: &Arc<PeerFastState>, metrics: &AgentMetrics, last: &mut (i64, i64, i64)| {
+        |fast: &Arc<PeerMembershipState>, metrics: &AgentMetrics, last: &mut (i64, i64, i64)| {
             let (p, b, f) = fast.scheduler.lock().levels();
             let (p, b, f) = (p as i64, b as i64, f as i64);
             metrics.queue_add(p - last.0, b - last.1, f - last.2);
@@ -183,14 +192,30 @@ async fn run_peer_pump(ctx: PumpCtx) {
         // (Enqueue/dequeue deltas were emitted as they happened, so the
         // peer's live contribution equals its current levels: negate them.)
         if fast.epoch.load(Ordering::Relaxed) != epoch0 {
+            // Return in-flight packets (stashed cursor + burst remainder)
+            // to the scheduler first, so the clear below reconciles every
+            // outstanding gauge debit in one place.
+            if let Some(cur) = partial.take()
+                && let Some(packet) = cur.packet
+            {
+                let flow = packet.flow;
+                fast.scheduler.lock().requeue_head(flow, packet);
+            }
+            while let Some(cur) = pending.pop_front() {
+                if let Some(packet) = cur.packet {
+                    let flow = packet.flow;
+                    fast.scheduler.lock().requeue_head(flow, packet);
+                }
+            }
             let (p, b, f) = fast.scheduler.lock().clear();
             metrics.queue_add(-(p as i64), -(b as i64), -(f as i64));
-            drop(partial);
             fast.pump_running.store(false, Ordering::Release);
             return;
         }
-        // 1) Resume a stashed cursor, else dequeue the next logical packet.
-        if partial.is_none() {
+        // 1) Resume a stashed cursor, else dequeue the next burst. A burst
+        // is one DRR service opportunity (all packets the visited flow
+        // could afford); the pump transmits every packet in order.
+        if partial.is_none() && pending.is_empty() {
             let dequeued = {
                 let mut sched = fast.scheduler.lock();
                 sched.next(Instant::now())
@@ -221,24 +246,39 @@ async fn run_peer_pump(ctx: PumpCtx) {
                         }
                     }
                 }
-                Dequeue::Send(packet, sample) => {
-                    metrics.observe_sojourn(sample.sojourn);
-                    let flow = packet.flow;
-                    metrics.queue_add(-1, -(packet.len() as i64), 0);
-                    partial = Some(PartialPacket::new(*packet, flow, &fast));
+                Dequeue::Send(burst) => {
+                    for (packet, sample) in burst.packets {
+                        metrics.observe_sojourn(sample.sojourn);
+                        let flow = packet.flow;
+                        metrics.queue_add(-1, -(packet.len() as i64), 0);
+                        pending.push_back(PartialPacket::new(*packet, flow, &fast));
+                    }
                 }
             }
         }
 
         // Periodic MPS refresh covers silent path changes (plus event-driven
         // refresh in the pool's path watcher and TooLarge recovery below).
-        if fast.sends_since_mps_check.fetch_add(1, Ordering::Relaxed) >= 512 {
-            fast.sends_since_mps_check.store(0, Ordering::Relaxed);
+        if fast
+            .transport
+            .sends_since_mps_check
+            .fetch_add(1, Ordering::Relaxed)
+            >= 512
+        {
+            fast.transport
+                .sends_since_mps_check
+                .store(0, Ordering::Relaxed);
             fast.refresh_mps();
         }
 
-        // 2) Transmit the cursor to completion, stall, or drop.
-        let mut cur = partial.take().expect("cursor");
+        // 2) Transmit one cursor to completion, stall, or drop. A stashed
+        // cursor resumes next iteration; the burst remainder waits in
+        // `pending` (gauges already debited at dequeue; requeues below
+        // re-credit).
+        let mut cur = partial
+            .take()
+            .or_else(|| pending.pop_front())
+            .expect("cursor");
         let tx = Tx {
             fast: &fast,
             pool: &pool,
@@ -256,15 +296,28 @@ async fn run_peer_pump(ctx: PumpCtx) {
             }
             TransmitOut::Stash => {
                 partial = Some(cur);
+                // Return the unstarted remainder to the scheduler head in
+                // order (gauges re-credited per packet).
+                requeue_pending(&fast, &metrics, &mut pending);
                 metrics.sched_transport_full_inc();
                 // Adaptive backoff (§0.7): wake on new work or timeout.
                 tokio::select! {
                     _ = fast.notify.notified() => {}
-                    _ = tokio::time::sleep(PeerRegistry::backoff_for(&fast)) => {}
+                    _ = tokio::time::sleep(PeerRegistry::backoff_for(&fast.transport)) => {}
                 }
             }
             TransmitOut::Wait => {
-                // Requeue/dial handled inside; just back off briefly.
+                // Requeue the working packet if transmit left it intact
+                // (the NoConnection arm usually requeues itself; this
+                // covers the re-parse-failure path losslessly), then the
+                // unstarted remainder. Dial was kicked inside.
+                if let Some(packet) = cur.packet.take() {
+                    let flow = packet.flow;
+                    let len = packet.len() as i64;
+                    fast.scheduler.lock().requeue_head(flow, packet);
+                    metrics.queue_add(1, len, 0);
+                }
+                requeue_pending(&fast, &metrics, &mut pending);
                 tokio::select! {
                     _ = fast.notify.notified() => {}
                     _ = tokio::time::sleep(Duration::from_millis(10)) => {}
@@ -274,6 +327,27 @@ async fn run_peer_pump(ctx: PumpCtx) {
                 metrics.dropped_inc(reason);
                 reconcile(&fast, &metrics, &mut last_levels);
             }
+        }
+    }
+}
+
+/// Return unstarted burst packets to the scheduler head, preserving order.
+/// The stashed/working cursor is handled separately by the caller.
+fn requeue_pending(
+    fast: &Arc<PeerMembershipState>,
+    metrics: &AgentMetrics,
+    pending: &mut std::collections::VecDeque<PartialPacket>,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    let mut sched = fast.scheduler.lock();
+    while let Some(cur) = pending.pop_back() {
+        if let Some(packet) = cur.packet {
+            let flow = packet.flow;
+            let len = packet.len() as i64;
+            sched.requeue_head(flow, packet);
+            metrics.queue_add(1, len, 0);
         }
     }
 }
@@ -331,7 +405,7 @@ fn plan_for_mps(total: usize, mps: usize) -> SegmentPlan {
 /// never mixed with a new MPS: adoption restarts from byte 0.
 async fn transmit_cursor(tx: &Tx<'_>, cur: &mut PartialPacket) -> TransmitOut {
     if cur.next_index == 0 {
-        let mps = tx.fast.mps.load(Ordering::Relaxed);
+        let mps = tx.fast.transport.mps.load(Ordering::Relaxed);
         match plan_for_mps(cur.total, mps) {
             SegmentPlan::Single => return transmit_single(tx, cur).await,
             plan @ SegmentPlan::Segmented { .. } => {
@@ -341,7 +415,7 @@ async fn transmit_cursor(tx: &Tx<'_>, cur: &mut PartialPacket) -> TransmitOut {
             SegmentPlan::Impossible => {
                 // Degenerate path: refresh once, then give up if useless.
                 tx.fast.refresh_mps();
-                let mps2 = tx.fast.mps.load(Ordering::Relaxed);
+                let mps2 = tx.fast.transport.mps.load(Ordering::Relaxed);
                 match plan_for_mps(cur.total, mps2) {
                     SegmentPlan::Single => return transmit_single(tx, cur).await,
                     plan @ SegmentPlan::Segmented { .. } => {
@@ -379,23 +453,23 @@ async fn transmit_single(tx: &Tx<'_>, cur: &mut PartialPacket) -> TransmitOut {
     let frame = match owner {
         PacketOwner::Pooled(mut buf) => match buf.header_slot(SINGLE_OVERHEAD) {
             Some(slot) => {
-                encode_single_prefix(slot);
+                encode_single_prefix(slot, cur.net);
                 Bytes::from_owner(buf)
             }
             None => {
                 // No headroom (should not happen): stage a copy.
                 let src = buf.as_ref().to_vec();
                 drop(buf);
-                stage_single(bufs, &src)
+                stage_single(bufs, cur.net, &src)
             }
         },
-        PacketOwner::Shared(s) => stage_single(bufs, &s),
+        PacketOwner::Shared(s) => stage_single(bufs, cur.net, &s),
     };
     let wire = frame.len();
-    match fast.try_send_frame(frame) {
+    match fast.transport.try_send_frame(frame) {
         Ok(()) => {
             account_sent(fast, cur.flow, total, wire);
-            if fast.relay.load(Ordering::Relaxed) {
+            if fast.transport.relay.load(Ordering::Relaxed) {
                 meter.record(wire as u64);
             }
             TransmitOut::Done {
@@ -448,7 +522,7 @@ async fn transmit_single(tx: &Tx<'_>, cur: &mut PartialPacket) -> TransmitOut {
     }
 }
 
-fn kick_dial(pool: &ConnPool, peer: iroh::EndpointId, fast: &Arc<PeerFastState>) {
+fn kick_dial(pool: &ConnPool, peer: iroh::EndpointId, fast: &Arc<PeerMembershipState>) {
     let pool2 = pool.clone();
     let fast2 = fast.clone();
     tokio::spawn(async move {
@@ -457,19 +531,19 @@ fn kick_dial(pool: &ConnPool, peer: iroh::EndpointId, fast: &Arc<PeerFastState>)
     });
 }
 
-fn stage_single(pool: &Arc<PacketPool>, payload: &[u8]) -> Bytes {
+fn stage_single(pool: &Arc<PacketPool>, net: uuid::Uuid, payload: &[u8]) -> Bytes {
     let mut buf = pool.acquire(payload.len() + SINGLE_OVERHEAD);
     let region = buf.recv_region(payload.len() + SINGLE_OVERHEAD);
-    encode_single_prefix(&mut region[..SINGLE_OVERHEAD]);
+    encode_single_prefix(&mut region[..SINGLE_OVERHEAD], net);
     region[SINGLE_OVERHEAD..].copy_from_slice(payload);
     buf.set_len(payload.len() + SINGLE_OVERHEAD);
     Bytes::from_owner(buf)
 }
 
-/// Remove the single-frame prefix, returning the logical payload.
+/// Remove the single-frame header (kind + network), returning the payload.
 fn strip_single_prefix(frame: Bytes) -> Bytes {
-    if frame.first() == Some(&tunnet_common::packet::KIND_SINGLE) && frame.len() > 1 {
-        frame.slice(1..)
+    if frame.first() == Some(&tunnet_common::packet::KIND_SINGLE) && frame.len() > SINGLE_OVERHEAD {
+        frame.slice(SINGLE_OVERHEAD..)
     } else {
         frame
     }
@@ -545,6 +619,7 @@ async fn transmit_segmented_budgeted(
             let region = buf.recv_region(payload.len() + SEGMENT_OVERHEAD);
             encode_segment_prefix(
                 &mut region[..SEGMENT_OVERHEAD],
+                cur.net,
                 SegmentHeader {
                     id: cur.frame_id,
                     index: i as u16,
@@ -557,13 +632,13 @@ async fn transmit_segmented_budgeted(
         }
         let frame = Bytes::from_owner(buf);
         let wire = frame.len();
-        match fast.try_send_frame(frame) {
+        match fast.transport.try_send_frame(frame) {
             Ok(()) => {
                 frames += 1;
                 // Accumulate; accounted once at completion. Preserved
                 // across TransportFull resume via the stashed cursor.
                 cur.wire_bytes += wire as u64;
-                if fast.relay.load(Ordering::Relaxed) {
+                if fast.transport.relay.load(Ordering::Relaxed) {
                     meter.record(wire as u64);
                 }
                 cur.next_index += 1;
@@ -623,7 +698,12 @@ fn usable_seg_cap(mps: usize) -> Option<usize> {
     (cap >= MIN_SEGMENT_PAYLOAD).then_some(cap)
 }
 
-fn account_sent(fast: &Arc<PeerFastState>, flow: FlowKey, logical_len: usize, wire_len: usize) {
+fn account_sent(
+    fast: &Arc<PeerMembershipState>,
+    flow: FlowKey,
+    logical_len: usize,
+    wire_len: usize,
+) {
     // Debit DRR by logical bytes; wire overhead leans future rounds.
     fast.scheduler
         .lock()
@@ -635,7 +715,7 @@ mod tests {
     use super::*;
     use tunnet_core::peers::{PeerIdentity, PeerRegistry};
 
-    fn test_fast() -> (PeerRegistry, Arc<PeerFastState>) {
+    fn test_fast() -> (PeerRegistry, Arc<PeerMembershipState>) {
         let reg = PeerRegistry::new();
         let ep = iroh::SecretKey::generate().public();
         let fast = reg.ensure(Arc::new(PeerIdentity {
@@ -665,19 +745,19 @@ mod tests {
 
     #[test]
     fn replan_restarts_on_segcap_change_with_same_count() {
-        // §2.1-1: 2800 bytes needs 3 segments at both MPS 1350 (cap 1339)
-        // and MPS 1400 (cap 1389) — same count, different geometry. The
+        // §2.1-1: 2800 bytes needs 3 segments at both MPS 1350 (cap 1323)
+        // and MPS 1400 (cap 1373) — same count, different geometry. The
         // cursor must still restart with a fresh id, never reusing old
         // offsets with the new MPS.
         let (_reg, fast) = test_fast();
-        fast.mps.store(1350, Ordering::Relaxed);
+        fast.transport.mps.store(1350, Ordering::Relaxed);
         let (pkt, flow) = test_packet(2800);
         let mut cur = PartialPacket::new(pkt, flow, &fast);
         assert!(matches!(
             cur.plan,
             SegmentPlan::Segmented {
                 count: 3,
-                seg_cap: 1339
+                seg_cap: 1323
             }
         ));
         // Simulate two sent segments, then a path change (no conn needed:
@@ -685,13 +765,13 @@ mod tests {
         cur.next_index = 2;
         cur.wire_bytes = 2700;
         let old_id = cur.frame_id;
-        fast.mps.store(1400, Ordering::Relaxed);
+        fast.transport.mps.store(1400, Ordering::Relaxed);
         assert_eq!(cur.replan(&fast), Replan::Restarted);
         assert!(matches!(
             cur.plan,
             SegmentPlan::Segmented {
                 count: 3,
-                seg_cap: 1389
+                seg_cap: 1373
             }
         ));
         assert_eq!(cur.next_index, 0, "restart from byte 0");
@@ -704,7 +784,7 @@ mod tests {
         // Spurious TooLarge with unchanged MPS: retry the segment in place
         // (same id, same offset), don't waste a redundant restart.
         let (_reg, fast) = test_fast();
-        fast.mps.store(1350, Ordering::Relaxed);
+        fast.transport.mps.store(1350, Ordering::Relaxed);
         let (pkt, flow) = test_packet(2800);
         let mut cur = PartialPacket::new(pkt, flow, &fast);
         cur.next_index = 1;
@@ -718,37 +798,37 @@ mod tests {
     fn replan_handles_shape_transitions() {
         let (_reg, fast) = test_fast();
         // Segmented → single (path grew).
-        fast.mps.store(1350, Ordering::Relaxed);
+        fast.transport.mps.store(1350, Ordering::Relaxed);
         let (pkt, flow) = test_packet(2800);
         let mut cur = PartialPacket::new(pkt, flow, &fast);
         assert!(matches!(cur.plan, SegmentPlan::Segmented { .. }));
-        fast.mps.store(9000, Ordering::Relaxed);
+        fast.transport.mps.store(9000, Ordering::Relaxed);
         assert_eq!(cur.replan(&fast), Replan::Restarted);
         assert_eq!(cur.plan, SegmentPlan::Single);
         assert_eq!(cur.next_index, 0);
         // Single → segmented (path shrank).
-        fast.mps.store(9000, Ordering::Relaxed);
+        fast.transport.mps.store(9000, Ordering::Relaxed);
         let (pkt, flow) = test_packet(1200);
         let mut cur = PartialPacket::new(pkt, flow, &fast);
         assert_eq!(cur.plan, SegmentPlan::Single);
-        fast.mps.store(1100, Ordering::Relaxed);
+        fast.transport.mps.store(1100, Ordering::Relaxed);
         assert_eq!(cur.replan(&fast), Replan::Restarted);
         assert!(matches!(cur.plan, SegmentPlan::Segmented { .. }));
         // Degenerate path: impossible, caller drops.
-        fast.mps.store(64, Ordering::Relaxed);
+        fast.transport.mps.store(64, Ordering::Relaxed);
         assert_eq!(cur.replan(&fast), Replan::Impossible);
     }
 
     #[test]
     fn plan_single_segmented_impossible() {
-        // Exact fit → single.
-        assert_eq!(plan_for_mps(1200, 1201), SegmentPlan::Single);
+        // Exact fit → single (single overhead is 17: net-bound frames).
+        assert_eq!(plan_for_mps(1184, 1201), SegmentPlan::Single);
         // One byte over → segmented.
         assert!(matches!(
-            plan_for_mps(1201, 1201),
+            plan_for_mps(1185, 1201),
             SegmentPlan::Segmented { .. }
         ));
-        // 2800 logical at 1350 MPS → 3 segments of ≤1339.
+        // 2800 logical at 1350 MPS → 3 segments of ≤1323.
         match plan_for_mps(2800, 1350) {
             SegmentPlan::Segmented { count, seg_cap } => {
                 assert_eq!(count, 3);
@@ -775,18 +855,36 @@ mod tests {
             ) => assert!(c2 >= c1, "shrink must not reduce segments"),
             other => panic!("expected segmented plans, got {other:?}"),
         }
-        // 9000 at tiny MPS exceeds the segment cap (19 > 16).
+        // 9000 at tiny MPS exceeds the segment cap (20 > 16).
         assert_eq!(plan_for_mps(9000, 500), SegmentPlan::Impossible);
     }
 
     #[test]
     fn single_encode_round_trip() {
+        use tunnet_common::packet::SINGLE_OVERHEAD;
         let pool = PacketPool::new(8);
+        let net = uuid::Uuid::from_u128(0x0c);
         let payload = vec![0xABu8; 200];
-        let frame = stage_single(&pool, &payload);
-        assert_eq!(frame.len(), 201);
+        let frame = stage_single(&pool, net, &payload);
+        assert_eq!(frame.len(), SINGLE_OVERHEAD + 200);
         assert_eq!(frame[0], tunnet_common::packet::KIND_SINGLE);
+        assert_eq!(&frame[1..SINGLE_OVERHEAD], net.as_bytes());
         let back = strip_single_prefix(frame);
         assert_eq!(&back[..], &payload[..]);
+    }
+
+    #[test]
+    fn cursor_binds_network_at_dequeue() {
+        // §2.2-1: every frame of a packet carries the route's membership
+        // network, captured at dequeue.
+        let (_reg, fast) = test_fast();
+        assert_eq!(
+            fast.identity.read().network_id,
+            uuid::Uuid::nil(),
+            "test membership network"
+        );
+        let (pkt, flow) = test_packet(200);
+        let cur = PartialPacket::new(pkt, flow, &fast);
+        assert_eq!(cur.net, uuid::Uuid::nil());
     }
 }

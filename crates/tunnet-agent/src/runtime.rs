@@ -402,7 +402,7 @@ pub async fn run(
         .iter()
         .map(|(id, rt)| (*id, rt.spoof_tracker.clone()))
         .collect();
-    // Shared v2 packet resources: pooled buffers (MTU classes) for TUN
+    // Shared tunnel packet resources: pooled buffers (MTU classes) for TUN
     // receives and segment staging.
     let packet_pool = tunnet_common::packet::PacketPool::new(128);
 

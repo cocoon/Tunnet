@@ -62,9 +62,11 @@ pub use leave::leave_direct_network;
 #[cfg(feature = "direct")]
 pub use node::DirectNetworkRuntime;
 pub use node::{CoreNode, CoreNodeConfig};
-pub use peers::{FastSendError, PeerFastState, PeerIdentity, PeerRegistry};
+pub use peers::{
+    FastSendError, PeerIdentity, PeerMembershipState, PeerRegistry, PeerTransportState,
+};
 pub use policy_runtime::AclDenyRecord;
-pub use policy_runtime::{FwCounters, FwSet, FwSlot, PolicyRuntime, PolicyVerdict};
+pub use policy_runtime::{FwCounters, FwSet, FwSlot, FwSnapshot, PolicyRuntime, PolicyVerdict};
 pub use routing::{FastPeerHandle, PeerInfo, RouteDecision, RoutingTable};
 #[cfg(feature = "send")]
 pub use send::{SendConfig, SendManager, TransferDirection, TransferRecord, TransferStatus};

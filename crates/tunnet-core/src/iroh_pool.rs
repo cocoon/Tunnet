@@ -176,7 +176,7 @@ pub struct ConnPool {
     entries: Arc<DashMap<EndpointId, Arc<AsyncMutex<PeerSlot>>>>,
     /// Established fast states (owned by routing; slow paths only: adopt,
     /// dial, close, drop, heartbeats). The established packet path never
-    /// touches this — it uses the `Arc<PeerFastState>` from routing.
+    /// touches this — it uses the `Arc<PeerMembershipState>` from routing.
     peer_registry: Arc<Mutex<Option<Arc<crate::peers::PeerRegistry>>>>,
     extra: Arc<ExtraConnMap>,
     policy: Arc<PoolPolicy>,
@@ -246,26 +246,10 @@ impl ConnPool {
         *self.peer_registry.lock() = Some(registry);
     }
 
-    /// Mirror a live connection into its fast state (slow paths only).
+    /// Mirror a live connection into its endpoint transport (slow paths only).
     fn sync_fast_conn(&self, peer: EndpointId, conn: Option<Connection>) {
-        if let Some(reg) = self.peer_registry.lock().clone()
-            && let Some(fast) = reg.get(peer)
-        {
-            match conn {
-                Some(c) => {
-                    fast.conn.store(Some(Arc::new(c.clone())));
-                    fast.refresh_mps();
-                    fast.next_frame_id.store(rand::random(), Ordering::Relaxed);
-                    fast.sends_since_mps_check.store(0, Ordering::Relaxed);
-                }
-                None => {
-                    fast.conn.store(None);
-                    // Teardown without replacement: advance the epoch so
-                    // parked pumps drain and exit instead of leaking.
-                    fast.epoch.fetch_add(1, Ordering::Relaxed);
-                    fast.notify.notify_one();
-                }
-            }
+        if let Some(reg) = self.peer_registry.lock().clone() {
+            reg.set_transport_conn(peer, conn);
         }
     }
 
@@ -286,11 +270,8 @@ impl ConnPool {
         tokio::spawn(async move {
             let refresh = |conn: &Connection| {
                 let metered = selected_path_is_cloud_relay(conn, &urls.read());
-                if let Some(reg) = &registry
-                    && let Some(fast) = reg.get(peer)
-                {
-                    fast.relay.store(metered, Ordering::Relaxed);
-                    fast.refresh_mps();
+                if let Some(reg) = &registry {
+                    reg.refresh_transport_path(peer, Some(metered));
                 }
             };
             refresh(&conn);
@@ -697,7 +678,7 @@ impl ConnPool {
     /// Send a packet, buffering + reconnecting when the peer is suspended (on-demand).
     ///
     /// Slow path only: connection setup, reconnect buffering, tie-breaking.
-    /// Established forwarding goes through `PeerFastState::try_send_frame`.
+    /// Established forwarding goes through `PeerMembershipState::try_send_frame`.
     pub async fn send_or_buffer(&self, peer: EndpointId, packet: Bytes) -> anyhow::Result<()> {
         let slot = self.slot(peer);
         {
@@ -742,9 +723,9 @@ impl ConnPool {
         }
     }
 
-    /// Hard-drop a peer (§2.1-9): close the live tunnel connection,
-    /// deactivate its fast state (epoch bump closes readers/pumps holding
-    /// Arcs), and forget the slot. Idempotent.
+    /// Hard-drop a peer (§2.1-9, §2.2-1): close the live tunnel connection,
+    /// deactivate ALL of its memberships (epoch bumps close readers/pumps
+    /// holding Arcs), and forget the slot. Idempotent.
     pub async fn drop_peer(&self, peer: EndpointId) {
         if let Some((_, slot)) = self.entries.remove(&peer) {
             let mut g = slot.lock().await;
@@ -753,12 +734,7 @@ impl ConnPool {
             }
         }
         if let Some(reg) = self.peer_registry.lock().clone() {
-            if let Some(fast) = reg.get(peer) {
-                // Deactivate first (closes the mirrored fast conn + bumps
-                // the epoch), then forget the registry entry.
-                fast.deactivate();
-            }
-            reg.remove(peer);
+            reg.remove_transport(peer);
         }
         self.extra.retain(|(p, _), _| *p != peer);
     }

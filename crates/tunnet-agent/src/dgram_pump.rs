@@ -56,6 +56,9 @@ pub fn install_dialer_datagram_pump(
                 pool: Some(pool),
                 bufs,
                 metrics,
+                // Dialer-side readers have no AuthCache handle; membership
+                // existence still gates every frame network.
+                auth: None,
             })
             .await;
         });

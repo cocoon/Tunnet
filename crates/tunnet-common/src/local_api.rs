@@ -117,7 +117,7 @@ impl Default for LocalUiPolicy {
 }
 
 // ---------------------------------------------------------------------------
-// Node / network summary (v2 status model)
+// Node / network summary (status model)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

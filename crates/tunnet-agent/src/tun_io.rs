@@ -9,8 +9,8 @@ use iroh::endpoint::Connection;
 use tun_rs::{AsyncDevice, DeviceBuilder};
 use tunnet_common::packet::{self, LogicalPacket};
 use tunnet_common::policy::Direction;
-use tunnet_core::direct::{SpoofTracker, source_matches_peer};
-use tunnet_core::peers::{PeerFastState, PeerIdentity, PeerRegistry};
+use tunnet_core::direct::{AuthCache, SpoofTracker, source_matches_peer};
+use tunnet_core::peers::{PeerIdentity, PeerMembershipState, PeerRegistry};
 use tunnet_core::policy_runtime::{PolicyRuntime, PolicyVerdict};
 use tunnet_core::routing::{RouteDecision, RoutingTable};
 use tunnet_core::{AclEngine, ConnPool, iroh_pool::send_datagram};
@@ -69,7 +69,7 @@ pub struct OutboundDeps {
 fn handle_outbound_one(
     mut packet: LogicalPacket,
     fast_ctx: &OutboundCtx<'_>,
-) -> Option<Arc<PeerFastState>> {
+) -> Option<Arc<PeerMembershipState>> {
     let ctx = *fast_ctx;
     let OutboundCtx {
         routes,
@@ -124,13 +124,12 @@ fn handle_outbound_one(
         return None;
     }
 
-    // One compiled verdict against the shared runtime. Guards are not held
-    // across calls: snapshot the Arcs (cheap clones, no strings). The
-    // firewall set loads from the peer's STABLE network slot — publication
-    // swaps it in place, so no relink is ever needed (§2.1-3).
+    // One compiled verdict against the shared runtime. The firewall
+    // snapshot loads from the peer's STABLE network slot inside check()
+    // (ACL-then-firewall order) — publication swaps it in place, so no
+    // relink is ever needed (§2.1-3, §2.2-2).
     let ident: Arc<PeerIdentity> = fast.identity.read().clone();
     let slot = fast.policy.load();
-    let fw = slot.set.load();
     let verdict = runtime.check(
         &packet.meta,
         Direction::Outbound,
@@ -138,7 +137,7 @@ fn handle_outbound_one(
         &ident.tags,
         Some(ident.hostname.as_str()),
         Some(ident.network_id),
-        &fw,
+        &slot,
         &slot.counters,
     );
     match verdict {
@@ -213,21 +212,22 @@ impl Clone for OutboundCtx<'_> {
     }
 }
 
-/// Reject replies are rare, but they must be protocol-correct: a v2 peer
+/// Reject replies are rare, but they must be protocol-correct: the peer
 /// expects every tunnel DATAGRAM to begin with 0x20/0x21 (§2.1-6). Route
-/// the reply through the NORMAL v2 machinery — scheduler + pump, which
-/// segments large replies — instead of a second encoder path. Without a
-/// pool (no pump possible) fall back to a single framed best-effort send.
-async fn send_reject_v2(
+/// the reply through the normal tunnel framing/transmit path (scheduler
+/// and pump, which segments large replies) instead of a second encoder
+/// path. Without a pool (no pump possible) fall back to a single framed
+/// best-effort send.
+async fn send_reject_framed(
     reply: Bytes,
-    fast: &Arc<PeerFastState>,
+    fast: &Arc<PeerMembershipState>,
     pool: Option<&ConnPool>,
     conn: &Connection,
     bufs: &Arc<tunnet_common::packet::PacketPool>,
     metrics: &AgentMetrics,
 ) {
     let Some(pool) = pool else {
-        // No pump available: single framed best-effort send (still v2).
+        // No pump available: single framed best-effort send (still tunnel-framed).
         let mut frame = Vec::with_capacity(reply.len() + 1);
         frame.push(tunnet_common::packet::KIND_SINGLE);
         frame.extend_from_slice(&reply);
@@ -267,7 +267,7 @@ async fn send_reject_v2(
 }
 
 /// Outbound reject replies go to the LOCAL TUN device (raw IP framing —
-/// correct there: TUN is not the v2 wire). Rare: synthesize and send off
+/// correct there: TUN is not the tunnel wire). Rare: synthesize and send off
 /// the hot path with correct platform framing.
 fn send_reject_reply(ctx: &OutboundCtx<'_>, packet: &LogicalPacket) {
     let reply = packet::parse(packet.owner.as_bytes())
@@ -324,7 +324,7 @@ pub async fn run_outbound(deps: OutboundDeps) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     let mut batch = tun_fast::LinuxBatchEngine::new(bufs.clone(), mtu as usize);
 
-    tracing::info!("outbound TUN→iroh v2 loop started");
+    tracing::info!("outbound TUN→iroh tunnel loop started");
     loop {
         #[cfg(target_os = "linux")]
         {
@@ -394,6 +394,10 @@ pub struct InboundDeps {
     pub pool: Option<ConnPool>,
     pub bufs: Arc<tunnet_common::packet::PacketPool>,
     pub metrics: AgentMetrics,
+    /// Per-network auth bindings for inbound packet authorization
+    /// (§2.2-1). None in managed mode (ACL admission governs); enforced
+    /// per frame network when present.
+    pub auth: Option<AuthCache>,
 }
 
 pub async fn serve_tunnel_connection(deps: InboundDeps) {
@@ -407,6 +411,7 @@ pub async fn serve_tunnel_connection(deps: InboundDeps) {
         pool,
         bufs,
         metrics,
+        auth,
     } = deps;
     let remote_id = conn.remote_id();
     let remote_hex = format!("{remote_id}");
@@ -428,20 +433,23 @@ pub async fn serve_tunnel_connection(deps: InboundDeps) {
             tracing::debug!(%remote_id, max_datagram_size = max, "quic datagram limit");
         }
     }
-    // Resolve the stable fast state once (§12); re-resolve only when the
-    // routing generation changes. Per-datagram work uses the cached Arc.
+    // Membership resolution is lazy and per frame network (§2.2-1): the
+    // first datagram's bound network selects the (endpoint, network)
+    // membership; the cached Arc is reused while frames carry the same
+    // network. Never infer network identity from insertion order.
     let registry = routes.peer_registry().clone();
-    let mut fast_state = match resolve_fast(&registry, &routes, &remote_id) {
-        Some(fast) => fast,
-        None => {
-            tracing::debug!(%remote_id, "unknown peer at admission; closing");
-            conn.close(1u32.into(), b"no_route");
-            metrics.active_conns_dec();
-            return;
-        }
-    };
+    // Truly unknown endpoints still close at admission (no membership in
+    // any network); known endpoints resolve per frame network below.
+    if registry.get(remote_id).is_none() && routes.lookup_endpoint(&remote_hex).is_none() {
+        tracing::debug!(%remote_id, "unknown peer at admission; closing");
+        conn.close(1u32.into(), b"no_route");
+        metrics.active_conns_dec();
+        return;
+    }
+    let mut fast_state: Option<Arc<PeerMembershipState>> = None;
+    let mut fast_net = Uuid::nil();
+    let mut fast_epoch = 0u64;
     let mut route_gen = routes.version();
-    let mut fast_epoch = fast_state.epoch.load(Ordering::Relaxed);
 
     // Load the published generation once (device + cancel token pinned).
     let Some(plane) = tun.load_full() else {
@@ -498,38 +506,83 @@ pub async fn serve_tunnel_connection(deps: InboundDeps) {
         if generation_cancel.is_cancelled() {
             break;
         }
-        // Routing generation check (one atomic load per batch): re-resolve
-        // the cached fast state when membership changed. A generation
-        // change that no longer resolves this peer means removal: close
-        // the connection and exit instead of forwarding through stale
-        // identity/policy state (§2.1-9).
+        // Routing generation check (one atomic load per batch): when
+        // membership changed, drop the cached membership (per-packet
+        // resolve below re-resolves or drops). If the endpoint holds NO
+        // membership in any network anymore, the connection is dead:
+        // close and exit instead of forwarding through stale state.
         let route_version = routes.version();
         if route_version != route_gen {
             route_gen = route_version;
-            match resolve_fast(&registry, &routes, &remote_id) {
-                Some(next) => {
-                    fast_state = next;
-                    fast_epoch = fast_state.epoch.load(Ordering::Relaxed);
-                }
-                None => {
-                    tracing::info!(%remote_id, "peer removed; closing ingress reader");
-                    conn.close(1u32.into(), b"membership_removed");
-                    break;
-                }
+            fast_state = None;
+            if !registry.has_any_membership(remote_id) {
+                tracing::info!(%remote_id, "peer removed from all networks; closing ingress reader");
+                conn.close(1u32.into(), b"membership_removed");
+                break;
             }
         }
         // Deactivation without a generation change (e.g. pool drop_peer):
-        // the cached state is dead — exit.
-        if fast_state.epoch.load(Ordering::Relaxed) != fast_epoch {
-            tracing::info!(%remote_id, "fast state deactivated; exiting ingress reader");
-            break;
+        // drop the cached membership; per-packet resolve re-resolves or,
+        // when nothing remains, the generation check above exits.
+        if let Some(fast) = &fast_state
+            && fast.epoch.load(Ordering::Relaxed) != fast_epoch
+        {
+            tracing::info!(%remote_id, "membership deactivated; re-resolving");
+            fast_state = None;
         }
         let self_ip = runtime.self_ip();
         let mut tun_pending: u32 = 0;
         for dg in batch {
+            // Decode the frame header first (no allocation): it binds the
+            // network this packet belongs to.
+            let frame = match tunnet_common::packet::decode_frame(&dg) {
+                Ok(f) => f,
+                Err(_) => {
+                    metrics.dropped_inc("malformed_frame");
+                    metrics.reassembly_inc("malformed");
+                    continue;
+                }
+            };
+            let net = match &frame {
+                tunnet_common::packet::Frame::Single { net, .. } => *net,
+                tunnet_common::packet::Frame::Segment { net, .. } => *net,
+            };
+            // Resolve/switch the (endpoint, network) membership. A frame
+            // claiming a network with no membership — or a network the
+            // endpoint is not authenticated for — is dropped, never
+            // evaluated under another network's state.
+            if fast_state.is_none() || net != fast_net {
+                match resolve_membership(
+                    &registry,
+                    &routes,
+                    &remote_id,
+                    &remote_hex,
+                    net,
+                    auth.as_ref(),
+                ) {
+                    Some(next) => {
+                        fast_epoch = next.epoch.load(Ordering::Relaxed);
+                        fast_net = net;
+                        fast_state = Some(next);
+                    }
+                    None => {
+                        metrics.dropped_inc("unknown_network");
+                        continue;
+                    }
+                }
+            }
+            let fast = fast_state.as_ref().expect("resolved");
+            // Membership revoked mid-batch: drop the cache; the next
+            // packet re-resolves (or drops when nothing remains).
+            if fast.epoch.load(Ordering::Relaxed) != fast_epoch {
+                fast_state = None;
+                metrics.dropped_inc("membership_revoked");
+                continue;
+            }
             if handle_inbound_one(
                 &dg,
-                &fast_state,
+                frame,
+                fast,
                 &runtime,
                 &spoofs,
                 &conn,
@@ -561,20 +614,40 @@ pub async fn serve_tunnel_connection(deps: InboundDeps) {
     tracing::info!(%remote_id, "peer disconnected");
 }
 
-/// Slow-path resolve: registry first, else build from route info.
-/// Assigns the network's stable firewall slot on the created state, like
-/// routing rebuilds do (§2.1-3).
-fn resolve_fast(
+/// Slow-path resolve of the exact (endpoint, network) membership (§2.2-1):
+/// registry first, else build from route info. Assigns the network's
+/// stable firewall slot on created states, like routing rebuilds do.
+/// Returns None when the endpoint has no such membership OR is not
+/// authenticated for that network — the packet is then dropped, never
+/// evaluated under another network's identity/policy.
+fn resolve_membership(
     registry: &PeerRegistry,
     routes: &RoutingTable,
     remote: &iroh::EndpointId,
-) -> Option<Arc<PeerFastState>> {
-    if let Some(fast) = registry.get(*remote) {
+    remote_hex: &str,
+    net: Uuid,
+    auth: Option<&AuthCache>,
+) -> Option<Arc<PeerMembershipState>> {
+    // Authenticated membership binding: the endpoint must be authenticated
+    // FOR THIS NETWORK, not merely known for any network.
+    if let Some(auth) = auth
+        && !auth.contains_network(remote_hex, net)
+    {
+        return None;
+    }
+    if let Some(fast) = registry.get_membership(*remote, net) {
         return Some(fast);
     }
     // First packet after a rebuild race: construct from route info.
-    let info = routes.lookup_endpoint(&format!("{remote}"))?;
-    let fast = registry.ensure(Arc::new(tunnet_core::peers::PeerIdentity {
+    let info = routes.lookup_membership(remote_hex, net)?;
+    // Recheck auth for race-constructed states (membership data and auth
+    // cache update on different paths).
+    if let Some(auth) = auth
+        && !auth.contains_network(remote_hex, info.network_id)
+    {
+        return None;
+    }
+    let fast = registry.ensure_membership(Arc::new(tunnet_core::peers::PeerIdentity {
         endpoint: info.endpoint,
         endpoint_hex: info.endpoint_hex.clone(),
         hostname: info.hostname.clone(),
@@ -589,13 +662,15 @@ fn resolve_fast(
     Some(fast)
 }
 
-/// Handle one inbound DATAGRAM: decode → reassemble → parse → antispoof →
-/// policy → NAT → stage for the TUN batch. Returns true when a TUN packet
-/// was staged.
+/// Handle one inbound DATAGRAM: reassemble → parse → antispoof → policy →
+/// NAT → stage for the TUN batch. The frame (already decoded by the caller,
+/// which used its bound network to resolve `fast`) and the membership are
+/// passed in. Returns true when a TUN packet was staged.
 #[allow(clippy::too_many_arguments)]
 async fn handle_inbound_one(
     dg: &Bytes,
-    fast: &Arc<PeerFastState>,
+    frame: tunnet_common::packet::Frame<'_>,
+    fast: &Arc<PeerMembershipState>,
     runtime: &PolicyRuntime,
     spoofs: &HashMap<Uuid, SpoofTracker>,
     conn: &Connection,
@@ -607,17 +682,8 @@ async fn handle_inbound_one(
 ) -> bool {
     use tunnet_core::reassembly::InsertOut;
     let now = std::time::Instant::now();
-    // v2 framing first (§5: framing never bypasses policy).
-    let frame = match tunnet_common::packet::decode(dg) {
-        Ok(f) => f,
-        Err(_) => {
-            metrics.dropped_inc("malformed_frame");
-            metrics.reassembly_inc("malformed");
-            return false;
-        }
-    };
     let logical: LogicalPacket = match frame {
-        tunnet_common::packet::Frame::Single(p) => {
+        tunnet_common::packet::Frame::Single { payload: p, .. } => {
             // Zero-copy: retain the DATAGRAM's storage.
             let off = p.as_ptr() as usize - dg.as_ptr() as usize;
             let owned = dg.slice(off..off + p.len());
@@ -632,7 +698,9 @@ async fn handle_inbound_one(
                 }
             }
         }
-        tunnet_common::packet::Frame::Segment(h, payload) => {
+        tunnet_common::packet::Frame::Segment {
+            header: h, payload, ..
+        } => {
             let off = payload.as_ptr() as usize - dg.as_ptr() as usize;
             let owned = dg.slice(off..off + payload.len());
             let mut table = fast.reassembly.lock();
@@ -689,10 +757,10 @@ async fn handle_inbound_one(
         }
         return false;
     }
-    // Snapshot the policy slot Arcs (guards are not Send; Arcs are).
-    // Loads from the stable network slot: always current, no relink.
+    // Snapshot the policy slot (guards are not Send; Arcs are). check()
+    // loads the firewall snapshot after the ACL snapshot inside, matching
+    // publish order — always current, no relink, no tear (§2.2-2).
     let slot = fast.policy.load();
-    let fw = slot.set.load();
     let verdict = runtime.check(
         &logical.meta,
         Direction::Inbound,
@@ -700,7 +768,7 @@ async fn handle_inbound_one(
         &ident.tags,
         Some(ident.hostname.as_str()),
         Some(ident.network_id),
-        &fw,
+        &slot,
         &slot.counters,
     );
     match verdict {
@@ -715,7 +783,7 @@ async fn handle_inbound_one(
                 .ok()
                 .and_then(|p| packet::synthesize_reject(&p));
             if let Some(reply) = reply.filter(|r| !r.is_empty()) {
-                send_reject_v2(reply, fast, pool, conn, pool_bufs, metrics).await;
+                send_reject_framed(reply, fast, pool, conn, pool_bufs, metrics).await;
             }
             return false;
         }
@@ -738,7 +806,7 @@ async fn handle_inbound_one(
     }
     let n = logical.len() as u64;
     stage_tun_packet(tun_batch, logical, metrics);
-    fast.record_rx(n);
+    fast.transport.record_rx(n);
     metrics.packets_inc("in");
     metrics.bytes_add("in", n);
     true
@@ -809,4 +877,79 @@ fn stage_tun_packet(
     _metrics: &AgentMetrics,
 ) {
     batch.push(packet.owner.as_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NET_A: Uuid = Uuid::from_u128(0x0a0a);
+    const NET_B: Uuid = Uuid::from_u128(0x0b0b);
+
+    fn two_net_routes() -> (RoutingTable, iroh::EndpointId, String) {
+        use tunnet_common::{DnsConfig, PeerEntry};
+        let table = RoutingTable::new();
+        let self_id = "a".repeat(64);
+        let ep_hex = "b".repeat(64);
+        let mk = |ip: &str| PeerEntry {
+            ip: ip.parse().unwrap(),
+            endpoint_id: ep_hex.clone(),
+            hostname: "gw".into(),
+            tags: vec![],
+            ssh_host_key: None,
+        };
+        table.replace_network(
+            NET_A,
+            0,
+            std::slice::from_ref(&mk("10.7.0.5")),
+            &DnsConfig::default(),
+            "neta",
+            &self_id,
+            1,
+        );
+        table.replace_network(
+            NET_B,
+            1,
+            std::slice::from_ref(&mk("10.7.1.5")),
+            &DnsConfig::default(),
+            "netb",
+            &self_id,
+            2,
+        );
+        let ep: iroh::EndpointId = ep_hex.parse().unwrap();
+        (table, ep, ep_hex)
+    }
+
+    #[test]
+    fn resolve_binds_exact_membership_and_auth() {
+        // §2.2-1 (tests 5, 6): frames resolve to the EXACT (endpoint,
+        // network) membership — never the other network's state — and an
+        // endpoint authenticated only for A cannot claim B.
+        let (table, ep, ep_hex) = two_net_routes();
+        let registry = table.peer_registry().clone();
+        let auth = AuthCache::new();
+        auth.insert(ep_hex.clone(), NET_A);
+        // Bound to A: A's membership (its own IP/identity).
+        let a = resolve_membership(&registry, &table, &ep, &ep_hex, NET_A, Some(&auth))
+            .expect("A resolves");
+        assert_eq!(a.identity.read().network_id, NET_A);
+        assert_eq!(a.identity.read().ip, std::net::Ipv4Addr::new(10, 7, 0, 5));
+        // Bound to B without B-auth: rejected (no cross evaluation).
+        assert!(
+            resolve_membership(&registry, &table, &ep, &ep_hex, NET_B, Some(&auth)).is_none(),
+            "endpoint authed only for A must not claim B"
+        );
+        // With B-auth: B's own membership, distinct object and IP.
+        auth.insert(ep_hex.clone(), NET_B);
+        let b = resolve_membership(&registry, &table, &ep, &ep_hex, NET_B, Some(&auth))
+            .expect("B resolves once authed");
+        assert!(!Arc::ptr_eq(&a, &b));
+        assert_eq!(b.identity.read().ip, std::net::Ipv4Addr::new(10, 7, 1, 5));
+        // Unknown network: rejected even without an auth cache
+        // (membership existence gates).
+        assert!(
+            resolve_membership(&registry, &table, &ep, &ep_hex, Uuid::from_u128(0xcc), None)
+                .is_none()
+        );
+    }
 }

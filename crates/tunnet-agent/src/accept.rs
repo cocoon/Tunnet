@@ -64,6 +64,7 @@ pub fn spawn(deps: AcceptDeps) -> Router {
         bufs: deps.bufs,
         metrics: deps.metrics,
         ingress: deps.ingress,
+        direct_auth: deps.direct_auth.clone(),
     };
     let stream = StreamProtocolHandler::new(deps.stream_handler);
     let auth = AuthHandler {
@@ -122,6 +123,7 @@ struct TunnelHandler {
     bufs: Arc<tunnet_common::packet::PacketPool>,
     metrics: AgentMetrics,
     ingress: IngressRegistry,
+    direct_auth: Option<AuthCache>,
 }
 
 impl fmt::Debug for TunnelHandler {
@@ -154,6 +156,7 @@ impl ProtocolHandler for TunnelHandler {
             let dgram_pool = self.dgram_pool.clone();
             let bufs = self.bufs.clone();
             let metrics = self.metrics.clone();
+            let auth = self.direct_auth.clone();
             async move {
                 serve_tunnel_connection(InboundDeps {
                     conn,
@@ -165,6 +168,7 @@ impl ProtocolHandler for TunnelHandler {
                     pool: Some(dgram_pool),
                     bufs,
                     metrics,
+                    auth,
                 })
                 .await;
             }

@@ -9,13 +9,20 @@
 # of independently measured directional capacity, UDP rate x size sweep,
 # warmup + repeats, path-state capture around every scenario (flagged on
 # migration), p99.9 from >=1000 high-frequency samples (gated to null when
-# short).
+# short). Up/down loads use separate server ports ($6/$7, default
+# 5201/5202 — the server must listen on both); failed loads mark their row
+# valid=false instead of hiding behind -1 placeholders.
 set -u
 PEER="${1:-10.7.0.2}"
 DURATION="${2:-10}"
 PRODUCT="${3:-tunnet}"
 REPEATS="${4:-2}"
 MTU="${5:-0}"
+# Independent iperf3 server ports per direction: two simultaneous clients
+# against one default port conflict (single active test per listener).
+# The server side must listen on both: `iperf3 -s -p 5201` + `-p 5202`.
+PORT_UP="${6:-5201}"
+PORT_DOWN="${7:-5202}"
 RESULTS_DIR="./bench-results/$(date +%Y%m%d-%H%M%S)-$PRODUCT"
 mkdir -p "$RESULTS_DIR"
 JSONL="$RESULTS_DIR/results.jsonl"
@@ -142,15 +149,15 @@ EOF
   echo "$MBPS" | tail -1
 }
 for rep in $(seq 1 "$REPEATS"); do
-  tp_case tcp-up-1 up "$rep" -P 1 > /dev/null
-  MB=$(tp_case tcp-up-4 up "$rep" -P 4 | tail -1)
+  tp_case tcp-up-1 up "$rep" -p "$PORT_UP" -P 1 > /dev/null
+  MB=$(tp_case tcp-up-4 up "$rep" -p "$PORT_UP" -P 4 | tail -1)
   CAP_UP=$(python3 -c "print(max(float('$CAP_UP'), float('$MB')))")
-  tp_case tcp-down-1 down "$rep" -P 1 -R > /dev/null
-  MB=$(tp_case tcp-down-4 down "$rep" -P 4 -R | tail -1)
+  tp_case tcp-down-1 down "$rep" -p "$PORT_DOWN" -P 1 -R > /dev/null
+  MB=$(tp_case tcp-down-4 down "$rep" -p "$PORT_DOWN" -P 4 -R | tail -1)
   CAP_DOWN=$(python3 -c "print(max(float('$CAP_DOWN'), float('$MB')))")
   # Bidirectional: parse both directions explicitly (v2 never did).
   path_json > "$RESULTS_DIR/tcp-bidir-r$rep.path"
-  run_iperf "tcp-bidir-r$rep" -P 4 --bidir
+  run_iperf "tcp-bidir-r$rep" -p "$PORT_UP" -P 4 --bidir
   python3 - "$RESULTS_DIR/tcp-bidir-r$rep.json" "$RESULTS_DIR/tcp-bidir-r$rep.path" "$rep" <<'EOF'
 import json,sys,datetime,os
 ipath, ppath, rep = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -175,15 +182,16 @@ echo "  measured capacity: up=${CAP_UP}Mbps down=${CAP_DOWN}Mbps"
 
 # --- loaded latency per direction at fractions of directional capacity ---
 echo "[3] Loaded-latency sweeps..."
-for dir in "upload:$CAP_UP:" "download:$CAP_DOWN:-R"; do
-  name="${dir%%:*}"; rest="${dir#*:}"; cap="${rest%%:*}"; extra="${rest#*:}"
+for dir in "upload:$CAP_UP:$PORT_UP:" "download:$CAP_DOWN:$PORT_DOWN:-R"; do
+  name="${dir%%:*}"; rest="${dir#*:}"; cap="${rest%%:*}"; rest2="${rest#*:}"
+  port="${rest2%%:*}"; extra="${rest2#*:}"
   for F in 0.25 0.50 0.75 0.90 1.00 1.10; do
     RATE=$(python3 -c "print(round(float('$cap')*float('$F'),1))")
     PCT=$(python3 -c "print(int(float('$F')*100))")
     echo "  $name ${PCT}% (${RATE}Mbps)..."
     path_json > "$RESULTS_DIR/load-$name-$F.path0"
     # shellcheck disable=SC2086
-    iperf3 -c "$PEER" -t "$DURATION" -u -b "${RATE}M" $extra --json > "$RESULTS_DIR/load-$name-$F.json" 2>&1 &
+    iperf3 -c "$PEER" -p "$port" -t "$DURATION" -u -b "${RATE}M" $extra --json > "$RESULTS_DIR/load-$name-$F.json" 2>&1 &
     LOAD_PID=$!
     sleep 2
     # 1000 samples: p99.9 under load is real (gated to null when short).
@@ -193,11 +201,17 @@ for dir in "upload:$CAP_UP:" "download:$CAP_DOWN:-R"; do
     python3 - "$RESULTS_DIR/load-$name-$F.json" "$RESULTS_DIR/load-$name-$F.path0" "$RESULTS_DIR/load-$name-$F.path1" "$RESULTS_DIR/ping-load-$name-$F.lat" "$name" "$F" "$RATE" <<'EOF'
 import json,sys,datetime,os
 ipath, p0path, p1path, latpath, name, frac, rate = (sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], float(sys.argv[6]), float(sys.argv[7]))
+valid = True
 try:
-    d = json.load(open(ipath)); s = d['end']['sum']
+    d = json.load(open(ipath))
+    if isinstance(d.get('error'), str):
+        raise ValueError(d['error'])
+    s = d['end']['sum']
     actual = round(s['bits_per_second']/1e6, 1); loss = round(s.get('lost_percent', -1), 2)
-except Exception:
+except Exception as e:
     actual, loss = -1, -1
+    valid = False
+    print(f"  {name} {frac}: LOAD ERROR {e}", flush=True)
 lat = json.load(open(latpath))
 b = json.load(open(p0path)); a = json.load(open(p1path))
 notes = []
@@ -205,11 +219,14 @@ if b.get('mode') != a.get('mode'):
     notes.append('PATH CHANGED mid-run; result flagged')
 if actual > 0 and actual < rate*0.7 and frac <= 1.0:
     notes.append('under-delivered load')
+if not valid:
+    notes.append('LOAD FAILED: row invalid, values are placeholders')
 note = '; '.join(notes)
 print(f"  actual={actual}Mbps loss={loss}% p50={lat.get('p50')} p95={lat.get('p95')} p99={lat.get('p99')} max={lat.get('max')} {note}")
 row = {'scenario': 'loaded-latency', 'direction': name, 'fraction': frac,
        'offered_mbps': rate, 'actual_mbps': actual, 'loss_pct': loss,
-       'latency': lat, 'path': b, 'path_after': a, 'note': note}
+       'latency': lat, 'path': b, 'path_after': a, 'note': note,
+       'valid': valid}
 row['ts'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 row['product'] = os.environ['BENCH_PRODUCT']
 row['meta'] = json.loads(os.environ['BENCH_META'])
@@ -219,6 +236,8 @@ EOF
 done
 
 # --- bidirectional loaded latency: full-duplex UDP at fractions ---
+# Up and down loads run on SEPARATE server ports (see PORT_UP/PORT_DOWN):
+# two clients against one listener conflict on a normal iperf3 server.
 echo "  bidir (full duplex)..."
 for F in 0.25 0.50 0.75 0.90 1.00; do
   RATE_UP=$(python3 -c "print(round(float('$CAP_UP')*float('$F'),1))")
@@ -226,25 +245,34 @@ for F in 0.25 0.50 0.75 0.90 1.00; do
   PCT=$(python3 -c "print(int(float('$F')*100))")
   echo "  bidir ${PCT}% (up=${RATE_UP}Mbps down=${RATE_DOWN}Mbps)..."
   path_json > "$RESULTS_DIR/load-bidi-$F.path0"
-  iperf3 -c "$PEER" -t "$DURATION" -u -b "${RATE_UP}M" --json > "$RESULTS_DIR/load-bidi-$F-up.json" 2>&1 &
+  iperf3 -c "$PEER" -p "$PORT_UP" -t "$DURATION" -u -b "${RATE_UP}M" --json > "$RESULTS_DIR/load-bidi-$F-up.json" 2>&1 &
   UP_PID=$!
-  iperf3 -c "$PEER" -t "$DURATION" -u -b "${RATE_DOWN}M" -R --json > "$RESULTS_DIR/load-bidi-$F-down.json" 2>&1 &
+  iperf3 -c "$PEER" -p "$PORT_DOWN" -t "$DURATION" -u -b "${RATE_DOWN}M" -R --json > "$RESULTS_DIR/load-bidi-$F-down.json" 2>&1 &
   DOWN_PID=$!
   sleep 2
   ping_samples_json 1000 "$RESULTS_DIR/ping-load-bidi-$F.txt" > "$RESULTS_DIR/ping-load-bidi-$F.lat"
-  wait $UP_PID; wait $DOWN_PID
+  UP_OK=0; DOWN_OK=0
+  wait $UP_PID || UP_OK=$?
+  wait $DOWN_PID || DOWN_OK=$?
   path_json > "$RESULTS_DIR/load-bidi-$F.path1"
-  python3 - "$RESULTS_DIR/load-bidi-$F-up.json" "$RESULTS_DIR/load-bidi-$F-down.json" "$RESULTS_DIR/load-bidi-$F.path0" "$RESULTS_DIR/load-bidi-$F.path1" "$RESULTS_DIR/ping-load-bidi-$F.lat" "$F" "$RATE_UP" "$RATE_DOWN" <<'EOF'
+  python3 - "$RESULTS_DIR/load-bidi-$F-up.json" "$RESULTS_DIR/load-bidi-$F-down.json" "$RESULTS_DIR/load-bidi-$F.path0" "$RESULTS_DIR/load-bidi-$F.path1" "$RESULTS_DIR/ping-load-bidi-$F.lat" "$F" "$RATE_UP" "$RATE_DOWN" "$UP_OK" "$DOWN_OK" <<'EOF'
 import json,sys,datetime,os
-uppath, downpath, p0path, p1path, latpath, frac, rate_up, rate_down = (sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], float(sys.argv[6]), float(sys.argv[7]), float(sys.argv[8]))
+uppath, downpath, p0path, p1path, latpath, frac, rate_up, rate_down, up_ok, down_ok = (sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], float(sys.argv[6]), float(sys.argv[7]), float(sys.argv[8]), int(sys.argv[9]), int(sys.argv[10]))
 def loadsum(p):
     try:
-        d = json.load(open(p)); s = d['end']['sum']
-        return round(s['bits_per_second']/1e6, 1), round(s.get('lost_percent', -1), 2)
-    except Exception:
-        return -1, -1
-actual_up, loss_up = loadsum(uppath)
-actual_down, loss_down = loadsum(downpath)
+        d = json.load(open(p))
+        if isinstance(d.get('error'), str):
+            raise ValueError(d['error'])
+        s = d['end']['sum']
+        return round(s['bits_per_second']/1e6, 1), round(s.get('lost_percent', -1), 2), None
+    except Exception as e:
+        return -1, -1, str(e)[:200]
+actual_up, loss_up, err_up = loadsum(uppath)
+actual_down, loss_down, err_down = loadsum(downpath)
+if up_ok != 0:
+    err_up = (err_up + '; ' if err_up else '') + f'iperf up client exited {up_ok}'
+if down_ok != 0:
+    err_down = (err_down + '; ' if err_down else '') + f'iperf down client exited {down_ok}'
 lat = json.load(open(latpath))
 b = json.load(open(p0path)); a = json.load(open(p1path))
 notes = []
@@ -254,13 +282,21 @@ if actual_up > 0 and actual_up < rate_up*0.7 and frac <= 1.0:
     notes.append('under-delivered up load')
 if actual_down > 0 and actual_down < rate_down*0.7 and frac <= 1.0:
     notes.append('under-delivered down load')
+# A bidirectional row is only produced when BOTH directions ran: errors
+# mark the row invalid explicitly instead of hiding behind -1 values.
+valid = err_up is None and err_down is None
+if err_up:
+    notes.append(f'BIDIR INVALID: up load failed ({err_up})')
+if err_down:
+    notes.append(f'BIDIR INVALID: down load failed ({err_down})')
 note = '; '.join(notes)
-print(f"  up={actual_up}Mbps loss={loss_up}% down={actual_down}Mbps loss={loss_down}% p50={lat.get('p50')} p95={lat.get('p95')} p99={lat.get('p99')} p999={lat.get('p999')} {note}")
+print(f"  up={actual_up}Mbps loss={loss_up}% down={actual_down}Mbps loss={loss_down}% p50={lat.get('p50')} p95={lat.get('p95')} p99={lat.get('p99')} p999={lat.get('p999')} valid={valid} {note}")
 row = {'scenario': 'loaded-latency', 'direction': 'bidir', 'fraction': frac,
        'offered_up_mbps': rate_up, 'offered_down_mbps': rate_down,
        'actual_up_mbps': actual_up, 'actual_down_mbps': actual_down,
        'loss_up_pct': loss_up, 'loss_down_pct': loss_down,
-       'latency': lat, 'path': b, 'path_after': a, 'note': note}
+       'latency': lat, 'path': b, 'path_after': a, 'note': note,
+       'valid': valid}
 row['ts'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 row['product'] = os.environ['BENCH_PRODUCT']
 row['meta'] = json.loads(os.environ['BENCH_META'])
@@ -274,7 +310,7 @@ for F in 0.25 0.50 1.00; do
   RATE=$(python3 -c "print(round(float('$CAP_UP')*float('$F'),1))")
   for LEN in 64 256 1200; do
     path_json > "$RESULTS_DIR/udp.path"
-    run_iperf "udp-${RATE}M-${LEN}B" -u -b "${RATE}M" -l "$LEN"
+    run_iperf "udp-${RATE}M-${LEN}B" -p "$PORT_UP" -u -b "${RATE}M" -l "$LEN"
     python3 - "$RESULTS_DIR/udp-${RATE}M-${LEN}B.json" "$RESULTS_DIR/udp.path" "$RATE" "$LEN" <<'EOF'
 import json,sys,datetime,os
 ipath, ppath, rate, length = sys.argv[1], sys.argv[2], float(sys.argv[3]), int(sys.argv[4])

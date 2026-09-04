@@ -168,8 +168,11 @@ impl AgentMetrics {
             "Transport-full events (scheduler owns drop/retry)"
         );
         describe_counter!("tunnet_sched_drops_total", "Scheduler drops by reason");
-        describe_counter!("tunnet_frames_total", "Overlay v2 frames transmitted");
-        describe_counter!("tunnet_segments_total", "Overlay v2 segments transmitted");
+        describe_counter!("tunnet_frames_total", "Overlay tunnel frames transmitted");
+        describe_counter!(
+            "tunnet_segments_total",
+            "Overlay tunnel segments transmitted"
+        );
         describe_counter!("tunnet_reassembly_total", "Reassembly outcomes by result");
         describe_counter!("tunnet_tun_syscalls_total", "TUN syscalls by operation");
         describe_counter!("tunnet_datagrams_total", "QUIC DATAGRAMs by direction");

@@ -230,7 +230,7 @@ pub struct EffectiveAgentConfig {
 
 const DEFAULT_MDNS: bool = true;
 const DEFAULT_LAN_DISCOVERY: bool = true;
-/// Default logical/virtual MTU for Dataplane v2. 2800 matches the
+/// Default logical/virtual MTU for the dataplane. 2800 matches the
 /// ZeroTier-style comparison point: far fewer packets per GiB than 1280 while
 /// staying cheap to segment onto typical QUIC path MTUs. See the benchmark
 /// matrix before changing this; 9000 is not an automatic default.
