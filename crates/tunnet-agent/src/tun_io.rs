@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use anyhow::Context;
 use bytes::Bytes;
@@ -64,7 +65,7 @@ pub struct OutboundDeps {
 /// Handle one owned logical packet through the outbound pipeline.
 /// Parse-once: `packet` already carries metadata; NAT refreshes it only when
 /// a rewrite actually mutated the bytes. Policy uses the shared runtime with
-/// the peer's pre-resolved firewall set — no per-packet map lookups.
+/// the peer's stable network slot — no per-packet map lookups.
 fn handle_outbound_one(
     mut packet: LogicalPacket,
     fast_ctx: &OutboundCtx<'_>,
@@ -80,15 +81,17 @@ fn handle_outbound_one(
         self_ip,
         ..
     } = ctx;
-    // SSH NAT consumes existing metadata (no second parse).
+    // SSH NAT consumes existing metadata (no second parse) — and ONLY takes
+    // the mutable/materializing path when metadata proves a rewrite is
+    // required (§2.1-7). Common packets stay immutable: zero copy.
     let meta = packet.meta;
-    let Some(bytes) = packet_owner_bytes_mut(&mut packet, bufs) else {
-        metrics.dropped_inc("nat_materialize");
-        return None;
-    };
-    if ssh_nat::rewrite_outbound_with_meta(bytes, &meta, self_ip) {
-        // Rare (SSH-port traffic only): refresh metadata after mutation.
-        if !packet.refresh() {
+    if ssh_nat::needs_outbound_rewrite_with_meta(&meta, self_ip) {
+        let Some(bytes) = packet_owner_bytes_mut(&mut packet, bufs) else {
+            metrics.dropped_inc("nat_materialize");
+            return None;
+        };
+        if ssh_nat::rewrite_outbound_with_meta(bytes, &meta, self_ip) && !packet.refresh() {
+            // Rewrite applied but re-parse failed: fail closed.
             metrics.dropped_inc("nat_reparse");
             return None;
         }
@@ -122,12 +125,12 @@ fn handle_outbound_one(
     }
 
     // One compiled verdict against the shared runtime. Guards are not held
-    // across calls: snapshot the Arcs (cheap clones, no strings).
+    // across calls: snapshot the Arcs (cheap clones, no strings). The
+    // firewall set loads from the peer's STABLE network slot — publication
+    // swaps it in place, so no relink is ever needed (§2.1-3).
     let ident: Arc<PeerIdentity> = fast.identity.read().clone();
-    let (fw, counters) = {
-        let link = fast.policy.load();
-        (link.fw.clone(), link.counters.clone())
-    };
+    let slot = fast.policy.load();
+    let fw = slot.set.load();
     let verdict = runtime.check(
         &packet.meta,
         Direction::Outbound,
@@ -136,7 +139,7 @@ fn handle_outbound_one(
         Some(ident.hostname.as_str()),
         Some(ident.network_id),
         &fw,
-        &counters,
+        &slot.counters,
     );
     match verdict {
         PolicyVerdict::Allow => {}
@@ -210,8 +213,62 @@ impl Clone for OutboundCtx<'_> {
     }
 }
 
-/// Reject replies are rare: synthesize and send off the hot path with
-/// correct platform framing.
+/// Reject replies are rare, but they must be protocol-correct: a v2 peer
+/// expects every tunnel DATAGRAM to begin with 0x20/0x21 (§2.1-6). Route
+/// the reply through the NORMAL v2 machinery — scheduler + pump, which
+/// segments large replies — instead of a second encoder path. Without a
+/// pool (no pump possible) fall back to a single framed best-effort send.
+async fn send_reject_v2(
+    reply: Bytes,
+    fast: &Arc<PeerFastState>,
+    pool: Option<&ConnPool>,
+    conn: &Connection,
+    bufs: &Arc<tunnet_common::packet::PacketPool>,
+    metrics: &AgentMetrics,
+) {
+    let Some(pool) = pool else {
+        // No pump available: single framed best-effort send (still v2).
+        let mut frame = Vec::with_capacity(reply.len() + 1);
+        frame.push(tunnet_common::packet::KIND_SINGLE);
+        frame.extend_from_slice(&reply);
+        if conn
+            .max_datagram_size()
+            .is_some_and(|max| frame.len() > max)
+        {
+            metrics.dropped_inc("datagram_too_large");
+            return;
+        }
+        let _ = send_datagram(conn, Bytes::from(frame)).await;
+        return;
+    };
+    // Zero-copy: the synthesized reply bytes ride straight into the
+    // scheduler; the pump frames/segments them like any other packet.
+    let Some(packet) = LogicalPacket::from_shared(reply) else {
+        metrics.dropped_inc("malformed_transport");
+        return;
+    };
+    let len = packet.len() as i64;
+    let dropped = {
+        let mut sched = fast.scheduler.lock();
+        sched.enqueue(packet, std::time::Instant::now())
+    };
+    if let Some(reason) = dropped {
+        metrics.dropped_inc(reason.as_str());
+        return;
+    }
+    metrics.queue_add(1, len, 0);
+    ensure_pump(
+        fast,
+        pool.clone(),
+        metrics.clone(),
+        bufs.clone(),
+        pool.cloud_relay_meter(),
+    );
+}
+
+/// Outbound reject replies go to the LOCAL TUN device (raw IP framing —
+/// correct there: TUN is not the v2 wire). Rare: synthesize and send off
+/// the hot path with correct platform framing.
 fn send_reject_reply(ctx: &OutboundCtx<'_>, packet: &LogicalPacket) {
     let reply = packet::parse(packet.owner.as_bytes())
         .ok()
@@ -384,6 +441,7 @@ pub async fn serve_tunnel_connection(deps: InboundDeps) {
         }
     };
     let mut route_gen = routes.version();
+    let mut fast_epoch = fast_state.epoch.load(Ordering::Relaxed);
 
     // Load the published generation once (device + cancel token pinned).
     let Some(plane) = tun.load_full() else {
@@ -441,13 +499,30 @@ pub async fn serve_tunnel_connection(deps: InboundDeps) {
             break;
         }
         // Routing generation check (one atomic load per batch): re-resolve
-        // the cached fast state when membership changed.
+        // the cached fast state when membership changed. A generation
+        // change that no longer resolves this peer means removal: close
+        // the connection and exit instead of forwarding through stale
+        // identity/policy state (§2.1-9).
         let route_version = routes.version();
         if route_version != route_gen {
             route_gen = route_version;
-            if let Some(next) = resolve_fast(&registry, &routes, &remote_id) {
-                fast_state = next;
+            match resolve_fast(&registry, &routes, &remote_id) {
+                Some(next) => {
+                    fast_state = next;
+                    fast_epoch = fast_state.epoch.load(Ordering::Relaxed);
+                }
+                None => {
+                    tracing::info!(%remote_id, "peer removed; closing ingress reader");
+                    conn.close(1u32.into(), b"membership_removed");
+                    break;
+                }
             }
+        }
+        // Deactivation without a generation change (e.g. pool drop_peer):
+        // the cached state is dead — exit.
+        if fast_state.epoch.load(Ordering::Relaxed) != fast_epoch {
+            tracing::info!(%remote_id, "fast state deactivated; exiting ingress reader");
+            break;
         }
         let self_ip = runtime.self_ip();
         let mut tun_pending: u32 = 0;
@@ -458,6 +533,7 @@ pub async fn serve_tunnel_connection(deps: InboundDeps) {
                 &runtime,
                 &spoofs,
                 &conn,
+                pool.as_ref(),
                 &bufs,
                 &metrics,
                 &mut tun_batch,
@@ -486,6 +562,8 @@ pub async fn serve_tunnel_connection(deps: InboundDeps) {
 }
 
 /// Slow-path resolve: registry first, else build from route info.
+/// Assigns the network's stable firewall slot on the created state, like
+/// routing rebuilds do (§2.1-3).
 fn resolve_fast(
     registry: &PeerRegistry,
     routes: &RoutingTable,
@@ -496,7 +574,7 @@ fn resolve_fast(
     }
     // First packet after a rebuild race: construct from route info.
     let info = routes.lookup_endpoint(&format!("{remote}"))?;
-    Some(registry.ensure(Arc::new(tunnet_core::peers::PeerIdentity {
+    let fast = registry.ensure(Arc::new(tunnet_core::peers::PeerIdentity {
         endpoint: info.endpoint,
         endpoint_hex: info.endpoint_hex.clone(),
         hostname: info.hostname.clone(),
@@ -504,7 +582,11 @@ fn resolve_fast(
         tags: info.tags.clone(),
         network_id: info.network_id,
         network_name: info.network_name.clone(),
-    })))
+    }));
+    if let Some(slot) = routes.policy_slot_for(info.network_id) {
+        fast.policy.store(slot);
+    }
+    Some(fast)
 }
 
 /// Handle one inbound DATAGRAM: decode → reassemble → parse → antispoof →
@@ -517,6 +599,7 @@ async fn handle_inbound_one(
     runtime: &PolicyRuntime,
     spoofs: &HashMap<Uuid, SpoofTracker>,
     conn: &Connection,
+    pool: Option<&ConnPool>,
     pool_bufs: &Arc<tunnet_common::packet::PacketPool>,
     metrics: &AgentMetrics,
     tun_batch: &mut TunBatchForPlatform,
@@ -606,11 +689,10 @@ async fn handle_inbound_one(
         }
         return false;
     }
-    // Snapshot the policy link Arcs (guards are not Send; Arcs are).
-    let (fw, counters) = {
-        let link = fast.policy.load();
-        (link.fw.clone(), link.counters.clone())
-    };
+    // Snapshot the policy slot Arcs (guards are not Send; Arcs are).
+    // Loads from the stable network slot: always current, no relink.
+    let slot = fast.policy.load();
+    let fw = slot.set.load();
     let verdict = runtime.check(
         &logical.meta,
         Direction::Inbound,
@@ -619,7 +701,7 @@ async fn handle_inbound_one(
         Some(ident.hostname.as_str()),
         Some(ident.network_id),
         &fw,
-        &counters,
+        &slot.counters,
     );
     match verdict {
         PolicyVerdict::Allow => {}
@@ -633,7 +715,7 @@ async fn handle_inbound_one(
                 .ok()
                 .and_then(|p| packet::synthesize_reject(&p));
             if let Some(reply) = reply.filter(|r| !r.is_empty()) {
-                let _ = send_datagram(conn, reply).await;
+                send_reject_v2(reply, fast, pool, conn, pool_bufs, metrics).await;
             }
             return false;
         }

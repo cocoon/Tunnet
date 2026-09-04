@@ -22,6 +22,11 @@ use tunnet_common::packet::{Frame, MAX_LOGICAL_LEN, MAX_SEGMENTS, SegmentHeader,
 pub const MAX_ENTRIES_PER_PEER: usize = 32;
 /// Maximum bytes held in reassembly per peer.
 pub const MAX_BYTES_PER_PEER: usize = 256 * 1024;
+/// Hard GLOBAL reassembly budget across all peers (§2.1-5): enforced by
+/// atomic reservation, impossible to exceed even with concurrent peers.
+/// 4 MiB = 16 fully-loaded peers; beyond that, senders back off via QUIC
+/// DATAGRAM drops (inner TCP recovers).
+pub const MAX_BYTES_GLOBAL: usize = 4 * 1024 * 1024;
 /// Reassembly lifetime: a missing segment kills the packet after this.
 pub const REASSEMBLY_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -66,7 +71,7 @@ pub struct ReassemblyTable {
 
 impl ReassemblyTable {
     pub fn new(global_bytes: Arc<AtomicU64>) -> Self {
-        Self::with_global_cap(global_bytes, u64::MAX)
+        Self::with_global_cap(global_bytes, MAX_BYTES_GLOBAL as u64)
     }
 
     pub fn with_global_cap(global_bytes: Arc<AtomicU64>, max_bytes_global: u64) -> Self {
@@ -156,11 +161,10 @@ impl ReassemblyTable {
             self.remove(h.id);
             return InsertOut::Dropped(ReassemblyDrop::Conflict);
         }
-        // Byte caps (per-peer + global) before retaining.
-        if self.bytes + payload.len() > MAX_BYTES_PER_PEER
-            || self.global_bytes.load(Ordering::Relaxed) + payload.len() as u64
-                > self.max_bytes_global
-        {
+        // Byte caps (per-peer + hard global) before retaining.
+        // Per-peer first (no shared state touched), then the global atomic
+        // reservation (CAS: impossible to exceed, even concurrently).
+        if self.bytes + payload.len() > MAX_BYTES_PER_PEER {
             // Try one bounded eviction of the oldest entry, then give up.
             if let Some(old) = self.order.front().cloned()
                 && old != h.id
@@ -171,11 +175,27 @@ impl ReassemblyTable {
                 return InsertOut::Dropped(ReassemblyDrop::OverBytes);
             }
         }
+        if !self.reserve_global(payload.len() as u64) {
+            // Global pressure: evict the oldest entry (releases global
+            // bytes), then re-check BOTH caps — the eviction may have been
+            // a same-peer entry (per-peer changed too) or another shape.
+            if let Some(old) = self.order.front().cloned()
+                && old != h.id
+            {
+                self.remove(old);
+            }
+            if self.bytes + payload.len() > MAX_BYTES_PER_PEER {
+                return InsertOut::Dropped(ReassemblyDrop::OverBytes);
+            }
+            if !self.reserve_global(payload.len() as u64) {
+                return InsertOut::Dropped(ReassemblyDrop::OverBytes);
+            }
+        }
         let entry = self.entries.get_mut(&h.id).expect("admitted");
         entry.bytes += payload.len();
         self.bytes += payload.len();
-        self.global_bytes
-            .fetch_add(payload.len() as u64, Ordering::Relaxed);
+        // Global bytes were already reserved (CAS) above; removal paths
+        // release exactly entry.bytes, so the counter stays exact.
         entry.segments[idx] = Some(payload);
         entry.have += 1;
         if entry.have < count {
@@ -223,6 +243,22 @@ impl ReassemblyTable {
                 .fetch_sub(e.bytes as u64, Ordering::Relaxed);
             self.order.retain(|k| *k != id);
         }
+    }
+
+    /// Atomically reserve `n` global bytes (CAS loop via fetch_update).
+    /// Returns false without changing anything when the hard cap would be
+    /// exceeded. Every successful reservation is paired with exactly one
+    /// release in `remove` (which subtracts entry.bytes), so the counter
+    /// is exact and the cap is impossible to exceed — even with concurrent
+    /// peers racing on the shared counter.
+    fn reserve_global(&self, n: u64) -> bool {
+        self.global_bytes
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| {
+                cur.checked_add(n)
+                    .filter(|next| *next <= self.max_bytes_global)
+                    .map(|_| cur.saturating_add(n))
+            })
+            .is_ok()
     }
 
     fn expire(&mut self, now: Instant) {
@@ -442,8 +478,54 @@ mod tests {
             let _ = t.insert(h, p, now);
         }
         assert!(t.len() <= MAX_ENTRIES_PER_PEER);
-        // Global cap enforced.
-        assert!(global.load(Ordering::Relaxed) <= 500 + 200);
+        // Hard global cap: NEVER exceeded (no intentional overshoot).
+        assert!(
+            global.load(Ordering::Relaxed) <= 500,
+            "global cap is a limit, not telemetry"
+        );
+    }
+
+    #[test]
+    fn global_cap_holds_under_concurrent_peers() {
+        // §2.1-5: many peers sharing one counter hammer inserts from
+        // threads; the shared counter must never exceed the cap, and every
+        // table must respect the per-peer cap.
+        use std::sync::Mutex;
+        let global = Arc::new(AtomicU64::new(0));
+        let tables: Vec<Mutex<ReassemblyTable>> = (0..8)
+            .map(|_| Mutex::new(ReassemblyTable::with_global_cap(global.clone(), 4096)))
+            .collect();
+        let peak = Arc::new(AtomicU64::new(0));
+        std::thread::scope(|s| {
+            for (pi, table) in tables.iter().enumerate() {
+                let peak = peak.clone();
+                let global = global.clone();
+                s.spawn(move || {
+                    let now = Instant::now();
+                    for i in 0..200u32 {
+                        let id = (pi as u32) * 1000 + (i % 40);
+                        let h = SegmentHeader {
+                            id,
+                            index: (i % 2) as u16,
+                            count: 2,
+                            total: 200,
+                        };
+                        let mut payload = vec![0u8; 100];
+                        payload[0] = (i & 0xff) as u8;
+                        let _ = table.lock().unwrap().insert(h, Bytes::from(payload), now);
+                        // Sample the shared counter mid-race.
+                        let cur = global.load(Ordering::Relaxed);
+                        peak.fetch_max(cur, Ordering::Relaxed);
+                        assert!(cur <= 4096, "global cap exceeded under concurrency");
+                    }
+                });
+            }
+        });
+        assert!(global.load(Ordering::Relaxed) <= 4096);
+        assert!(peak.load(Ordering::Relaxed) <= 4096);
+        for t in &tables {
+            assert!((t.lock().unwrap().bytes() as u64) <= MAX_BYTES_PER_PEER as u64);
+        }
     }
 
     #[test]

@@ -17,6 +17,8 @@ use std::sync::Arc;
 #[cfg(not(target_os = "linux"))]
 use bytes::Bytes;
 use tun_rs::AsyncDevice;
+#[cfg(target_os = "linux")]
+use tunnet_common::packet::PooledBuffer;
 use tunnet_common::packet::{LogicalPacket, MAX_LOGICAL_LEN, PacketPool};
 
 /// Desired TUN batch depth (starting point; tun-rs `IDEAL_BATCH_SIZE` = 128).
@@ -34,25 +36,70 @@ pub fn slot_cap_for_mtu(mtu: usize) -> usize {
 
 /// Preallocated batch engine for Linux `recv_multiple`.
 ///
-/// Batch slots are pool-owned buffers: on receipt each slot's storage is
-/// swapped out into the logical packet (zero copy from batch buffer) and
-/// the slot refilled from the pool.
+/// Batch slots are pool-owned buffers with frame headroom intact: on
+/// receipt each slot moves wholesale into the logical packet
+/// (`from_pooled` — zero copy, and single-frame transmit later prepends
+/// its header with no staging copy) and the slot is refilled from the
+/// pool. `recv_multiple` writes at offset 0 of the slot's receive area,
+/// which starts after the headroom.
 #[cfg(target_os = "linux")]
 pub struct LinuxBatchEngine {
     pub orig: Vec<u8>,
-    bufs: Vec<Vec<u8>>,
+    bufs: Vec<BatchSlot>,
     sizes: Vec<usize>,
     pool: Arc<PacketPool>,
     slot_cap: usize,
+}
+
+/// A pool-owned TUN receive slot. `AsMut` exposes the headroomed receive
+/// area (sized by `prepare` before each batch); receipt transfers the
+/// whole buffer into a logical packet with ownership and headroom intact.
+#[cfg(target_os = "linux")]
+struct BatchSlot(PooledBuffer);
+
+#[cfg(target_os = "linux")]
+impl BatchSlot {
+    fn new(pool: &Arc<PacketPool>, slot_cap: usize) -> Self {
+        let mut buf = pool.acquire(slot_cap);
+        buf.recv_region(slot_cap);
+        Self(buf)
+    }
+
+    /// Size the receive area for the next batch.
+    fn prepare(&mut self, slot_cap: usize) {
+        self.0.recv_region(slot_cap);
+    }
+
+    fn into_pooled(self) -> PooledBuffer {
+        self.0
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl AsRef<[u8]> for BatchSlot {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl AsMut<[u8]> for BatchSlot {
+    fn as_mut(&mut self) -> &mut [u8] {
+        self.0.recv_area_mut()
+    }
 }
 
 #[cfg(target_os = "linux")]
 impl LinuxBatchEngine {
     pub fn new(pool: Arc<PacketPool>, mtu: usize) -> Self {
         let slot_cap = slot_cap_for_mtu(mtu);
+        let mut bufs = Vec::with_capacity(BATCH_SIZE);
+        for _ in 0..BATCH_SIZE {
+            bufs.push(BatchSlot::new(&pool, slot_cap));
+        }
         Self {
             orig: vec![0u8; tun_rs::VIRTIO_NET_HDR_LEN + 65535],
-            bufs: vec![vec![0u8; slot_cap]; BATCH_SIZE],
+            bufs,
             sizes: vec![0usize; BATCH_SIZE],
             pool,
             slot_cap,
@@ -60,8 +107,12 @@ impl LinuxBatchEngine {
     }
 
     /// Receive a batch; each packet takes ownership of its slot storage.
-    /// Reuses preallocated/pooled buffers; no per-packet copy.
+    /// Reuses preallocated/pooled buffers; no per-packet copy, and the
+    /// common single-frame path never copies afterwards either.
     pub async fn recv_batch(&mut self, dev: &AsyncDevice) -> anyhow::Result<Vec<LogicalPacket>> {
+        for b in &mut self.bufs {
+            b.prepare(self.slot_cap);
+        }
         let n = dev
             .recv_multiple(&mut self.orig, &mut self.bufs, &mut self.sizes, 0)
             .await?;
@@ -71,18 +122,14 @@ impl LinuxBatchEngine {
             if len == 0 || len > self.slot_cap {
                 continue;
             }
-            // Swap the filled slot out; refill with pooled storage.
-            // (`into_vec` detaches without recycling; the filled storage
-            // moves into the logical packet, the refill comes from the pool.)
-            let mut raw = std::mem::replace(
-                &mut self.bufs[i],
-                self.pool.acquire(self.slot_cap).into_vec(),
-            );
-            raw.truncate(len);
-            if let Some(p) = LogicalPacket::from_vec(raw) {
+            // Move the pool-owned slot into the packet (zero copy,
+            // headroom intact); refill the slot from the pool.
+            let slot =
+                std::mem::replace(&mut self.bufs[i], BatchSlot::new(&self.pool, self.slot_cap));
+            if let Some(p) = LogicalPacket::from_pooled(slot.into_pooled(), len) {
                 out.push(p);
             }
-            // else: malformed; the (empty) replacement slot stays.
+            // else: malformed; the fresh replacement slot stays.
         }
         Ok(out)
     }

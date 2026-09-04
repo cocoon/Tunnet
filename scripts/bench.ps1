@@ -14,9 +14,11 @@ param(
 #    loss_pct, retransmits, latency:{n,p50,p95,p99,p999,max}, path:{...},
 #    meta:{...}, note}
 # Throughput matrix (TCP 1/4, up/down/bidir with explicit JSON parse),
-# loaded-latency sweeps per direction at fractions of independently measured
-# directional capacity, UDP rate x size sweep, warmup + repeats, path-state
-# capture before/after every scenario (results flagged on migration).
+# loaded-latency sweeps per direction plus full-duplex bidir at fractions
+# of independently measured directional capacity (download load uses -R),
+# UDP rate x size sweep, warmup + repeats, path-state capture before/after
+# every scenario (results flagged on migration). p99.9 only with >=1000
+# samples, else null.
 
 $ErrorActionPreference = "Continue"
 
@@ -172,9 +174,14 @@ foreach ($d in $dirs) {
         $rate = [math]::Round($d.cap * $f, 1)
         $pct = [int]($f * 100)
         $pathBefore = Get-PathState
+        # Direction-specific load: download MUST use -R (server sends), or
+        # the "download" test silently measures upload load.
+        $isDown = ($d.name -eq "download")
         $job = Start-Job -ScriptBlock {
-            param($exe, $p, $dd, $r) & $exe -c $p -t $dd -u -b "${r}M" --json 2>&1
-        } -ArgumentList $iperf3, $Peer, $Duration, $rate
+            param($exe, $p, $dd, $r, $rev)
+            if ($rev) { & $exe -c $p -t $dd -u -b "${r}M" -R --json 2>&1 }
+            else { & $exe -c $p -t $dd -u -b "${r}M" --json 2>&1 }
+        } -ArgumentList $iperf3, $Peer, $Duration, $rate, $isDown
         Start-Sleep 2
         $lat = Measure-Latency 200 5
         $loadJson = Receive-Job $job -Wait -AutoRemoveJob | Out-String
@@ -192,6 +199,47 @@ foreach ($d in $dirs) {
             offered_mbps = $rate; actual_mbps = $actual; loss_pct = $loss
             latency = $lat; path = $pathBefore; path_after = $pathAfter; note = $note.Trim() }
     }
+}
+
+# --- bidirectional loaded latency: full-duplex UDP at fractions ---
+Write-Host "  bidir (full duplex)..." -ForegroundColor Yellow
+foreach ($f in @(0.25, 0.50, 0.75, 0.90, 1.00)) {
+    $rateUp = [math]::Round($cap.up * $f, 1)
+    $rateDown = [math]::Round($cap.down * $f, 1)
+    $pct = [int]($f * 100)
+    $pathBefore = Get-PathState
+    $jobUp = Start-Job -ScriptBlock {
+        param($exe, $p, $dd, $r) & $exe -c $p -t $dd -u -b "${r}M" --json 2>&1
+    } -ArgumentList $iperf3, $Peer, $Duration, $rateUp
+    $jobDown = Start-Job -ScriptBlock {
+        param($exe, $p, $dd, $r) & $exe -c $p -t $dd -u -b "${r}M" -R --json 2>&1
+    } -ArgumentList $iperf3, $Peer, $Duration, $rateDown
+    Start-Sleep 2
+    $lat = Measure-Latency 200 5
+    $upJson = Receive-Job $jobUp -Wait -AutoRemoveJob | Out-String
+    $downJson = Receive-Job $jobDown -Wait -AutoRemoveJob | Out-String
+    $actualUp = -1; $lossUp = -1; $actualDown = -1; $lossDown = -1
+    try {
+        $uj = $upJson | ConvertFrom-Json
+        $actualUp = [math]::Round($uj.end.sum.bits_per_second / 1e6, 1)
+        $lossUp = [math]::Round($uj.end.sum.lost_percent, 2)
+    } catch {}
+    try {
+        $dj = $downJson | ConvertFrom-Json
+        $actualDown = [math]::Round($dj.end.sum.bits_per_second / 1e6, 1)
+        $lossDown = [math]::Round($dj.end.sum.lost_percent, 2)
+    } catch {}
+    $pathAfter = Get-PathState
+    $note = ""
+    if ($pathBefore.mode -ne $pathAfter.mode) { $note = "PATH CHANGED mid-run; result flagged" }
+    if ($actualUp -gt 0 -and $actualUp -lt $rateUp * 0.7 -and $f -le 1.0) { $note += " under-delivered up load" }
+    if ($actualDown -gt 0 -and $actualDown -lt $rateDown * 0.7 -and $f -le 1.0) { $note += " under-delivered down load" }
+    Write-Host "  bidir ${pct}%: up=${actualUp}Mbps loss=${lossUp}% down=${actualDown}Mbps loss=${lossDown}% p50=$($lat.p50) p95=$($lat.p95) p99=$($lat.p99) $note"
+    Write-Row @{ scenario = "loaded-latency"; direction = "bidir"; fraction = $f
+        offered_up_mbps = $rateUp; offered_down_mbps = $rateDown
+        actual_up_mbps = $actualUp; actual_down_mbps = $actualDown
+        loss_up_pct = $lossUp; loss_down_pct = $lossDown
+        latency = $lat; path = $pathBefore; path_after = $pathAfter; note = $note.Trim() }
 }
 
 # --- UDP sweep: rates x sizes, delivered + pps + loss + jitter ---

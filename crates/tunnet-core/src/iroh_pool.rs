@@ -742,12 +742,21 @@ impl ConnPool {
         }
     }
 
+    /// Hard-drop a peer (§2.1-9): close the live tunnel connection,
+    /// deactivate its fast state (epoch bump closes readers/pumps holding
+    /// Arcs), and forget the slot. Idempotent.
     pub async fn drop_peer(&self, peer: EndpointId) {
-        self.entries.remove(&peer);
+        if let Some((_, slot)) = self.entries.remove(&peer) {
+            let mut g = slot.lock().await;
+            if let Some(c) = g.conn.take() {
+                c.close(0u32.into(), b"membership_removed");
+            }
+        }
         if let Some(reg) = self.peer_registry.lock().clone() {
             if let Some(fast) = reg.get(peer) {
-                fast.epoch.fetch_add(1, Ordering::Relaxed);
-                fast.notify.notify_one();
+                // Deactivate first (closes the mirrored fast conn + bumps
+                // the epoch), then forget the registry entry.
+                fast.deactivate();
             }
             reg.remove(peer);
         }

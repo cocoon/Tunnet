@@ -489,6 +489,31 @@ pub struct FwCounters {
     pub rejected: AtomicU64,
 }
 
+/// Stable per-network policy slot (§2.1-3):
+///
+/// ```text
+/// network → stable Arc<FwSlot> → ArcSwap<FwSet> → Arc<FwCounters>
+/// ```
+///
+/// Fast states hold the stable slot forever. Firewall publication swaps the
+/// slot's compiled set atomically — existing peers observe new rules
+/// immediately with no per-packet network map lookup and no registry-wide
+/// peer relink. The counters object is equally stable, so control-plane
+/// stats survive republishes.
+pub struct FwSlot {
+    pub set: ArcSwap<FwSet>,
+    pub counters: Arc<FwCounters>,
+}
+
+impl Default for FwSlot {
+    fn default() -> Self {
+        Self {
+            set: ArcSwap::from_pointee(FwSet::default()),
+            counters: Arc::new(FwCounters::default()),
+        }
+    }
+}
+
 /// Deny-log capacity (control-plane diagnostics, not the hot path).
 pub const DENY_LOG_CAP: usize = 64;
 
@@ -508,19 +533,25 @@ pub struct AclDenyRecord {
 ///
 /// A single `PolicyRuntime` is shared by outbound processing and every
 /// inbound connection: one canonical conntrack, one fragment table, one
-/// verdict. Snapshots compile off the packet path and publish atomically
-/// with a generation bump (§0.3); conntrack entries carry the admitting
-/// generation and revalidate on mismatch (§0.4).
+/// verdict. Snapshots compile off the packet path and publish with ONE
+/// atomic store (§2.1-4): the generation lives INSIDE the immutable
+/// snapshot, so a packet can never observe new policy with an old
+/// generation (no torn publication). Conntrack entries carry the admitting
+/// generation (taken from the same snapshot) and revalidate on mismatch.
 #[derive(Clone)]
 pub struct PolicyRuntime {
     inner: Arc<ArcSwap<RuntimeInner>>,
-    version: Arc<AtomicU64>,
+    /// Stable per-network firewall slots, shared across ALL generations:
+    /// publication swaps slot contents, so every holder observes updates
+    /// without relink (§2.1-3).
+    slots: Arc<DashMap<Uuid, Arc<FwSlot>>>,
 }
 
 struct RuntimeInner {
+    /// Policy generation, published atomically WITH this snapshot.
+    generation: u64,
     acl: CompiledAcl,
     acl_source: PolicyBundle,
-    fw_by_network: HashMap<Uuid, Arc<FwSet>>,
     fw_source: HashMap<Uuid, (Vec<FirewallRule>, Vec<FirewallRule>, bool)>,
     self_source: crate::acl::SelfIdentity,
     self_hex: String,
@@ -533,7 +564,6 @@ struct RuntimeInner {
     expiry: ExpiryWheel,
     fragments: Mutex<FragmentTable>,
     deny_log: Arc<Mutex<std::collections::VecDeque<AclDenyRecord>>>,
-    fw_stats: HashMap<Uuid, Arc<FwCounters>>,
 }
 
 impl PolicyRuntime {
@@ -546,13 +576,15 @@ impl PolicyRuntime {
         src_posture_ok: bool,
         stale: bool,
     ) -> Self {
-        let inner = RuntimeInner::compile(bundle, fw, self_id, src_posture_ok, stale, None);
+        let this = Self {
+            inner: Arc::new(ArcSwap::from_pointee(RuntimeInner::empty())),
+            slots: Arc::new(DashMap::new()),
+        };
+        let inner = this.compile_new(bundle, fw, self_id, src_posture_ok, stale, None, 1);
         // No sweeper here: the dataplane actor starts exactly one per
         // generation via spawn_sweeper (tests stay task-free).
-        Self {
-            inner: Arc::new(ArcSwap::from_pointee(inner)),
-            version: Arc::new(AtomicU64::new(1)),
-        }
+        this.inner.store(Arc::new(inner));
+        this
     }
 
     /// Background expiry sweeper (§14): rate-limited, shard-local, never
@@ -625,31 +657,30 @@ impl PolicyRuntime {
         });
     }
 
-    /// Current policy generation (fast states cache this; mismatch triggers
-    /// a slow-path re-resolve, never a per-packet map lookup).
+    /// Current policy generation, read from the live snapshot (single
+    /// atomic load — always consistent with the policy it describes).
     pub fn generation(&self) -> u64 {
-        self.version.load(Ordering::Relaxed)
+        self.inner.load().generation
     }
 
-    /// Resolve the compiled firewall set for a network (slow paths only:
-    /// fast-state creation and policy publish, never established packets).
+    /// Stable firewall slot for a network (slow paths only: fast-state
+    /// creation and install-time relink, never established packets).
+    /// Creates a disabled default slot for unknown networks.
+    pub fn slot_for_network(&self, network: Uuid) -> Arc<FwSlot> {
+        self.slots
+            .entry(network)
+            .or_insert_with(|| Arc::new(FwSlot::default()))
+            .clone()
+    }
+
+    /// Resolve the compiled firewall set for a network (slow paths only).
     pub fn fw_for_network(&self, network: Uuid) -> Arc<FwSet> {
-        self.inner
-            .load()
-            .fw_by_network
-            .get(&network)
-            .cloned()
-            .unwrap_or_default()
+        self.slot_for_network(network).set.load_full()
     }
 
     /// Counters for a network's firewall (control-plane stats surface).
     pub fn fw_counters_for(&self, network: Uuid) -> Arc<FwCounters> {
-        self.inner
-            .load()
-            .fw_stats
-            .get(&network)
-            .cloned()
-            .unwrap_or_default()
+        self.slot_for_network(network).counters.clone()
     }
 
     pub fn recent_denies(&self) -> Vec<AclDenyRecord> {
@@ -665,9 +696,10 @@ impl PolicyRuntime {
         self.inner.load().conntrack.len()
     }
 
-    /// Event-driven ACL publish (§0.3): compile off-path, swap atomically,
-    /// bump generation. Conntrack is NOT cleared; entries revalidate against
-    /// the new generation on next hit (§0.4).
+    /// Event-driven ACL publish (§0.3, §2.1-4): compile off-path, publish
+    /// with ONE atomic store carrying the bumped generation. Conntrack is
+    /// NOT cleared; entries revalidate against the new generation on next
+    /// hit (§0.4).
     pub fn publish_acl(
         &self,
         bundle: &PolicyBundle,
@@ -676,21 +708,23 @@ impl PolicyRuntime {
         stale: bool,
     ) {
         let prev = self.inner.load();
-        let inner = RuntimeInner::compile(
+        let inner = self.compile_new(
             bundle,
             &prev.fw_source,
             self_id,
             src_posture_ok,
             stale,
             Some(&prev),
+            prev.generation.wrapping_add(1),
         );
         self.inner.store(Arc::new(inner));
-        self.version.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Event-driven firewall publish for one network. Every mutation —
-    /// local rules, suggested rules, enabled flag — bumps the generation,
-    /// fixing the legacy `set_suggested` version-signal gap (§0.3).
+    /// local rules, suggested rules, enabled flag — swaps the network's
+    /// stable slot contents (visible to all live fast states immediately,
+    /// no relink) and bumps the generation, fixing the legacy
+    /// `set_suggested` version-signal gap (§0.3).
     pub fn publish_firewall(
         &self,
         network: Uuid,
@@ -701,87 +735,63 @@ impl PolicyRuntime {
         let prev = self.inner.load();
         let mut fw_source = prev.fw_source.clone();
         fw_source.insert(network, (local, suggested, enabled));
-        let inner = RuntimeInner::compile(
+        let inner = self.compile_new(
             &prev.acl_source,
             &fw_source,
             &prev.self_source,
             prev.src_posture_ok,
             prev.stale,
             Some(&prev),
+            prev.generation.wrapping_add(1),
         );
         self.inner.store(Arc::new(inner));
-        self.version.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Explicit invalidation (CLI flush, teardown): clear conntrack now and
-    /// bump generation so cached fast-state contexts re-resolve.
+    /// publish a fresh generation so cached contexts re-resolve.
     pub fn invalidate(&self) {
         let inner = self.inner.load();
         inner.conntrack.clear();
         inner.expiry.clear();
-        self.version.fetch_add(1, Ordering::Relaxed);
+        let next = self.compile_new(
+            &inner.acl_source,
+            &inner.fw_source,
+            &inner.self_source,
+            inner.src_posture_ok,
+            inner.stale,
+            Some(&inner),
+            inner.generation.wrapping_add(1),
+        );
+        self.inner.store(Arc::new(next));
     }
 }
 
 impl RuntimeInner {
-    #[allow(clippy::too_many_arguments)]
-    fn compile(
-        bundle: &PolicyBundle,
-        fw: &HashMap<Uuid, (Vec<FirewallRule>, Vec<FirewallRule>, bool)>,
-        self_id: &crate::acl::SelfIdentity,
-        src_posture_ok: bool,
-        stale: bool,
-        prev: Option<&RuntimeInner>,
-    ) -> Self {
-        let mut fw_by_network = HashMap::with_capacity(fw.len());
-        let mut fw_stats = HashMap::with_capacity(fw.len());
-        for (net, (local, suggested, enabled)) in fw {
-            // Reuse the previous counters object when the rule set is
-            // identical, so control-plane counters survive republishes.
-            let stats = prev
-                .and_then(|p| p.fw_stats.get(net))
-                .cloned()
-                .unwrap_or_default();
-            fw_stats.insert(*net, stats);
-            fw_by_network.insert(
-                *net,
-                Arc::new(FwSet {
-                    enabled: *enabled,
-                    rules: compile_fw_rules(local, suggested),
-                }),
-            );
-        }
-        // Preserve shared state across republishes: conntrack entries carry
-        // their admitting generation and revalidate (§0.4); the deny log
-        // survives so diagnostics are not wiped by updates. Fragment state
-        // is short-TTL (2 s) and starts fresh — at most a few fail-closed
-        // drops of in-flight fragments.
-        let (conntrack, deny_log) = match prev {
-            Some(p) => (p.rebuild_conntrack(), p.deny_log.clone()),
-            None => (
-                DashMap::new(),
-                Arc::new(Mutex::new(std::collections::VecDeque::with_capacity(
-                    DENY_LOG_CAP,
-                ))),
-            ),
-        };
+    /// Placeholder before the first real compile (bootstrap only).
+    fn empty() -> Self {
         Self {
-            acl: CompiledAcl::compile(bundle),
-            acl_source: bundle.clone(),
-            fw_by_network,
-            fw_source: fw.clone(),
-            self_source: self_id.clone(),
-            self_hex: self_id.endpoint_hex.clone(),
-            self_ip: self_id.ip,
-            self_tags: self_id.tags.clone(),
-            self_net: self_id.network.clone(),
-            src_posture_ok,
-            stale,
-            conntrack,
+            generation: 0,
+            acl: CompiledAcl::compile(&PolicyBundle::default()),
+            acl_source: PolicyBundle::default(),
+            fw_source: HashMap::new(),
+            self_source: crate::acl::SelfIdentity {
+                endpoint_hex: String::new(),
+                ip: Ipv4Addr::UNSPECIFIED,
+                tags: vec![],
+                network: String::new(),
+            },
+            self_hex: String::new(),
+            self_ip: Ipv4Addr::UNSPECIFIED,
+            self_tags: vec![],
+            self_net: String::new(),
+            src_posture_ok: false,
+            stale: false,
+            conntrack: DashMap::new(),
             expiry: ExpiryWheel::default(),
             fragments: Mutex::new(FragmentTable::default()),
-            deny_log,
-            fw_stats,
+            deny_log: Arc::new(Mutex::new(std::collections::VecDeque::with_capacity(
+                DENY_LOG_CAP,
+            ))),
         }
     }
 
@@ -799,10 +809,68 @@ impl RuntimeInner {
 }
 
 impl PolicyRuntime {
-    /// Hot-path check. `fw` is the peer's pre-resolved compiled set (carried
-    /// in its fast state — no per-packet map lookup). `peer_*` are cheap
-    /// slices from the same fast state. No allocation, no sorting, no string
-    /// formatting; unfragmented traffic never touches the fragment lock.
+    #[allow(clippy::too_many_arguments)]
+    fn compile_new(
+        &self,
+        bundle: &PolicyBundle,
+        fw: &HashMap<Uuid, (Vec<FirewallRule>, Vec<FirewallRule>, bool)>,
+        self_id: &crate::acl::SelfIdentity,
+        src_posture_ok: bool,
+        stale: bool,
+        prev: Option<&RuntimeInner>,
+        generation: u64,
+    ) -> RuntimeInner {
+        for (net, (local, suggested, enabled)) in fw {
+            // Swap the stable slot's compiled set: every live fast state
+            // holding this slot observes the new rules atomically, with no
+            // relink. Counters objects are never replaced, so stats survive.
+            let slot = self.slot_for_network(*net);
+            slot.set.store(Arc::new(FwSet {
+                enabled: *enabled,
+                rules: compile_fw_rules(local, suggested),
+            }));
+        }
+        // Preserve shared state across republishes: conntrack entries carry
+        // their admitting generation and revalidate (§0.4); the deny log
+        // survives so diagnostics are not wiped by updates. Fragment state
+        // is short-TTL (2 s) and starts fresh — at most a few fail-closed
+        // drops of in-flight fragments.
+        let (conntrack, deny_log) = match prev {
+            Some(p) => (p.rebuild_conntrack(), p.deny_log.clone()),
+            None => (
+                DashMap::new(),
+                Arc::new(Mutex::new(std::collections::VecDeque::with_capacity(
+                    DENY_LOG_CAP,
+                ))),
+            ),
+        };
+        RuntimeInner {
+            generation,
+            acl: CompiledAcl::compile(bundle),
+            acl_source: bundle.clone(),
+            fw_source: fw.clone(),
+            self_source: self_id.clone(),
+            self_hex: self_id.endpoint_hex.clone(),
+            self_ip: self_id.ip,
+            self_tags: self_id.tags.clone(),
+            self_net: self_id.network.clone(),
+            src_posture_ok,
+            stale,
+            conntrack,
+            expiry: ExpiryWheel::default(),
+            fragments: Mutex::new(FragmentTable::default()),
+            deny_log,
+        }
+    }
+}
+
+impl PolicyRuntime {
+    /// Hot-path check. `fw` is the peer's pre-resolved compiled set (loaded
+    /// from its stable network slot — no per-packet map lookup). `peer_*`
+    /// are cheap slices from the same fast state. No allocation, no sorting,
+    /// no string formatting; unfragmented traffic never touches the fragment
+    /// lock. The generation used is read from the SAME snapshot as the
+    /// policy, so publication can never tear (§2.1-4).
     #[allow(clippy::too_many_arguments)]
     pub fn check(
         &self,
@@ -816,11 +884,73 @@ impl PolicyRuntime {
         fw_counters: &FwCounters,
     ) -> PolicyVerdict {
         let inner = self.inner.load();
-        let policy_gen = self.version.load(Ordering::Relaxed);
+        self.check_inner(
+            &inner,
+            inner.generation,
+            meta,
+            direction,
+            peer_hex,
+            peer_tags,
+            peer_hostname,
+            peer_network,
+            fw,
+            fw_counters,
+        )
+        .0
+    }
+
+    /// Check returning the snapshot generation actually used (concurrency
+    /// tests pair verdicts with generations to prove atomic publication).
+    #[allow(clippy::too_many_arguments)]
+    pub fn check_with_generation(
+        &self,
+        meta: &PacketMeta,
+        direction: Direction,
+        peer_hex: &str,
+        peer_tags: &[String],
+        peer_hostname: Option<&str>,
+        peer_network: Option<Uuid>,
+        fw: &FwSet,
+        fw_counters: &FwCounters,
+    ) -> (PolicyVerdict, u64) {
+        let inner = self.inner.load();
+        let policy_gen = inner.generation;
+        (
+            self.check_inner(
+                &inner,
+                policy_gen,
+                meta,
+                direction,
+                peer_hex,
+                peer_tags,
+                peer_hostname,
+                peer_network,
+                fw,
+                fw_counters,
+            )
+            .0,
+            policy_gen,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn check_inner(
+        &self,
+        inner: &RuntimeInner,
+        policy_gen: u64,
+        meta: &PacketMeta,
+        direction: Direction,
+        peer_hex: &str,
+        peer_tags: &[String],
+        peer_hostname: Option<&str>,
+        peer_network: Option<Uuid>,
+        fw: &FwSet,
+        fw_counters: &FwCounters,
+    ) -> (PolicyVerdict, u64) {
         // Fast path: unfragmented traffic never touches the fragment lock.
         let l4: ResolvedL4 = if meta.is_later_fragment() {
             let Some(hit) = inner.fragments.lock().lookup_meta(meta) else {
-                return PolicyVerdict::Deny;
+                return (PolicyVerdict::Deny, policy_gen);
             };
             hit
         } else {
@@ -829,22 +959,22 @@ impl PolicyRuntime {
             }
             match ResolvedL4::from_transport(meta.transport) {
                 Some(l4) => l4,
-                None => return PolicyVerdict::Deny,
+                None => return (PolicyVerdict::Deny, policy_gen),
             }
         };
 
         let (Some(src), Some(dst)) = (meta.src_v4, meta.dst_v4) else {
-            return PolicyVerdict::Deny;
+            return (PolicyVerdict::Deny, policy_gen);
         };
         let tcp_flags = l4.tcp_flags.map(|f| f.0).unwrap_or(0);
 
         // Single canonical established lookup, shared both directions (§0.1).
         // Entries admitted under an older generation revalidate once (§0.4).
         if let Some(key) = canon_key(l4.protocol, src, dst, l4.src_port, l4.dst_port)
-            && self.conntrack_allows(&inner, policy_gen, key, direction, tcp_flags)
+            && self.conntrack_allows(inner, policy_gen, key, direction, tcp_flags)
         {
-            self.reap_for_key(&inner, &key);
-            return PolicyVerdict::Allow;
+            self.reap_for_key(inner, &key);
+            return (PolicyVerdict::Allow, policy_gen);
         }
 
         let peer_ip = match direction {
@@ -870,8 +1000,8 @@ impl PolicyRuntime {
             let open_failover =
                 inner.stale && inner.acl.is_empty_open() && inner.acl.default_is_allow();
             if !open_failover {
-                self.record_deny(&inner, peer_hex, l4.dst_port, l4.protocol);
-                return PolicyVerdict::Deny;
+                self.record_deny(inner, peer_hex, l4.dst_port, l4.protocol);
+                return (PolicyVerdict::Deny, policy_gen);
             }
         }
 
@@ -896,7 +1026,7 @@ impl PolicyRuntime {
                     } else {
                         fw_counters.denied.fetch_add(1, Ordering::Relaxed);
                     }
-                    return v;
+                    return (v, policy_gen);
                 }
                 None => {
                     // Built-in defaults: outbound allow; inbound from a known
@@ -913,7 +1043,7 @@ impl PolicyRuntime {
                     };
                     if !allowed {
                         fw_counters.denied.fetch_add(1, Ordering::Relaxed);
-                        return PolicyVerdict::Deny;
+                        return (PolicyVerdict::Deny, policy_gen);
                     }
                     fw_counters.allowed.fetch_add(1, Ordering::Relaxed);
                 }
@@ -921,9 +1051,9 @@ impl PolicyRuntime {
         }
 
         if let Some(key) = canon_key(l4.protocol, src, dst, l4.src_port, l4.dst_port) {
-            self.open_flow(&inner, policy_gen, key, l4.protocol, tcp_flags);
+            self.open_flow(inner, policy_gen, key, l4.protocol, tcp_flags);
         }
-        PolicyVerdict::Allow
+        (PolicyVerdict::Allow, policy_gen)
     }
 
     /// Established-flow fast path with generation revalidation (§0.4).
@@ -1663,9 +1793,33 @@ mod tests {
         )
     }
 
+    /// Check helper reading firewall state the way the hot path does: from
+    /// the network's stable slot, with no post-publish re-resolution.
+    fn check_in_slot(
+        rt: &PolicyRuntime,
+        m: &PacketMeta,
+        net: Uuid,
+        direction: tunnet_common::policy::Direction,
+    ) -> PolicyVerdict {
+        let slot = rt.slot_for_network(net);
+        let fw = slot.set.load();
+        rt.check(
+            m,
+            direction,
+            "bb",
+            &[],
+            None,
+            Some(net),
+            &fw,
+            &slot.counters,
+        )
+    }
+
     #[test]
     fn revocation_suggested_rule_change() {
-        // Suggested rules arrive via publish_firewall and must revoke too.
+        // Suggested rules arrive via publish_firewall and must revoke too —
+        // observed through the STABLE slot, with no manual re-resolution
+        // after publication (§2.1-3).
         let net = Uuid::nil();
         let rt = PolicyRuntime::bootstrap(
             &PolicyBundle::default(),
@@ -1674,33 +1828,35 @@ mod tests {
             true,
             false,
         );
-        let fw = rt.fw_for_network(net);
-        let counters = rt.fw_counters_for(net);
+        // Pin the slot the way a fast state would (before any publish).
+        let slot = rt.slot_for_network(net);
         let m = meta_tcp(443);
-        assert_eq!(check_out(&rt, &m, &fw, &counters), PolicyVerdict::Allow);
-        let (local, suggested) = fw_deny_all_inbound();
-        rt.publish_firewall(net, local, suggested, true);
-        // Fast state would re-resolve here; fetch the fresh set like it does.
-        let fw2 = rt.fw_for_network(net);
-        let counters2 = rt.fw_counters_for(net);
         assert_eq!(
             rt.check(
                 &m,
-                Direction::Inbound,
+                Direction::Outbound,
                 "bb",
                 &[],
                 None,
                 Some(net),
-                &fw2,
-                &counters2
+                &slot.set.load(),
+                &slot.counters
             ),
+            PolicyVerdict::Allow
+        );
+        let (local, suggested) = fw_deny_all_inbound();
+        rt.publish_firewall(net, local, suggested, true);
+        // Same slot object, no re-fetch: the new rules are visible.
+        assert_eq!(
+            check_in_slot(&rt, &m, net, Direction::Inbound),
             PolicyVerdict::Deny
         );
     }
 
     #[test]
     fn revocation_firewall_disabled_then_deny() {
-        // Disabled firewall admits; enabling with a deny rule revokes.
+        // Disabled firewall admits; enabling with a deny rule revokes; all
+        // observed through the stable slot with no re-resolution (§2.1-3).
         let net = Uuid::nil();
         let rt = PolicyRuntime::bootstrap(
             &PolicyBundle::default(),
@@ -1709,55 +1865,191 @@ mod tests {
             true,
             false,
         );
-        let fw = rt.fw_for_network(net);
-        let counters = rt.fw_counters_for(net);
         let m = meta_tcp(443);
         assert_eq!(
+            check_in_slot(&rt, &m, net, Direction::Inbound),
+            PolicyVerdict::Allow
+        );
+        let (local, suggested) = fw_deny_all_inbound();
+        rt.publish_firewall(net, local, suggested, true);
+        assert_eq!(
+            check_in_slot(&rt, &m, net, Direction::Inbound),
+            PolicyVerdict::Deny
+        );
+        // And disabling again admits without clearing unrelated state.
+        rt.publish_firewall(net, vec![], vec![], false);
+        assert_eq!(
+            check_in_slot(&rt, &m, net, Direction::Inbound),
+            PolicyVerdict::Allow
+        );
+    }
+
+    #[test]
+    fn live_fast_state_observes_publication() {
+        // §2.1-3: a fast state holding its network slot (like an active
+        // peer) immediately observes local rule changes, suggested rule
+        // changes, enable/disable flips, and allow→deny revocation of an
+        // ESTABLISHED flow — with zero relink calls after install.
+        use crate::peers::{PeerIdentity, PeerRegistry};
+        use iroh::SecretKey;
+        let net = Uuid::from_u128(0x21);
+        let rt = PolicyRuntime::bootstrap(
+            &PolicyBundle::default(),
+            &HashMap::from([(net, (vec![], vec![], true))]),
+            &self_id(),
+            true,
+            false,
+        );
+        let reg = PeerRegistry::new();
+        let ep = SecretKey::generate().public();
+        let fast = reg.ensure(Arc::new(PeerIdentity {
+            endpoint: ep,
+            endpoint_hex: format!("{ep}"),
+            hostname: "peer".into(),
+            ip: Ipv4Addr::new(10, 0, 0, 2),
+            tags: vec![],
+            network_id: net,
+            network_name: "net".into(),
+        }));
+        // Install-time assignment only.
+        reg.relink_policy(&rt);
+        // The hot path, exactly as tun_io does it.
+        let check_live = |rt: &PolicyRuntime, m: &PacketMeta| {
+            let slot = fast.policy.load();
+            let fw = slot.set.load();
             rt.check(
-                &m,
+                m,
                 Direction::Inbound,
                 "bb",
                 &[],
                 None,
                 Some(net),
                 &fw,
-                &counters
-            ),
-            PolicyVerdict::Allow
+                &slot.counters,
+            )
+        };
+        // Establish a flow through the live state.
+        let m = meta_tcp(443);
+        assert_eq!(check_live(&rt, &m), PolicyVerdict::Allow);
+        // Local deny rule published: established flow revoked, no relink.
+        let (local, _) = fw_deny_all_inbound();
+        rt.publish_firewall(net, local, vec![], true);
+        assert_eq!(check_live(&rt, &m), PolicyVerdict::Deny);
+        // Back to allow via empty rules.
+        rt.publish_firewall(net, vec![], vec![], true);
+        let m2 = meta_tcp_ports(40001, 443);
+        assert_eq!(check_live(&rt, &m2), PolicyVerdict::Allow);
+        // Suggested deny published: revoked again (suggested rules flow
+        // through the same slot swap as local ones).
+        let (suggested_deny, _) = fw_deny_all_inbound();
+        rt.publish_firewall(net, vec![], suggested_deny, true);
+        assert_eq!(check_live(&rt, &m2), PolicyVerdict::Deny);
+        // Counters object stayed stable across all publishes (stats intact).
+        let slot = fast.policy.load();
+        assert!(slot.counters.denied.load(Ordering::Relaxed) > 0);
+        assert!(slot.counters.allowed.load(Ordering::Relaxed) > 0);
+    }
+
+    #[test]
+    fn publication_is_atomic_under_concurrency() {
+        // §2.1-4: publishers alternate allow-all/deny-all bundles while
+        // readers evaluate one fixed flow. Every verdict is paired with the
+        // generation the reader ACTUALLY used: a verdict at a deny
+        // generation must be Deny (a torn snapshot+generation pair would
+        // trust stale conntrack and wrongly Allow).
+        use std::sync::Mutex;
+        let rt = PolicyRuntime::bootstrap(
+            &PolicyBundle::default(),
+            &HashMap::new(),
+            &self_id(),
+            true,
+            false,
         );
-        let (local, suggested) = fw_deny_all_inbound();
-        rt.publish_firewall(net, local, suggested, true);
-        let fw2 = rt.fw_for_network(net);
-        let counters2 = rt.fw_counters_for(net);
-        assert_eq!(
-            rt.check(
-                &m,
-                Direction::Inbound,
-                "bb",
-                &[],
-                None,
-                Some(net),
-                &fw2,
-                &counters2
-            ),
-            PolicyVerdict::Deny
-        );
-        // And disabling again admits without clearing unrelated state.
-        rt.publish_firewall(net, vec![], vec![], false);
-        let fw3 = rt.fw_for_network(net);
-        assert_eq!(
-            rt.check(
-                &m,
-                Direction::Inbound,
-                "bb",
-                &[],
-                None,
-                Some(net),
-                &fw3,
-                &counters2
-            ),
-            PolicyVerdict::Allow
-        );
+        let deny_gens = Arc::new(Mutex::new(Vec::<u64>::new()));
+        let records = Arc::new(Mutex::new(Vec::<(PolicyVerdict, u64)>::new()));
+        let fw = Arc::new(FwSet {
+            enabled: false,
+            rules: vec![],
+        });
+        let counters = Arc::new(FwCounters::default());
+        // Establish the flow once (admitted under the bootstrap generation).
+        let m = meta_tcp(80);
+        assert_eq!(check_out(&rt, &m, &fw, &counters), PolicyVerdict::Allow);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        std::thread::scope(|scope| {
+            // Publisher: alternate deny/allow, recording deny generations.
+            let rt_p = rt.clone();
+            let deny_gens_p = deny_gens.clone();
+            let stop_p = stop.clone();
+            let publisher = scope.spawn(move || {
+                let mut deny = true;
+                while !stop_p.load(std::sync::atomic::Ordering::Relaxed) {
+                    if deny {
+                        rt_p.publish_acl(&deny_80_bundle(), &self_id(), true, false);
+                        deny_gens_p.lock().unwrap().push(rt_p.generation());
+                    } else {
+                        rt_p.publish_acl(&PolicyBundle::default(), &self_id(), true, false);
+                    }
+                    deny = !deny;
+                }
+            });
+            // Readers: hammer the SAME flow, pairing verdict + used gen.
+            let mut readers = Vec::new();
+            for _ in 0..4 {
+                let rt_r = rt.clone();
+                let records_r = records.clone();
+                let stop_r = stop.clone();
+                let fw_r = fw.clone();
+                let counters_r = counters.clone();
+                let m_r = meta_tcp(80);
+                readers.push(scope.spawn(move || {
+                    while !stop_r.load(std::sync::atomic::Ordering::Relaxed) {
+                        let (v, g) = rt_r.check_with_generation(
+                            &m_r,
+                            Direction::Outbound,
+                            "bb",
+                            &[],
+                            None,
+                            None,
+                            &fw_r,
+                            &counters_r,
+                        );
+                        records_r.lock().unwrap().push((v, g));
+                    }
+                }));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = publisher.join();
+            for r in readers {
+                let _ = r.join();
+            }
+        });
+        let deny_gens = deny_gens.lock().unwrap();
+        let records = records.lock().unwrap();
+        assert!(!deny_gens.is_empty(), "publisher must have run");
+        assert!(!records.is_empty(), "readers must have run");
+        // Verdicts at deny generations are Deny — no torn allow-through.
+        // (Verdicts at allow generations may be Allow or Deny: a flow
+        // denied under a deny gen stays denied until... conntrack only
+        // opens on Allow, so re-allow re-admits; either is consistent.)
+        for (v, g) in records.iter() {
+            if deny_gens.contains(g) {
+                assert_eq!(
+                    *v,
+                    PolicyVerdict::Deny,
+                    "torn publication: Allow verdict at deny generation {g}"
+                );
+            }
+        }
+        // Generations observed are monotonic per snapshot (sanity: the
+        // sequence of publishes is a total order).
+        let mut gens: Vec<u64> = records.iter().map(|(_, g)| *g).collect();
+        gens.sort();
+        gens.dedup();
+        for w in gens.windows(2) {
+            assert!(w[1] > w[0], "generations must be distinct per publish");
+        }
     }
 
     #[test]

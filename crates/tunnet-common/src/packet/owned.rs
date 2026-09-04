@@ -193,6 +193,16 @@ impl PooledBuffer {
         Some(&mut self.storage[self.start..self.start + hdr_len])
     }
 
+    /// Mutable receive area from the headroom start to the end of storage,
+    /// for TUN batch slots used with `recv_multiple` at offset 0. Size it
+    /// first with [`recv_region`]; the received length is then set via
+    /// [`set_len`] (or `from_pooled`). Headroom stays intact, so a later
+    /// single-frame encode prepends its header with no copy.
+    pub fn recv_area_mut(&mut self) -> &mut [u8] {
+        debug_assert!(self.start <= self.storage.len());
+        &mut self.storage[self.start..]
+    }
+
     /// Raw storage (for TUN batch slot use).
     pub fn storage_mut(&mut self) -> &mut Vec<u8> {
         &mut self.storage

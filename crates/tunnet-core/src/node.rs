@@ -755,14 +755,17 @@ impl CoreNode {
     }
 
     /// Wire the shared policy runtime after construction (both modes):
-    /// attach engines (future mutations publish automatically), relink peer
-    /// fast states, and hand pool slow paths the peer registry.
+    /// attach engines (future mutations publish automatically), install it
+    /// on the routing table (slot assignment at every (re)resolution),
+    /// relink existing peer fast states once, and hand pool slow paths the
+    /// peer registry. Publication after this point needs no relink (§2.1-3).
     pub fn install_policy_runtime(&mut self) {
         self.acl.attach_runtime(self.policy.clone());
         #[cfg(feature = "direct")]
         for runtime in self.direct.values() {
             runtime.firewall.attach_runtime(self.policy.clone());
         }
+        self.routes.set_policy_runtime(self.policy.clone());
         self.routes.peer_registry().relink_policy(&self.policy);
         self.pool
             .set_peer_registry(self.routes.peer_registry().clone());

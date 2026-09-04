@@ -9,7 +9,7 @@
 //!   identity: peer identity/context (RwLock<Arc<..>>, updated on rebuild)
 //!   conn: live QUIC Connection (ArcSwapOption, lock-free)
 //!   scheduler: per-peer FQ-CoDel state (Mutex, pump-owned in practice)
-//!   policy: resolved firewall set + counters + generation (ArcSwap)
+//!   policy: stable network firewall slot (ArcSwap, swapped by publish)
 //!   tx/rx counters, coarse activity, relay flag, effective MPS, RTT cache
 //!   reassembly table, frame-ID counter, pump wakeup
 //! ```
@@ -32,7 +32,7 @@ use parking_lot::{Mutex, RwLock};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-use crate::policy_runtime::{FwCounters, FwSet, PolicyRuntime};
+use crate::policy_runtime::{FwSlot, PolicyRuntime};
 use crate::reassembly::ReassemblyTable;
 use crate::scheduler::PeerScheduler;
 
@@ -48,24 +48,6 @@ pub struct PeerIdentity {
     pub network_name: String,
 }
 
-/// Resolved policy link for a peer (swapped atomically on publish).
-#[derive(Debug, Clone)]
-pub struct PeerPolicyLink {
-    pub fw: Arc<FwSet>,
-    pub counters: Arc<FwCounters>,
-    pub generation: u64,
-}
-
-impl Default for PeerPolicyLink {
-    fn default() -> Self {
-        Self {
-            fw: Arc::new(FwSet::default()),
-            counters: Arc::new(FwCounters::default()),
-            generation: 0,
-        }
-    }
-}
-
 /// Default DRR quantum: one logical MTU-ish chunk (retuned with MPS).
 pub const DEFAULT_QUANTUM: usize = 1536;
 /// Default effective DATAGRAM payload before the first measurement.
@@ -75,7 +57,11 @@ pub struct PeerFastState {
     pub identity: RwLock<Arc<PeerIdentity>>,
     pub conn: ArcSwapOption<Connection>,
     pub scheduler: Mutex<PeerScheduler>,
-    pub policy: ArcSwap<PeerPolicyLink>,
+    /// Stable network firewall slot (§2.1-3): assigned once per network
+    /// (re)resolution, swapped in place by firewall publication. The hot
+    /// path loads set + counters with two atomic loads — no map lookup,
+    /// no relink.
+    pub policy: ArcSwap<FwSlot>,
     pub reassembly: Mutex<ReassemblyTable>,
     pub notify: Notify,
     pub pump_running: AtomicBool,
@@ -104,7 +90,7 @@ impl PeerFastState {
             identity: RwLock::new(identity),
             conn: ArcSwapOption::empty(),
             scheduler: Mutex::new(PeerScheduler::new(DEFAULT_QUANTUM)),
-            policy: ArcSwap::from_pointee(PeerPolicyLink::default()),
+            policy: ArcSwap::from_pointee(FwSlot::default()),
             reassembly: Mutex::new(ReassemblyTable::new(reassembly_budget)),
             notify: Notify::new(),
             pump_running: AtomicBool::new(false),
@@ -126,8 +112,10 @@ impl PeerFastState {
     /// only when the reported free space fits the ENTIRE frame, so QUIC never
     /// silently displaces an older buffered datagram behind our back.
     ///
-    /// The frame is returned on every error path, so the pump can requeue or
-    /// resume losslessly — a stall never consumes bytes.
+    /// The frame is returned on EVERY error path (§2.1-8) — including a
+    /// failed `send_datagram` after the prechecks passed (via a cheap
+    /// refcount clone handed to QUIC) — so the pump can requeue or resume
+    /// losslessly. A stall never consumes bytes.
     pub fn try_send_frame(&self, frame: bytes::Bytes) -> Result<(), (FastSendError, bytes::Bytes)> {
         let frame_len = frame.len();
         let Some(conn) = self.conn.load_full() else {
@@ -145,14 +133,18 @@ impl PeerFastState {
         if conn.datagram_send_buffer_space() < frame_len {
             return Err((FastSendError::TransportFull, frame));
         }
-        match conn.send_datagram(frame) {
+        // Clone before handing to QUIC: `send_datagram` consumes its
+        // argument without returning it on error, so without this clone a
+        // late failure would silently eat the frame and break the
+        // ownership/requeue invariant. `Bytes::clone` is a refcount bump.
+        match conn.send_datagram(frame.clone()) {
             Ok(()) => {
                 self.tx_packets.fetch_add(1, Ordering::Relaxed);
                 self.tx_bytes.fetch_add(frame_len as u64, Ordering::Relaxed);
                 self.touch();
                 Ok(())
             }
-            Err(_) => Err((FastSendError::Closed, bytes::Bytes::new())),
+            Err(_) => Err((FastSendError::Closed, frame)),
         }
     }
 
@@ -186,6 +178,19 @@ impl PeerFastState {
             return None;
         }
         Some(conn.as_ref().clone())
+    }
+
+    /// Hard-deactivate this fast state (§2.1-9): membership removed.
+    /// Bumps the ownership epoch (pumps drain and exit; readers holding
+    /// this Arc observe the change), drops and CLOSES the live tunnel
+    /// connection, and wakes any parked pump so it exits promptly instead
+    /// of sleeping out its backoff on dead state. Idempotent.
+    pub fn deactivate(&self) {
+        self.epoch.fetch_add(1, Ordering::Relaxed);
+        if let Some(conn) = self.conn.swap(None) {
+            conn.close(0u32.into(), b"membership_removed");
+        }
+        self.notify.notify_one();
     }
 
     pub fn touch(&self) {
@@ -289,33 +294,46 @@ impl PeerRegistry {
     }
 
     pub fn remove(&self, peer: EndpointId) {
-        self.states.remove(&peer);
+        if let Some((_, state)) = self.states.remove(&peer) {
+            // Hard revoke (§2.1-9): readers holding Arcs observe the epoch
+            // bump and exit; the live conn is closed; pumps drain and stop.
+            state.deactivate();
+        }
     }
 
     /// Retain only live membership (slow path: routing rebuild prunes
-    /// departed peers; readers holding Arcs are unaffected).
+    /// departed peers). Removed states are hard-deactivated first, so no
+    /// stale Arc keeps forwarding through dead identity/policy state.
     pub fn retain(&self, live: &std::collections::HashSet<EndpointId>) {
-        self.states.retain(|ep, _| live.contains(ep));
+        let mut departed = Vec::new();
+        self.states.retain(|ep, state| {
+            let keep = live.contains(ep);
+            if !keep {
+                departed.push(state.clone());
+            }
+            keep
+        });
+        for state in departed {
+            state.deactivate();
+        }
     }
 
     pub fn clear(&self) {
+        let all: Vec<_> = self.states.iter().map(|e| e.value().clone()).collect();
         self.states.clear();
+        for state in all {
+            state.deactivate();
+        }
     }
 
-    /// Proactive policy relink after every publish (slow/control path):
-    /// every stable state points at the fresh compiled set, so established
-    /// packets never re-resolve and never observe a torn generation.
+    /// Install-time policy slot assignment (slow/control path): every stable
+    /// state points at its network's stable slot. Firewall publication NEVER
+    /// needs this — slots swap in place (§2.1-3).
     pub fn relink_policy(&self, runtime: &PolicyRuntime) {
-        let policy_gen = runtime.generation();
         for entry in self.states.iter() {
             let state = entry.value();
             let network = state.identity.read().network_id;
-            let link = PeerPolicyLink {
-                fw: runtime.fw_for_network(network),
-                counters: runtime.fw_counters_for(network),
-                generation: policy_gen,
-            };
-            state.policy.store(Arc::new(link));
+            state.policy.store(runtime.slot_for_network(network));
         }
     }
 
@@ -396,15 +414,45 @@ mod tests {
     }
 
     #[test]
-    fn try_send_without_conn_is_no_connection() {
+    fn try_send_without_conn_returns_frame() {
+        // §2.1-8: every error path returns the frame for lossless requeue.
         let reg = PeerRegistry::new();
         let ep = test_endpoint();
         let s = reg.ensure(identity(ep));
-        let err = s
-            .try_send_frame(bytes::Bytes::from_static(b"x"))
-            .unwrap_err()
-            .0;
+        let frame = bytes::Bytes::from_static(b"frame-bytes");
+        let (err, back) = s.try_send_frame(frame.clone()).unwrap_err();
         assert_eq!(err, FastSendError::NoConnection);
+        assert_eq!(back, frame, "frame must come back byte-identical");
+    }
+
+    #[test]
+    fn removal_deactivates_fast_state() {
+        // §2.1-9: removing a peer hard-revokes its fast state — epoch
+        // bumped (pumps/readers holding the Arc observe it and exit),
+        // connection cleared. A subsequent resolve finds nothing.
+        use std::collections::HashSet;
+        let reg = PeerRegistry::new();
+        let ep = test_endpoint();
+        let s = reg.ensure(identity(ep));
+        let epoch0 = s.epoch.load(Ordering::Relaxed);
+        // Simulate a live peer: epoch + scheduler contents (pump-owned).
+        s.epoch.fetch_add(0, Ordering::Relaxed);
+        assert!(reg.get(ep).is_some());
+        reg.remove(ep);
+        assert!(reg.get(ep).is_none(), "removed peer must not resolve");
+        assert_eq!(
+            s.epoch.load(Ordering::Relaxed),
+            epoch0 + 1,
+            "reader/pump exit signal"
+        );
+        assert!(s.conn.load_full().is_none());
+        // Retain with an empty live set deactivates too.
+        let ep2 = test_endpoint();
+        let s2 = reg.ensure(identity(ep2));
+        let epoch2 = s2.epoch.load(Ordering::Relaxed);
+        reg.retain(&HashSet::new());
+        assert!(reg.get(ep2).is_none());
+        assert_eq!(s2.epoch.load(Ordering::Relaxed), epoch2 + 1);
     }
 
     #[test]

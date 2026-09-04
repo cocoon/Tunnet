@@ -11,6 +11,13 @@ use tunnet_common::packet::{PacketMeta, SshNatClass, set_tcp_ipv4_checksum};
 pub const SSH_EXTERNAL_PORT: u16 = 22;
 pub const SSH_INTERNAL_PORT: u16 = 30022;
 
+/// Parse-once outbound check using already-parsed metadata.
+/// Gates materialization: only packets actually needing a rewrite take the
+/// mutable path (§2.1-7); everything else stays immutable (zero copy).
+pub fn needs_outbound_rewrite_with_meta(meta: &PacketMeta, self_ip: Ipv4Addr) -> bool {
+    matches!(meta.ssh_nat_class(self_ip), SshNatClass::OutboundToExternal)
+}
+
 /// Parse-once outbound rewrite using already-parsed metadata.
 /// Returns true when a rewrite was applied (caller must refresh metadata).
 pub fn rewrite_outbound_with_meta(packet: &mut [u8], meta: &PacketMeta, self_ip: Ipv4Addr) -> bool {

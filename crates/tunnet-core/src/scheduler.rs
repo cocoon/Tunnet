@@ -12,14 +12,21 @@
 //!   └─ byte caps + emergency sojourn ceiling (safety bound only)
 //! ```
 //!
-//! Complexity: dequeue touches O(1) flows (new-list head, then DRR cursor);
-//! cap pressure probes at most a bounded number of flows. No linear scans,
-//! no per-packet allocation on the dequeue path.
+//! Complexity: dequeue performs one rotation pass over old flows (plus
+//! repeat passes only after CoDel/emergency drops, each strictly reducing
+//! queued packets — bounded, terminating). No linear scans for drops, no
+//! per-packet allocation on the dequeue path.
 //!
 //! The scheduler queues LOGICAL packets (§7): one inner packet is one
 //! scheduling object. Segmentation happens after dequeue; the pump reports
-//! actual wire bytes back via [`PeerScheduler::account_sent`] so fairness
-//! reflects transmitted bytes including framing overhead.
+//! the whole logical packet ONCE at completion via
+//! [`PeerScheduler::account_sent`] with `(logical_len, total_wire_len)` so
+//! fairness reflects transmitted bytes including framing overhead (and
+//! segmented traffic is never double-charged).
+//!
+//! `Empty` means genuinely no schedulable work: DRR deficits accumulate
+//! immediately inside a dequeue call, so a flow whose head exceeds one
+//! quantum is served in the same call instead of stalling the pump.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -335,41 +342,70 @@ impl PeerScheduler {
 
     /// Dequeue the next logical packet to transmit: sparse flows first
     /// (bounded epoch budget, young head), else byte-DRR across old flows
-    /// with per-flow CoDel standing-queue control. O(1) flows per call.
+    /// with per-flow CoDel standing-queue control.
+    ///
+    /// `Empty` is returned ONLY when no schedulable work remains. DRR
+    /// deficits accumulate immediately (see `serve_old`): a head larger
+    /// than one quantum is served in this call, never deferred to a later
+    /// round. Repeat passes happen only after a pass dropped packets, so
+    /// each pass strictly reduces queued packets and the loop terminates;
+    /// a pass bound guards against future regressions hanging the pump.
     pub fn next(&mut self, now: Instant) -> Dequeue {
-        // 1) Sparse/new flows: head-of-list only (no scan).
-        if let Some(key) = self.new_list.pop_front() {
+        // 1) Sparse/new flows: drain Gone heads; one Demote breaks to DRR.
+        while let Some(key) = self.new_list.pop_front() {
             match self.serve_sparse(key, now) {
                 SparseOut::Send(packet, sample) => return Dequeue::Send(packet, sample),
-                SparseOut::Gone => {}
-                SparseOut::Demoted => {}
+                SparseOut::Gone => continue,
+                SparseOut::Demoted => break,
             }
         }
         // 2) Byte-DRR across old flows with CoDel. List rotation lives
         // here: serve_old only signals, never pushes (one owner, no dupes,
         // no zombie keys for emptied flows).
-        let n = self.old_list.len();
-        for _ in 0..n.max(1) {
-            let Some(key) = self.old_list.pop_front() else {
-                break;
-            };
-            match self.serve_old(key, now) {
-                OldOut::Send(packet, sample) => {
-                    if self.flows.get(&key).is_some_and(|q| !q.packets.is_empty()) {
-                        self.old_list.push_back(key);
-                    }
-                    return Dequeue::Send(packet, sample);
-                }
-                OldOut::Rotate => {
-                    if self.flows.get(&key).is_some_and(|q| !q.packets.is_empty()) {
-                        self.old_list.push_back(key);
-                    }
-                    continue;
-                }
-                OldOut::Gone => continue,
+        let mut passes_left = self.packets + self.old_list.len() + 1;
+        loop {
+            let n = self.old_list.len();
+            if n == 0 {
+                return Dequeue::Empty;
             }
+            if passes_left == 0 {
+                // Unreachable safety: every no-Send pass either drops a
+                // packet or retires list entries (see below), so passes are
+                // bounded by packets + flows. Never hang the pump.
+                debug_assert!(false, "scheduler pass bound exhausted");
+                return Dequeue::Empty;
+            }
+            passes_left -= 1;
+            let mut sent: Option<(Box<LogicalPacket>, SojournSample)> = None;
+            for _ in 0..n {
+                let Some(key) = self.old_list.pop_front() else {
+                    break;
+                };
+                match self.serve_old(key, now) {
+                    OldOut::Send(packet, sample) => {
+                        if self.flows.get(&key).is_some_and(|q| !q.packets.is_empty()) {
+                            self.old_list.push_back(key);
+                        }
+                        sent = Some((packet, sample));
+                        break;
+                    }
+                    OldOut::Rotate => {
+                        if self.flows.get(&key).is_some_and(|q| !q.packets.is_empty()) {
+                            self.old_list.push_back(key);
+                        }
+                    }
+                    OldOut::Gone => {}
+                }
+            }
+            if let Some((packet, sample)) = sent {
+                return Dequeue::Send(packet, sample);
+            }
+            // No send this pass: every visit either dropped a packet
+            // (CoDel/emergency, strictly reducing `packets`) or retired a
+            // flow/stale key (strictly shrinking the list). If work
+            // remains, the next pass serves it — deficits were already
+            // accumulated, so no artificial stall. Loop re-checks.
         }
-        Dequeue::Empty
     }
 
     /// Requeue a packet at its flow head (transport-full: retry later without
@@ -396,8 +432,11 @@ impl PeerScheduler {
         self.counters.transport_full += 1;
     }
 
-    /// Account actual transmitted bytes (logical + framing overhead) for
-    /// byte fairness that reflects wire cost (§7).
+    /// Account one COMPLETED logical packet (logical + total wire bytes).
+    /// Called exactly once per logical packet when transmission finishes —
+    /// never per segment — so segmented traffic is charged once: the
+    /// dequeue already debited the logical length from DRR deficit, and
+    /// only the wire overhead beyond it leans future rounds here.
     pub fn account_sent(&mut self, flow: FlowKey, logical_len: usize, wire_len: usize) {
         self.counters.sent_packets += 1;
         self.counters.sent_bytes += logical_len as u64;
@@ -577,9 +616,15 @@ impl PeerScheduler {
             }
             Head::Ready(head_len) => {
                 let q = self.flows.get_mut(&key).expect("present");
-                q.deficit += self.quantum as isize;
-                if (head_len as isize) > q.deficit {
-                    return OldOut::Rotate;
+                // Accumulate DRR rounds immediately: a head larger than one
+                // quantum (e.g. a 2800–9000 byte logical packet against a
+                // ~1200-byte MPS-scaled quantum) is served in THIS call.
+                // Long-term byte fairness is unchanged: the debit below
+                // charges the full head length, so an oversized head borrows
+                // against its future rounds (deficit goes negative and the
+                // flow then waits). Terminates: quantum >= 512 > 0.
+                while (head_len as isize) > q.deficit {
+                    q.deficit += self.quantum as isize;
                 }
                 let qp = q.packets.pop_front().expect("head");
                 let sample = SojournSample {
@@ -653,6 +698,118 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn large_heads_serve_without_stall() {
+        // §2.1-2: logical packets far larger than the DRR quantum (2800 and
+        // 9000 byte packets against ~1200-byte MPS-scaled quanta) must be
+        // served immediately — Empty means empty, never "needs more rounds".
+        for (size, quantum) in [(2800usize, 1200usize), (9000, 1400), (9000, 512)] {
+            let p = pool();
+            let mut s = PeerScheduler::new(quantum);
+            assert!(
+                s.enqueue(logical(&p, 1111, size - 28), Instant::now())
+                    .is_none()
+            );
+            // Demote to the old/DRR list, as the pump would.
+            for k in s.flows.keys().cloned().collect::<Vec<_>>() {
+                let q = s.flows.get_mut(&k).unwrap();
+                q.is_new = false;
+                q.epoch_bytes = NEW_FLOW_BYTE_BUDGET;
+            }
+            s.new_list.clear();
+            for k in s.flows.keys().cloned().collect::<Vec<_>>() {
+                s.old_list.push_back(k);
+            }
+            let mut empties = 0u32;
+            let mut sent = 0u32;
+            while !s.is_empty() {
+                match s.next(Instant::now()) {
+                    Dequeue::Send(pkt, _) => {
+                        let (f, l) = (pkt.flow, pkt.len());
+                        assert_eq!(l, logical(&p, 1111, size - 28).len());
+                        s.account_sent(f, l, l + 12);
+                        sent += 1;
+                    }
+                    Dequeue::Empty => empties += 1,
+                }
+                assert!(sent + empties < 10, "stall: Empty with work queued");
+            }
+            assert_eq!(sent, 1);
+            assert_eq!(
+                empties, 0,
+                "size={size} quantum={quantum}: no Empty while queued"
+            );
+        }
+    }
+
+    #[test]
+    fn wire_accounted_once_per_logical() {
+        // §2.1-2: one logical packet => exactly one account_sent at
+        // completion with (logical, total_wire); segmented traffic must not
+        // be double-charged through per-segment calls.
+        let p = pool();
+        let mut s = PeerScheduler::new(1200);
+        let want = logical(&p, 1111, 2800 - 28);
+        let (flow, len) = (want.flow, want.len());
+        assert!(s.enqueue(want, Instant::now()).is_none());
+        let (f, l) = match s.next(Instant::now()) {
+            Dequeue::Send(pkt, _) => (pkt.flow, pkt.len()),
+            Dequeue::Empty => panic!("expected packet"),
+        };
+        assert_eq!((f, l), (flow, len));
+        // Pump transmits 3 segments then accounts once with total wire.
+        let total_wire = l + 3 * 11;
+        s.account_sent(f, l, total_wire);
+        let c = s.counters();
+        assert_eq!(c.sent_packets, 1);
+        assert_eq!(c.sent_bytes, len as u64);
+        assert_eq!(c.wire_bytes, total_wire as u64);
+    }
+
+    #[test]
+    fn oversized_head_borrows_future_rounds() {
+        // Immediate service must not break fairness: a flow that consumed
+        // many quanta at once goes negative and waits while the other flow
+        // drains.
+        let p = pool();
+        let mut s = PeerScheduler::new(1200);
+        for _ in 0..4 {
+            assert!(
+                s.enqueue(logical(&p, 1111, 9000 - 28), Instant::now())
+                    .is_none()
+            );
+            assert!(s.enqueue(logical(&p, 2222, 100), Instant::now()).is_none());
+        }
+        for k in s.flows.keys().cloned().collect::<Vec<_>>() {
+            let q = s.flows.get_mut(&k).unwrap();
+            q.is_new = false;
+            q.epoch_bytes = NEW_FLOW_BYTE_BUDGET;
+        }
+        s.new_list.clear();
+        for k in s.flows.keys().cloned().collect::<Vec<_>>() {
+            s.old_list.push_back(k);
+        }
+        // First dequeue serves immediately (no stall), second likewise;
+        // over the full drain both flows make progress.
+        let mut saw_small = false;
+        let mut n = 0;
+        while !s.is_empty() && n < 32 {
+            n += 1;
+            match s.next(Instant::now()) {
+                Dequeue::Send(pkt, _) => {
+                    let (f, l) = (pkt.flow, pkt.len());
+                    s.account_sent(f, l, l);
+                    if f.sport == 2222 {
+                        saw_small = true;
+                    }
+                }
+                Dequeue::Empty => panic!("stall with work queued"),
+            }
+        }
+        assert!(s.is_empty());
+        assert!(saw_small, "small flow must not starve behind jumbo heads");
     }
 
     #[test]

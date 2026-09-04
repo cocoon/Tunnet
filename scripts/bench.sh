@@ -5,10 +5,11 @@
 #    loss_pct, retransmits, latency:{n,p50,p95,p99,p999,max}, path:{...},
 #    meta:{...}, note}
 # Throughput matrix with explicit JSON fields (no regexed human output),
-# loaded-latency sweeps per direction at fractions of independently measured
-# directional capacity, UDP rate x size sweep, warmup + repeats, path-state
-# capture around every scenario (flagged on migration), p99.9 from >=1000
-# high-frequency samples.
+# loaded-latency sweeps per direction plus full-duplex bidir at fractions
+# of independently measured directional capacity, UDP rate x size sweep,
+# warmup + repeats, path-state capture around every scenario (flagged on
+# migration), p99.9 from >=1000 high-frequency samples (gated to null when
+# short).
 set -u
 PEER="${1:-10.7.0.2}"
 DURATION="${2:-10}"
@@ -19,6 +20,10 @@ RESULTS_DIR="./bench-results/$(date +%Y%m%d-%H%M%S)-$PRODUCT"
 mkdir -p "$RESULTS_DIR"
 JSONL="$RESULTS_DIR/results.jsonl"
 
+# Exported BEFORE the first consumer (every python block below reads them).
+export BENCH_PRODUCT="$PRODUCT" BENCH_DURATION="$DURATION"
+export BENCH_JSONL="$JSONL"
+
 meta_json() {
   python3 -c "
 import json,platform,subprocess
@@ -27,9 +32,12 @@ except Exception: sha=''
 print(json.dumps({'commit':sha,'mtu':$MTU,'os':platform.platform(),'cpu':platform.processor() or platform.machine(),'peer':'$PEER','duration_s':$DURATION}))"
 }
 META=$(meta_json)
+export BENCH_META="$META"
 
+# Product-aware path collection: the Tunnet API only exists for tunnet runs.
 path_json() {
-  python3 -c "
+  if [ "$PRODUCT" = "tunnet" ]; then
+    python3 -c "
 import json,subprocess
 mode='unknown'; detail=''
 try:
@@ -39,6 +47,17 @@ try:
 except Exception as e:
   detail='tunnet api unreachable'
 print(json.dumps({'product':'$PRODUCT','mode':mode,'detail':detail[:400]}))"
+  else
+    # e.g. zerotier: summarize peer path states instead of querying Tunnet.
+    zerotier-cli peers 2>/dev/null | head -6 | tr '\n' '|' | cut -c1-400 > "$RESULTS_DIR/.pathdetail" 2>/dev/null || echo "path collection n/a for $PRODUCT" > "$RESULTS_DIR/.pathdetail"
+    python3 -c "
+import json
+detail=open('$RESULTS_DIR/.pathdetail').read().strip()
+mode='unknown'
+if 'DIRECT' in detail: mode='direct'
+elif 'RELAY' in detail: mode='relay'
+print(json.dumps({'product':'$PRODUCT','mode':mode,'detail':detail[:400]}))"
+  fi
 }
 
 # High-frequency latency probe: COUNT samples back to back (p99.9 needs n>=1000).
@@ -87,7 +106,6 @@ row['product'] = os.environ['BENCH_PRODUCT']
 row['meta'] = json.loads(os.environ['BENCH_META'])
 open(os.environ['BENCH_JSONL'], 'a').write(json.dumps(row) + chr(10))
 EOF
-export BENCH_PRODUCT="$PRODUCT" BENCH_META="$META" BENCH_JSONL="$JSONL" BENCH_DURATION="$DURATION"
 
 # --- throughput matrix with repeats; explicit bidir parse ---
 echo "[2] Throughput matrix..."
@@ -168,7 +186,8 @@ for dir in "upload:$CAP_UP:" "download:$CAP_DOWN:-R"; do
     iperf3 -c "$PEER" -t "$DURATION" -u -b "${RATE}M" $extra --json > "$RESULTS_DIR/load-$name-$F.json" 2>&1 &
     LOAD_PID=$!
     sleep 2
-    ping_samples_json 200 "$RESULTS_DIR/ping-load-$name-$F.txt" > "$RESULTS_DIR/ping-load-$name-$F.lat"
+    # 1000 samples: p99.9 under load is real (gated to null when short).
+    ping_samples_json 1000 "$RESULTS_DIR/ping-load-$name-$F.txt" > "$RESULTS_DIR/ping-load-$name-$F.lat"
     wait $LOAD_PID
     path_json > "$RESULTS_DIR/load-$name-$F.path1"
     python3 - "$RESULTS_DIR/load-$name-$F.json" "$RESULTS_DIR/load-$name-$F.path0" "$RESULTS_DIR/load-$name-$F.path1" "$RESULTS_DIR/ping-load-$name-$F.lat" "$name" "$F" "$RATE" <<'EOF'
@@ -197,6 +216,56 @@ row['meta'] = json.loads(os.environ['BENCH_META'])
 open(os.environ['BENCH_JSONL'], 'a').write(json.dumps(row) + chr(10))
 EOF
   done
+done
+
+# --- bidirectional loaded latency: full-duplex UDP at fractions ---
+echo "  bidir (full duplex)..."
+for F in 0.25 0.50 0.75 0.90 1.00; do
+  RATE_UP=$(python3 -c "print(round(float('$CAP_UP')*float('$F'),1))")
+  RATE_DOWN=$(python3 -c "print(round(float('$CAP_DOWN')*float('$F'),1))")
+  PCT=$(python3 -c "print(int(float('$F')*100))")
+  echo "  bidir ${PCT}% (up=${RATE_UP}Mbps down=${RATE_DOWN}Mbps)..."
+  path_json > "$RESULTS_DIR/load-bidi-$F.path0"
+  iperf3 -c "$PEER" -t "$DURATION" -u -b "${RATE_UP}M" --json > "$RESULTS_DIR/load-bidi-$F-up.json" 2>&1 &
+  UP_PID=$!
+  iperf3 -c "$PEER" -t "$DURATION" -u -b "${RATE_DOWN}M" -R --json > "$RESULTS_DIR/load-bidi-$F-down.json" 2>&1 &
+  DOWN_PID=$!
+  sleep 2
+  ping_samples_json 1000 "$RESULTS_DIR/ping-load-bidi-$F.txt" > "$RESULTS_DIR/ping-load-bidi-$F.lat"
+  wait $UP_PID; wait $DOWN_PID
+  path_json > "$RESULTS_DIR/load-bidi-$F.path1"
+  python3 - "$RESULTS_DIR/load-bidi-$F-up.json" "$RESULTS_DIR/load-bidi-$F-down.json" "$RESULTS_DIR/load-bidi-$F.path0" "$RESULTS_DIR/load-bidi-$F.path1" "$RESULTS_DIR/ping-load-bidi-$F.lat" "$F" "$RATE_UP" "$RATE_DOWN" <<'EOF'
+import json,sys,datetime,os
+uppath, downpath, p0path, p1path, latpath, frac, rate_up, rate_down = (sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], float(sys.argv[6]), float(sys.argv[7]), float(sys.argv[8]))
+def loadsum(p):
+    try:
+        d = json.load(open(p)); s = d['end']['sum']
+        return round(s['bits_per_second']/1e6, 1), round(s.get('lost_percent', -1), 2)
+    except Exception:
+        return -1, -1
+actual_up, loss_up = loadsum(uppath)
+actual_down, loss_down = loadsum(downpath)
+lat = json.load(open(latpath))
+b = json.load(open(p0path)); a = json.load(open(p1path))
+notes = []
+if b.get('mode') != a.get('mode'):
+    notes.append('PATH CHANGED mid-run; result flagged')
+if actual_up > 0 and actual_up < rate_up*0.7 and frac <= 1.0:
+    notes.append('under-delivered up load')
+if actual_down > 0 and actual_down < rate_down*0.7 and frac <= 1.0:
+    notes.append('under-delivered down load')
+note = '; '.join(notes)
+print(f"  up={actual_up}Mbps loss={loss_up}% down={actual_down}Mbps loss={loss_down}% p50={lat.get('p50')} p95={lat.get('p95')} p99={lat.get('p99')} p999={lat.get('p999')} {note}")
+row = {'scenario': 'loaded-latency', 'direction': 'bidir', 'fraction': frac,
+       'offered_up_mbps': rate_up, 'offered_down_mbps': rate_down,
+       'actual_up_mbps': actual_up, 'actual_down_mbps': actual_down,
+       'loss_up_pct': loss_up, 'loss_down_pct': loss_down,
+       'latency': lat, 'path': b, 'path_after': a, 'note': note}
+row['ts'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+row['product'] = os.environ['BENCH_PRODUCT']
+row['meta'] = json.loads(os.environ['BENCH_META'])
+open(os.environ['BENCH_JSONL'], 'a').write(json.dumps(row) + chr(10))
+EOF
 done
 
 # --- UDP sweep: rates x sizes ---

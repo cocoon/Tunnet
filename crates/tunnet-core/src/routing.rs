@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use dashmap::DashMap;
 use ipnet::Ipv4Net;
 use iroh::EndpointId;
@@ -14,6 +14,7 @@ use tunnet_common::{
 use uuid::Uuid;
 
 use crate::peers::{PeerFastState, PeerIdentity, PeerRegistry};
+use crate::policy_runtime::{FwSlot, PolicyRuntime};
 
 pub struct PeerInfo {
     pub endpoint: EndpointId,
@@ -143,6 +144,9 @@ pub struct RoutingTable {
     /// Rebuilds reuse these objects; the packet path never touches this map
     /// (states ride inside PeerInfo/route decisions instead).
     fast_registry: Arc<PeerRegistry>,
+    /// Shared policy runtime for firewall slot assignment at (re)resolution
+    /// (§2.1-3). Set once at dataplane install; slow path only.
+    policy_runtime: Arc<ArcSwapOption<PolicyRuntime>>,
 }
 
 impl Default for RoutingTable {
@@ -177,7 +181,22 @@ impl RoutingTable {
             slices: Arc::new(Mutex::new(BTreeMap::new())),
             overrides: Arc::new(DashMap::new()),
             fast_registry: Arc::new(PeerRegistry::new()),
+            policy_runtime: Arc::new(ArcSwapOption::empty()),
         }
+    }
+
+    /// Install the shared policy runtime (dataplane bring-up, slow path).
+    /// Every (re)resolution from then on assigns the peer's stable network
+    /// firewall slot (§2.1-3).
+    pub fn set_policy_runtime(&self, runtime: PolicyRuntime) {
+        self.policy_runtime.store(Some(Arc::new(runtime)));
+    }
+
+    /// Stable firewall slot for a network, if the runtime is installed.
+    pub fn policy_slot_for(&self, network: Uuid) -> Option<Arc<FwSlot>> {
+        self.policy_runtime
+            .load_full()
+            .map(|rt| rt.slot_for_network(network))
     }
 
     /// Stable fast-state registry shared with connection slow paths.
@@ -186,6 +205,9 @@ impl RoutingTable {
     }
 
     /// Ensure (slow path: rebuild only) the stable fast state for a peer.
+    /// (Re)assigns the network's stable firewall slot, so peers joining
+    /// after install and peers changing networks observe publication with
+    /// no relink (§2.1-3).
     #[allow(clippy::too_many_arguments)]
     fn ensure_fast(
         &self,
@@ -197,7 +219,7 @@ impl RoutingTable {
         network_id: Uuid,
         network_name: &str,
     ) -> Arc<PeerFastState> {
-        self.fast_registry.ensure(Arc::new(PeerIdentity {
+        let state = self.fast_registry.ensure(Arc::new(PeerIdentity {
             endpoint,
             endpoint_hex: endpoint_hex.to_string(),
             hostname: hostname.to_string(),
@@ -205,7 +227,11 @@ impl RoutingTable {
             tags: tags.to_vec(),
             network_id,
             network_name: network_name.to_string(),
-        }))
+        }));
+        if let Some(slot) = self.policy_slot_for(network_id) {
+            state.policy.store(slot);
+        }
+        state
     }
 
     /// Look up peer by (network, ip) for inbound / firewall context.
@@ -1098,6 +1124,59 @@ mod tests {
         let wild = table.lookup_hostname("api.internal").unwrap();
         assert_eq!(wild.endpoint_hex, gw);
         assert!(table.lookup_hostname_route("other.com").is_none());
+    }
+
+    #[test]
+    fn removed_peer_is_unroutable_and_deactivated() {
+        // §2.1-9: peer connected → membership removed → routing generation
+        // changes → outbound packets rejected (NoRoute), registry resolve
+        // fails (inbound readers must exit), old fast state deactivated.
+        let table = RoutingTable::new();
+        let self_id = "a".repeat(64);
+        let peer_id = "b".repeat(64);
+        let net = Uuid::nil();
+        table.replace(
+            &[peer(&peer_id, "10.7.0.5", "gw")],
+            &[],
+            &[],
+            &[],
+            &profile(),
+            &dns(),
+            "office",
+            net,
+            &self_id,
+            1,
+        );
+        let ip: Ipv4Addr = "10.7.0.5".parse().unwrap();
+        let info = table.lookup_ip(&ip).expect("peer connected");
+        assert_eq!(info.endpoint_hex, peer_id);
+        let fast = info.fast.clone();
+        let epoch0 = fast.epoch.load(std::sync::atomic::Ordering::Relaxed);
+        let v0 = table.version();
+        // Membership removal (delta path, as live sync would send it).
+        table.apply_peer_delta(
+            net,
+            &[],
+            std::slice::from_ref(&peer_id),
+            2,
+            &self_id,
+            "office",
+        );
+        assert!(table.version() > v0, "routing generation must change");
+        assert!(
+            matches!(table.route_once(&ip), RouteDecision::NoRoute),
+            "next outbound packet is rejected"
+        );
+        let ep: EndpointId = peer_id.parse().unwrap();
+        assert!(
+            table.peer_registry().get(ep).is_none(),
+            "inbound resolve finds nothing → reader exits"
+        );
+        assert_eq!(
+            fast.epoch.load(std::sync::atomic::Ordering::Relaxed),
+            epoch0 + 1,
+            "old fast state hard-revoked"
+        );
     }
 
     #[test]

@@ -26,7 +26,7 @@ use bytes::Bytes;
 use tunnet_common::packet::{
     FlowKey, LogicalPacket, MAX_LOGICAL_LEN, MAX_SEGMENTS, MIN_SEGMENT_PAYLOAD, PacketOwner,
     PacketPool, SEGMENT_OVERHEAD, SINGLE_OVERHEAD, SegmentHeader, encode_segment_prefix,
-    encode_single_prefix, segment_count,
+    encode_single_prefix,
 };
 use tunnet_core::peers::{FastSendError, PeerFastState, PeerRegistry};
 use tunnet_core::{ConnPool, scheduler::Dequeue};
@@ -78,27 +78,76 @@ struct Tx<'a> {
 /// Mid-packet transmit cursor (§7): stashed only across TransportFull waits.
 /// The logical owner is retained untouched; segments encode from borrows, so
 /// resume never re-parses and never loses bytes.
+///
+/// The cursor tracks the FULL segmentation geometry (plan + packet id +
+/// next index), never just a count: any geometry change restarts the
+/// logical packet from byte 0 with a fresh id, so old offsets are never
+/// reused with a new MPS (§2.1-1).
 struct PartialPacket {
     packet: Option<LogicalPacket>,
     flow: FlowKey,
     next_index: usize,
     frame_id: u32,
-    count: usize,
+    /// Geometry the in-flight segments conform to (count + seg_cap, or
+    /// Single for a fresh single-frame cursor).
+    plan: SegmentPlan,
     total: usize,
+    /// Wire bytes sent under the current frame id (preserved across
+    /// TransportFull resume; reset on restart). Accounted exactly once at
+    /// completion, so segmented traffic is never double-charged (§2.1-2).
+    wire_bytes: u64,
+}
+
+/// Outcome of re-planning a cursor against current MPS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Replan {
+    /// Geometry changed (or first sizing): restart from byte 0, fresh id.
+    Restarted,
+    /// Geometry identical: retry the current segment in place (transient
+    /// TooLarge, no bytes wasted on a redundant restart).
+    Retry,
+    /// The path cannot carry this packet at all: drop it.
+    Impossible,
 }
 
 impl PartialPacket {
     fn new(packet: LogicalPacket, flow: FlowKey, fast: &PeerFastState) -> Self {
         let total = packet.len();
-        let mps = fast.mps.load(Ordering::Relaxed);
-        let count = segment_count(total, mps).unwrap_or(1).max(1);
+        let plan = plan_for_mps(total, fast.mps.load(Ordering::Relaxed));
         Self {
             packet: Some(packet),
             flow,
             next_index: 0,
             frame_id: fast.next_frame_id.fetch_add(1, Ordering::Relaxed),
-            count,
+            plan,
             total,
+            wire_bytes: 0,
+        }
+    }
+
+    /// Adopt a geometry wholesale: fresh id, offset reset, wire accumulator
+    /// reset. Old offsets are never reused after this point.
+    fn adopt(&mut self, plan: SegmentPlan, fast: &PeerFastState) {
+        self.plan = plan;
+        self.next_index = 0;
+        self.wire_bytes = 0;
+        self.frame_id = fast.next_frame_id.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Re-plan against current MPS after a TooLarge (MPS already refreshed
+    /// by the caller). Compares the COMPLETE geometry — count AND segment
+    /// capacity AND single/segmented shape — not just the count: an MPS
+    /// change that keeps the segment count but alters seg_cap still
+    /// restarts with a fresh id.
+    fn replan(&mut self, fast: &PeerFastState) -> Replan {
+        let mps = fast.mps.load(Ordering::Relaxed);
+        match plan_for_mps(self.total, mps) {
+            SegmentPlan::Impossible => Replan::Impossible,
+            plan if plan == self.plan => Replan::Retry,
+            plan => {
+                self.adopt(plan, fast);
+                Replan::Restarted
+            }
         }
     }
 }
@@ -275,14 +324,42 @@ fn plan_for_mps(total: usize, mps: usize) -> SegmentPlan {
 
 /// Transmit one cursor to completion, stall, or drop. At most MAX_SEGMENTS
 /// DATAGRAMs per packet — bounded by construction.
+///
+/// Fresh cursors adopt the CURRENT geometry wholesale; resumed cursors
+/// (next_index > 0) continue their stored geometry even if the path has
+/// changed — only a TooLarge re-plans them. Either way old offsets are
+/// never mixed with a new MPS: adoption restarts from byte 0.
 async fn transmit_cursor(tx: &Tx<'_>, cur: &mut PartialPacket) -> TransmitOut {
-    let mps = tx.fast.mps.load(Ordering::Relaxed);
-    // Single-frame fast path (fresh cursors only; resumed cursors with
-    // count == 1 encode the same way).
-    if cur.next_index == 0 && matches!(plan_for_mps(cur.total, mps), SegmentPlan::Single) {
-        return transmit_single(tx, cur).await;
+    if cur.next_index == 0 {
+        let mps = tx.fast.mps.load(Ordering::Relaxed);
+        match plan_for_mps(cur.total, mps) {
+            SegmentPlan::Single => return transmit_single(tx, cur).await,
+            plan @ SegmentPlan::Segmented { .. } => {
+                cur.adopt(plan, tx.fast);
+                return transmit_segmented(tx, cur).await;
+            }
+            SegmentPlan::Impossible => {
+                // Degenerate path: refresh once, then give up if useless.
+                tx.fast.refresh_mps();
+                let mps2 = tx.fast.mps.load(Ordering::Relaxed);
+                match plan_for_mps(cur.total, mps2) {
+                    SegmentPlan::Single => return transmit_single(tx, cur).await,
+                    plan @ SegmentPlan::Segmented { .. } => {
+                        cur.adopt(plan, tx.fast);
+                        return transmit_segmented(tx, cur).await;
+                    }
+                    SegmentPlan::Impossible => {
+                        return TransmitOut::Dropped("datagram_too_large");
+                    }
+                }
+            }
+        }
     }
-    transmit_segmented(tx, cur, mps).await
+    debug_assert!(
+        matches!(cur.plan, SegmentPlan::Segmented { .. }),
+        "resumed cursors are always segmented (singles never stash)"
+    );
+    transmit_segmented(tx, cur).await
 }
 
 /// Encode a logical packet as one frame: pooled owners prepend the header
@@ -354,26 +431,19 @@ async fn transmit_single(tx: &Tx<'_>, cur: &mut PartialPacket) -> TransmitOut {
         }
         Err((FastSendError::TooLarge, frame)) => {
             // Stale MPS: refresh, rebuild the logical packet from the
-            // recovered frame, and fall through to segmented encoding.
+            // recovered frame, and re-route through the cursor (which
+            // adopts the current geometry wholesale). Boxed: rare path
+            // (stale MPS on a single frame) that would otherwise close a
+            // single↔segmented async cycle.
             fast.refresh_mps();
             let Some(rebuilt) = LogicalPacket::from_shared(strip_single_prefix(frame)) else {
                 return TransmitOut::Dropped("datagram_too_large");
             };
             cur.packet = Some(rebuilt);
             cur.next_index = 0;
-            cur.frame_id = fast.next_frame_id.fetch_add(1, Ordering::Relaxed);
             cur.total = cur.packet.as_ref().map(|p| p.len()).unwrap_or(0);
-            cur.count = segment_count(cur.total, fast.mps.load(Ordering::Relaxed))
-                .unwrap_or(1)
-                .max(1);
-            // Boxed: rare path (stale MPS on a single frame) that would
-            // otherwise close a single↔segmented async cycle.
-            return Box::pin(transmit_segmented(
-                tx,
-                cur,
-                fast.mps.load(Ordering::Relaxed),
-            ))
-            .await;
+            cur.wire_bytes = 0;
+            return Box::pin(transmit_cursor(tx, cur)).await;
         }
     }
 }
@@ -406,8 +476,31 @@ fn strip_single_prefix(frame: Bytes) -> Bytes {
 }
 
 /// Transmit the cursor's remainder segment by segment, encoding
-/// incrementally from the retained logical owner.
-async fn transmit_segmented(tx: &Tx<'_>, cur: &mut PartialPacket, mps: usize) -> TransmitOut {
+/// incrementally from the retained logical owner under the cursor's STORED
+/// geometry. TransportFull stashes (wire accumulator preserved for resume);
+/// TooLarge re-plans against fresh MPS (full geometry compare → restart or
+/// in-place retry); completion accounts the whole logical packet exactly
+/// once with total wire bytes.
+async fn transmit_segmented(tx: &Tx<'_>, cur: &mut PartialPacket) -> TransmitOut {
+    transmit_segmented_budgeted(tx, cur, 0).await
+}
+
+/// Continue a restarted cursor under its newly adopted geometry.
+/// Split out so the TooLarge arm stays readable; the restart budget is
+/// threaded through to bound flapping paths.
+async fn transmit_segmented_restarted(
+    tx: &Tx<'_>,
+    cur: &mut PartialPacket,
+    restarts: u8,
+) -> TransmitOut {
+    transmit_segmented_budgeted(tx, cur, restarts).await
+}
+
+async fn transmit_segmented_budgeted(
+    tx: &Tx<'_>,
+    cur: &mut PartialPacket,
+    mut restarts: u8,
+) -> TransmitOut {
     let Tx {
         fast,
         pool,
@@ -416,40 +509,21 @@ async fn transmit_segmented(tx: &Tx<'_>, cur: &mut PartialPacket, mps: usize) ->
         meter,
         peer,
     } = tx;
-    let (count, seg_cap) = match plan_for_mps(cur.total, mps) {
+    let (count, seg_cap) = match cur.plan {
         SegmentPlan::Segmented { count, seg_cap } => (count, seg_cap),
-        SegmentPlan::Single => {
-            // Path grew (or cursor mis-sized): single now fits. Boxed:
-            // this is the rare path and breaks the single↔segmented cycle.
-            return Box::pin(transmit_single(tx, cur)).await;
-        }
-        SegmentPlan::Impossible => {
-            // Degenerate path: refresh once, then give up if still useless.
-            fast.refresh_mps();
-            let mps2 = fast.mps.load(Ordering::Relaxed);
-            match plan_for_mps(cur.total, mps2) {
-                SegmentPlan::Segmented { count, seg_cap } => (count, seg_cap),
-                SegmentPlan::Single => {
-                    return Box::pin(transmit_single(tx, cur)).await;
-                }
-                SegmentPlan::Impossible => {
-                    return TransmitOut::Dropped("datagram_too_large");
-                }
-            }
-        }
+        // Fresh cursors never arrive here (transmit_cursor routes them);
+        // a TooLarge replan can adopt Single — route out, boxed to break
+        // the async cycle.
+        SegmentPlan::Single => return Box::pin(transmit_single(tx, cur)).await,
+        SegmentPlan::Impossible => return TransmitOut::Dropped("datagram_too_large"),
     };
-    if count != cur.count {
-        // Path shrank (or first sizing): restart with a fresh id so the
-        // receiver never mixes shapes (§3).
-        cur.frame_id = fast.next_frame_id.fetch_add(1, Ordering::Relaxed);
-        cur.count = count;
-        cur.next_index = 0;
-    }
     let mut frames = 0u64;
-    // Bounded retries on flapping paths.
-    let mut restarts = 0u8;
+    // Bounded retries on flapping paths (budget shared across restarts).
     loop {
-        if cur.next_index >= cur.count {
+        if cur.next_index >= count {
+            // Completion: account the whole logical packet ONCE with total
+            // wire bytes (never per segment — no double charge).
+            account_sent(fast, cur.flow, cur.total, cur.wire_bytes as usize);
             return TransmitOut::Done {
                 logical: cur.total,
                 frames,
@@ -474,7 +548,7 @@ async fn transmit_segmented(tx: &Tx<'_>, cur: &mut PartialPacket, mps: usize) ->
                 SegmentHeader {
                     id: cur.frame_id,
                     index: i as u16,
-                    count: cur.count as u16,
+                    count: count as u16,
                     total: cur.total as u16,
                 },
             );
@@ -486,14 +560,17 @@ async fn transmit_segmented(tx: &Tx<'_>, cur: &mut PartialPacket, mps: usize) ->
         match fast.try_send_frame(frame) {
             Ok(()) => {
                 frames += 1;
-                account_sent(fast, cur.flow, 0, wire);
+                // Accumulate; accounted once at completion. Preserved
+                // across TransportFull resume via the stashed cursor.
+                cur.wire_bytes += wire as u64;
                 if fast.relay.load(Ordering::Relaxed) {
                     meter.record(wire as u64);
                 }
                 cur.next_index += 1;
             }
             Err((FastSendError::TransportFull, _)) => {
-                // Owner intact: stash the cursor, resume after backoff.
+                // Owner intact, accumulator intact: stash the cursor,
+                // resume after backoff.
                 return TransmitOut::Stash;
             }
             Err((FastSendError::NoConnection | FastSendError::Closed, _)) => {
@@ -511,17 +588,30 @@ async fn transmit_segmented(tx: &Tx<'_>, cur: &mut PartialPacket, mps: usize) ->
                 return TransmitOut::Wait;
             }
             Err((FastSendError::TooLarge, _)) => {
-                // Stale MPS mid-packet: refresh and restart whole packet.
+                // Stale MPS mid-packet: refresh and re-plan with a FULL
+                // geometry compare. Changed geometry (count, seg_cap, or
+                // shape) restarts from byte 0 with a fresh id — old
+                // offsets are never reused with the new MPS. Identical
+                // geometry retries the segment in place (transient).
                 fast.refresh_mps();
-                cur.next_index = 0;
-                cur.frame_id = fast.next_frame_id.fetch_add(1, Ordering::Relaxed);
                 restarts += 1;
                 if restarts > 2 {
                     return TransmitOut::Dropped("datagram_too_large");
                 }
-                let mps2 = fast.mps.load(Ordering::Relaxed);
-                if usable_seg_cap(mps2).is_none() && cur.total + SINGLE_OVERHEAD > mps2 {
-                    return TransmitOut::Dropped("datagram_too_large");
+                match cur.replan(fast) {
+                    Replan::Restarted => {
+                        // Adopted the new geometry wholesale (fresh id,
+                        // offset 0, wire accumulator reset); continue under
+                        // it with the remaining restart budget. Boxed: the
+                        // restart cycle would otherwise recurse unboundedly.
+                        return Box::pin(transmit_segmented_restarted(tx, cur, restarts)).await;
+                    }
+                    Replan::Retry => {
+                        // Same geometry: retry this segment in place.
+                    }
+                    Replan::Impossible => {
+                        return TransmitOut::Dropped("datagram_too_large");
+                    }
                 }
             }
         }
@@ -543,6 +633,111 @@ fn account_sent(fast: &Arc<PeerFastState>, flow: FlowKey, logical_len: usize, wi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tunnet_core::peers::{PeerIdentity, PeerRegistry};
+
+    fn test_fast() -> (PeerRegistry, Arc<PeerFastState>) {
+        let reg = PeerRegistry::new();
+        let ep = iroh::SecretKey::generate().public();
+        let fast = reg.ensure(Arc::new(PeerIdentity {
+            endpoint: ep,
+            endpoint_hex: format!("{ep}"),
+            hostname: "peer".into(),
+            ip: std::net::Ipv4Addr::new(10, 0, 0, 2),
+            tags: vec![],
+            network_id: uuid::Uuid::nil(),
+            network_name: "net".into(),
+        }));
+        (reg, fast)
+    }
+
+    fn test_packet(size: usize) -> (LogicalPacket, FlowKey) {
+        let pool = PacketPool::new(8);
+        let b = etherparse::PacketBuilder::ipv4([10, 0, 0, 1], [10, 0, 0, 2], 64).udp(40000, 443);
+        let mut raw = Vec::new();
+        b.write(&mut raw, &vec![0xABu8; size.saturating_sub(28)])
+            .unwrap();
+        let mut buf = pool.acquire(raw.len());
+        buf.recv_region(raw.len()).copy_from_slice(&raw);
+        let pkt = LogicalPacket::from_pooled(buf, raw.len()).unwrap();
+        let flow = pkt.flow;
+        (pkt, flow)
+    }
+
+    #[test]
+    fn replan_restarts_on_segcap_change_with_same_count() {
+        // §2.1-1: 2800 bytes needs 3 segments at both MPS 1350 (cap 1339)
+        // and MPS 1400 (cap 1389) — same count, different geometry. The
+        // cursor must still restart with a fresh id, never reusing old
+        // offsets with the new MPS.
+        let (_reg, fast) = test_fast();
+        fast.mps.store(1350, Ordering::Relaxed);
+        let (pkt, flow) = test_packet(2800);
+        let mut cur = PartialPacket::new(pkt, flow, &fast);
+        assert!(matches!(
+            cur.plan,
+            SegmentPlan::Segmented {
+                count: 3,
+                seg_cap: 1339
+            }
+        ));
+        // Simulate two sent segments, then a path change (no conn needed:
+        // replan only reads MPS and mints ids).
+        cur.next_index = 2;
+        cur.wire_bytes = 2700;
+        let old_id = cur.frame_id;
+        fast.mps.store(1400, Ordering::Relaxed);
+        assert_eq!(cur.replan(&fast), Replan::Restarted);
+        assert!(matches!(
+            cur.plan,
+            SegmentPlan::Segmented {
+                count: 3,
+                seg_cap: 1389
+            }
+        ));
+        assert_eq!(cur.next_index, 0, "restart from byte 0");
+        assert_eq!(cur.wire_bytes, 0, "fresh accounting unit");
+        assert_ne!(cur.frame_id, old_id, "fresh packet id");
+    }
+
+    #[test]
+    fn replan_retries_in_place_on_identical_geometry() {
+        // Spurious TooLarge with unchanged MPS: retry the segment in place
+        // (same id, same offset), don't waste a redundant restart.
+        let (_reg, fast) = test_fast();
+        fast.mps.store(1350, Ordering::Relaxed);
+        let (pkt, flow) = test_packet(2800);
+        let mut cur = PartialPacket::new(pkt, flow, &fast);
+        cur.next_index = 1;
+        let old_id = cur.frame_id;
+        assert_eq!(cur.replan(&fast), Replan::Retry);
+        assert_eq!(cur.next_index, 1);
+        assert_eq!(cur.frame_id, old_id);
+    }
+
+    #[test]
+    fn replan_handles_shape_transitions() {
+        let (_reg, fast) = test_fast();
+        // Segmented → single (path grew).
+        fast.mps.store(1350, Ordering::Relaxed);
+        let (pkt, flow) = test_packet(2800);
+        let mut cur = PartialPacket::new(pkt, flow, &fast);
+        assert!(matches!(cur.plan, SegmentPlan::Segmented { .. }));
+        fast.mps.store(9000, Ordering::Relaxed);
+        assert_eq!(cur.replan(&fast), Replan::Restarted);
+        assert_eq!(cur.plan, SegmentPlan::Single);
+        assert_eq!(cur.next_index, 0);
+        // Single → segmented (path shrank).
+        fast.mps.store(9000, Ordering::Relaxed);
+        let (pkt, flow) = test_packet(1200);
+        let mut cur = PartialPacket::new(pkt, flow, &fast);
+        assert_eq!(cur.plan, SegmentPlan::Single);
+        fast.mps.store(1100, Ordering::Relaxed);
+        assert_eq!(cur.replan(&fast), Replan::Restarted);
+        assert!(matches!(cur.plan, SegmentPlan::Segmented { .. }));
+        // Degenerate path: impossible, caller drops.
+        fast.mps.store(64, Ordering::Relaxed);
+        assert_eq!(cur.replan(&fast), Replan::Impossible);
+    }
 
     #[test]
     fn plan_single_segmented_impossible() {
