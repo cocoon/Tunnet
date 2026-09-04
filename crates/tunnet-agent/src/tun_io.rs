@@ -213,13 +213,14 @@ impl Clone for OutboundCtx<'_> {
 }
 
 /// Reject replies are rare, but they must be protocol-correct: the peer
-/// expects every tunnel DATAGRAM to begin with 0x20/0x21 (§2.1-6). Route
-/// the reply through the normal tunnel framing/transmit path (scheduler
-/// and pump, which segments large replies) instead of a second encoder
-/// path. Without a pool (no pump possible) fall back to a single framed
-/// best-effort send.
+/// expects every tunnel DATAGRAM to begin with 0x30/0x31 with its bound
+/// network. Route the reply through the normal tunnel framing/transmit
+/// path (scheduler and pump, which segments large replies) instead of a
+/// second encoder path. Without a pool (no pump possible) fall back to a
+/// single framed best-effort send (still net-bound).
 async fn send_reject_framed(
     reply: Bytes,
+    net: Uuid,
     fast: &Arc<PeerMembershipState>,
     pool: Option<&ConnPool>,
     conn: &Connection,
@@ -227,9 +228,11 @@ async fn send_reject_framed(
     metrics: &AgentMetrics,
 ) {
     let Some(pool) = pool else {
-        // No pump available: single framed best-effort send (still tunnel-framed).
-        let mut frame = Vec::with_capacity(reply.len() + 1);
+        // No pump available: single framed best-effort send, with the
+        // full v3 header ([kind][net][reply]).
+        let mut frame = Vec::with_capacity(reply.len() + tunnet_common::packet::SINGLE_OVERHEAD);
         frame.push(tunnet_common::packet::KIND_SINGLE);
+        frame.extend_from_slice(net.as_bytes());
         frame.extend_from_slice(&reply);
         if conn
             .max_datagram_size()
@@ -279,9 +282,8 @@ fn send_reject_reply(ctx: &OutboundCtx<'_>, packet: &LogicalPacket) {
     #[cfg(target_os = "linux")]
     {
         let tun = ctx.tun.clone();
-        let bufs = ctx.bufs.clone();
         tokio::spawn(async move {
-            let mut w = tun_fast::LinuxTunBatchWriter::new(bufs);
+            let mut w = tun_fast::LinuxTunBatchWriter::new();
             w.push(&reply);
             let _ = w.flush(&tun).await;
         });
@@ -461,7 +463,7 @@ pub async fn serve_tunnel_connection(deps: InboundDeps) {
     tracing::debug!(generation = plane.generation, %remote_id, "ingress reader pinned");
 
     #[cfg(target_os = "linux")]
-    let mut tun_batch = tun_fast::LinuxTunBatchWriter::new(bufs.clone());
+    let mut tun_batch = tun_fast::LinuxTunBatchWriter::new();
     #[cfg(not(target_os = "linux"))]
     let mut tun_batch = tun_fast::TunWriteBatch::new();
 
@@ -783,7 +785,13 @@ async fn handle_inbound_one(
                 .ok()
                 .and_then(|p| packet::synthesize_reject(&p));
             if let Some(reply) = reply.filter(|r| !r.is_empty()) {
-                send_reject_framed(reply, fast, pool, conn, pool_bufs, metrics).await;
+                // The frame already told us the bound network (used for
+                // resolve above); the reply carries the same binding.
+                let net = match &frame {
+                    tunnet_common::packet::Frame::Single { net, .. } => *net,
+                    tunnet_common::packet::Frame::Segment { net, .. } => *net,
+                };
+                send_reject_framed(reply, net, fast, pool, conn, pool_bufs, metrics).await;
             }
             return false;
         }
@@ -1157,7 +1165,7 @@ mod tests {
         let bufs = PacketPool::new(8);
         let metrics = test_metrics();
         #[cfg(target_os = "linux")]
-        let mut batch = tun_fast::LinuxTunBatchWriter::new(bufs.clone());
+        let mut batch = tun_fast::LinuxTunBatchWriter::new();
         #[cfg(not(target_os = "linux"))]
         let mut batch = tun_fast::TunWriteBatch::new();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

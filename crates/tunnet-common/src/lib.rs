@@ -24,6 +24,14 @@ use uuid::Uuid;
 
 pub type EndpointIdHex = String;
 
+/// Short git hash baked at compile time (build.rs), `"unknown"` when git
+/// was unavailable. Rendered by `tunnet status` for both the CLI and the
+/// daemon so stale-binary mismatches are visible instead of debuggable
+/// for hours.
+pub fn git_hash() -> &'static str {
+    option_env!("GIT_HASH").unwrap_or("unknown")
+}
+
 /// ALPN identifier for the tunnel protocol (mesh datagrams).
 /// Tunnel framing is the only wire format (segmented logical packets, every
 /// frame bound to one network). The `/3` is only the negotiated

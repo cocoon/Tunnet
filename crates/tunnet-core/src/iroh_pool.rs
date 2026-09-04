@@ -236,6 +236,9 @@ impl ConnPool {
     }
 
     /// Register a hook invoked whenever this pool dials a tunnel connection.
+    /// Dialed connections are read ONLY by this hook (single ownership);
+    /// accepted connections are read ONLY by the accept path (`adopt`
+    /// never fires the hook).
     pub fn set_tunnel_hook(&self, hook: TunnelConnHook) {
         *self.tunnel_hook.lock() = Some(hook);
     }
@@ -313,6 +316,13 @@ impl ConnPool {
     }
 
     /// Install an accepted connection. Returns false if tie-break keeps the existing conn.
+    ///
+    /// Ownership rule: whoever calls `adopt` owns reading this connection
+    /// (accept path) or takes over an existing reader explicitly. `adopt`
+    /// deliberately does NOT fire the dialer tunnel hook — that hook belongs
+    /// to connections this pool dialed itself (`get`), so each connection
+    /// has exactly one reader and datagrams are never split across two
+    /// tasks (the loser would silently eat packets before being aborted).
     pub async fn adopt(&self, peer: EndpointId, conn: Connection) -> bool {
         let local = self.endpoint.id();
         let slot = self.slot(peer);
@@ -336,8 +346,7 @@ impl ConnPool {
         guard.state = PeerConnState::Connected;
         guard.touch();
         drop(guard);
-        self.sync_fast_conn(peer, Some(conn.clone()));
-        self.fire_tunnel_hook(peer, conn);
+        self.sync_fast_conn(peer, Some(conn));
         true
     }
 
@@ -604,6 +613,11 @@ impl ConnPool {
                             let buffered = guard.take_buf();
                             (conn, buffered, true)
                         } else {
+                            // Tie-break loss: keep the existing connection
+                            // (already owned+read by whoever installed it)
+                            // and close ours. Do NOT fire the hook: firing
+                            // would spawn a second reader on a connection
+                            // that already has one, splitting datagrams.
                             let existing = existing.clone();
                             if let Some(tx) = guard.dial_waiters.take() {
                                 let _ = tx.send(Ok(existing.clone()));
@@ -611,7 +625,7 @@ impl ConnPool {
                             let buffered = guard.take_buf();
                             drop(guard);
                             conn.close(0u32.into(), b"tie_break");
-                            (existing, buffered, true)
+                            (existing, buffered, false)
                         }
                     } else {
                         guard.conn = Some(conn.clone());

@@ -184,6 +184,11 @@ impl DataPlaneActor {
         self.peer_dns_active.store(false, Ordering::SeqCst);
         self.up = false;
         self.status.set_up(false);
+        self.status.set_outbound_alive(false);
+        // NOTE: `restarting` is deliberately left alone here: teardown runs
+        // on every stop including crashes, and a crash must keep reporting
+        // `restarting` until the next successful bring-up clears it.
+        // `do_bring_down` clears it for intentional shutdowns.
     }
 
     async fn do_bring_up(
@@ -309,6 +314,9 @@ impl DataPlaneActor {
         self.outbound = Some(outbound);
         self.up = true;
         self.status.set_up(true);
+        self.status.set_restarting(false);
+        self.status.set_outbound_alive(true);
+        self.status.set_generation(generation);
         let _ = self.events.send(LocalEvent::DataPlaneChanged { up: true });
         tracing::info!("data plane up");
         Ok(())
@@ -323,6 +331,7 @@ impl DataPlaneActor {
         // readers also self-remove from the registry on exit.
         self.ingress.abort_all();
         self.teardown().await;
+        self.status.set_restarting(false);
         let _ = self.events.send(LocalEvent::DataPlaneChanged { up: false });
         tracing::info!("data plane down");
         Ok(())
@@ -373,7 +382,13 @@ impl Message<BringUp> for DataPlaneActor {
 
     async fn handle(&mut self, _msg: BringUp, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let weak = ctx.actor_ref().downgrade();
-        self.do_bring_up(weak).await
+        let res = self.do_bring_up(weak).await;
+        if let Err(e) = &res {
+            // Failed bring-up is Down, not restarting: record the cause.
+            self.status.set_restarting(false);
+            self.status.set_last_error(format!("bring-up failed: {e}"));
+        }
+        res
     }
 }
 
@@ -400,6 +415,13 @@ impl Message<OutboundExited> for DataPlaneActor {
     type Reply = ();
 
     async fn handle(&mut self, _msg: OutboundExited, _ctx: &mut Context<Self, Self::Reply>) {
+        // Publish degraded state BEFORE supervision restarts us, so status
+        // readers see `restarting` (with the error and restart count)
+        // instead of a stale healthy `up`.
+        self.status
+            .note_restart("outbound TUN loop unexpectedly terminated".into());
+        self.status.set_outbound_alive(false);
+        self.status.set_restarting(true);
         panic!("outbound TUN loop unexpectedly terminated");
     }
 }
@@ -479,6 +501,16 @@ impl ActorDataPlaneControl {
 impl DataPlaneControl for ActorDataPlaneControl {
     fn is_up(&self) -> bool {
         self.status.is_up()
+    }
+
+    fn data_plane_info(&self) -> tunnet_common::local_api::DataPlaneInfo {
+        tunnet_common::local_api::DataPlaneInfo {
+            state: self.status.state().to_string(),
+            outbound_alive: self.status.outbound_alive(),
+            restart_count: self.status.restart_count(),
+            generation: self.status.generation(),
+            last_error: self.status.last_error(),
+        }
     }
 
     async fn bring_up(&self) -> Result<(), String> {

@@ -115,17 +115,6 @@ impl PacketPool {
         }
     }
 
-    /// Release a raw `Vec<u8>` (e.g. batch staging storage) into the
-    /// smallest class that fits its capacity.
-    pub fn release_raw(&self, storage: Vec<u8>) {
-        let cap = storage.capacity();
-        if cap < 64 {
-            return;
-        }
-        let class = Self::class_for(cap);
-        self.release(storage, class);
-    }
-
     /// (hits, misses) across all classes for telemetry.
     pub fn hit_miss(&self) -> (u64, u64) {
         use std::sync::atomic::Ordering::Relaxed;
@@ -203,30 +192,20 @@ impl PooledBuffer {
         &mut self.storage[self.start..]
     }
 
-    /// Whole backing storage (capacity view, for TUN batch slot use).
-    /// Unlike [`as_ref`](AsRef::as_ref) (the live packet bytes), this
-    /// covers headroom + sized receive area regardless of the current
-    /// packet length.
-    pub fn storage(&self) -> &[u8] {
-        &self.storage
-    }
-
-    /// Raw storage (for TUN batch slot use).
-    pub fn storage_mut(&mut self) -> &mut Vec<u8> {
-        &mut self.storage
+    /// Immutable receive area: exactly the same region and length as
+    /// [`recv_area_mut`](Self::recv_area_mut). Batch-slot `AsRef`/`AsMut`
+    /// impls must return the same region — tun-rs validates capacity
+    /// against `AsRef::len()` and writes into `AsMut`, so divergent views
+    /// fail or misframe batches.
+    pub fn recv_area(&self) -> &[u8] {
+        debug_assert!(self.start <= self.storage.len());
+        &self.storage[self.start..]
     }
 
     pub fn packet_bytes(&self) -> &[u8] {
         debug_assert!(self.start + self.len <= self.storage.len());
         let end = (self.start + self.len).min(self.storage.len());
         &self.storage[self.start..end]
-    }
-
-    /// Move the storage out without pool recycling (batch staging takes
-    /// ownership; the staging layer recycles via `release_raw` after use).
-    pub fn into_vec(mut self) -> Vec<u8> {
-        self.pool = Weak::new();
-        std::mem::take(&mut self.storage)
     }
 }
 

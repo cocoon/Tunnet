@@ -93,9 +93,11 @@ impl BatchSlot {
 #[cfg(any(target_os = "linux", test))]
 impl AsRef<[u8]> for BatchSlot {
     fn as_ref(&self) -> &[u8] {
-        // Capacity view (whole storage), NOT the packet view: tun-rs
-        // validates `as_ref().len()` before writing.
-        self.0.storage()
+        // Same region and length as the AsMut view below: tun-rs
+        // validates `AsRef::len()` as capacity and writes into `AsMut`,
+        // so these must never diverge (a packet-length view here fails
+        // every batch on fresh slots).
+        self.0.recv_area()
     }
 }
 
@@ -154,45 +156,54 @@ impl LinuxBatchEngine {
 
 /// Genuine multi-packet TUN writer for Linux (§9).
 ///
-/// Accumulates decoded logical packets (each staged with virtio headroom in
-/// pooled storage) and flushes with ONE `send_multiple`, letting GSO
-/// coalesce same-flow segments into fewer syscalls. GRO state and staging
-/// storage are reused across iterations.
+/// Accumulates decoded logical packets and flushes with ONE
+/// `send_multiple`, letting GSO coalesce same-flow segments into fewer
+/// syscalls. GRO state and staging storage are reused across iterations.
+///
+/// Staging uses DEDICATED reusable byte buffers with the exact layout the
+/// device expects — `[12B virtio header][IP packet]` — never `PooledBuffer`
+/// (whose 32-byte tunnel-frame headroom would shift the packet and hand
+/// the kernel 32 zero bytes instead of an IPv4 header; that misframing
+/// silently black-holed all Linux TUN writes).
 #[cfg(target_os = "linux")]
 pub struct LinuxTunBatchWriter {
     gro: tun_rs::GROTable,
     staging: Vec<Vec<u8>>,
-    pool: Arc<PacketPool>,
+    /// Empty buffers retained for reuse (capacity kept, no per-packet alloc
+    /// after warmup).
+    free: Vec<Vec<u8>>,
 }
 
 #[cfg(target_os = "linux")]
 impl LinuxTunBatchWriter {
-    pub fn new(pool: Arc<PacketPool>) -> Self {
+    pub fn new() -> Self {
         Self {
             gro: tun_rs::GROTable::default(),
             staging: Vec::with_capacity(TUN_WRITE_BATCH),
-            pool,
+            free: Vec::new(),
         }
     }
 
-    /// Stage one packet (copied once into headroomed pooled storage).
+    /// Stage one packet. Layout is exactly `[VIRTIO header zeros][packet]`
+    /// so `flush` can pass `VIRTIO_NET_HDR_LEN` as the packet offset:
+    /// tun-rs reads the IP packet at `buf[offset..]` and encodes the
+    /// virtio header into `buf[offset-12..offset]` itself.
     pub fn push(&mut self, pkt: &[u8]) {
         const HDR: usize = tun_rs::VIRTIO_NET_HDR_LEN;
-        let mut buf = self.pool.acquire(pkt.len() + HDR);
-        // Layout: [HDR zeros][packet], offset = HDR.
-        let region = buf.recv_region(pkt.len() + HDR);
-        region[..HDR].fill(0);
-        region[HDR..].copy_from_slice(pkt);
-        buf.set_len(pkt.len() + HDR);
-        // Staging takes the Vec; flush recycles it via release_raw.
-        self.staging.push(buf.into_vec());
+        let mut buf = self.free.pop().unwrap_or_default();
+        buf.clear();
+        buf.resize(HDR, 0);
+        buf.extend_from_slice(pkt);
+        debug_assert_eq!(&buf[HDR..], pkt, "packet must start exactly at the offset");
+        self.staging.push(buf);
     }
 
     pub fn is_empty(&self) -> bool {
         self.staging.is_empty()
     }
 
-    /// Flush the staged batch with one `send_multiple` call.
+    /// Flush the staged batch with one `send_multiple` call. Buffers are
+    /// cleared and retained for the next batch (capacity kept).
     pub async fn flush(&mut self, dev: &AsyncDevice) -> anyhow::Result<usize> {
         if self.staging.is_empty() {
             return Ok(0);
@@ -201,12 +212,20 @@ impl LinuxTunBatchWriter {
         let n = dev
             .send_multiple(&mut self.gro, &mut self.staging, HDR)
             .await?;
-        // Recycle staging storage back into pool classes.
-        let staging = std::mem::take(&mut self.staging);
-        for v in staging {
-            self.pool.release_raw(v);
+        for mut buf in std::mem::take(&mut self.staging) {
+            buf.clear();
+            if self.free.len() < TUN_WRITE_BATCH * 2 {
+                self.free.push(buf);
+            }
         }
         Ok(n)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Default for LinuxTunBatchWriter {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -337,6 +356,103 @@ mod tests {
         assert!(slot_cap_for_mtu(9000) >= 9000);
         assert!(slot_cap_for_mtu(100) >= 576);
         assert!(slot_cap_for_mtu(99_999) <= MAX_LOGICAL_LEN + 256);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn tun_batch_writer_stages_virtio_layout() {
+        // Regression test for silently misframed Linux TUN writes (kernel
+        // received zeros instead of IPv4): the staged buffer must be
+        // exactly [12B virtio zeros][IP packet] so `flush` with offset 12
+        // hands tun-rs the packet at the right place. No device needed.
+        let mut w = LinuxTunBatchWriter::new();
+        assert!(w.is_empty());
+        let mut pkt = vec![0u8; 100];
+        pkt[0] = 0x45; // IPv4-shaped, like a real packet
+        w.push(&pkt);
+        assert!(!w.is_empty());
+        assert_eq!(w.staging.len(), 1);
+        let staged = &w.staging[0];
+        assert_eq!(staged.len(), tun_rs::VIRTIO_NET_HDR_LEN + pkt.len());
+        assert!(staged[..tun_rs::VIRTIO_NET_HDR_LEN].iter().all(|b| *b == 0));
+        assert_eq!(&staged[tun_rs::VIRTIO_NET_HDR_LEN..], pkt.as_slice());
+        assert_eq!(staged[tun_rs::VIRTIO_NET_HDR_LEN], 0x45);
+    }
+
+    /// Real privileged Linux TUN round trip: writer → actual kernel TUN →
+    /// kernel ICMP reply → engine receive. Exercises BOTH real contracts
+    /// (device write framing AND `recv_multiple` slot semantics) that unit
+    /// tests cannot reach.
+    ///
+    /// Ignored by default: needs `CAP_NET_ADMIN` (real TUN device). Run on
+    /// a Linux dev machine with privileges:
+    /// `sudo -E cargo test -p tunnet-agent --lib tun_kernel_round_trip -- --ignored --nocapture`
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore = "needs CAP_NET_ADMIN + real TUN device"]
+    fn tun_kernel_round_trip() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let ip = std::net::Ipv4Addr::new(10, 99, 0, 1);
+            let ifname = format!("tnt{:x}", std::process::id() & 0xffff);
+            let dev = std::sync::Arc::new(
+                crate::tun_io::build_tun(&ifname, ip, 30, 2800)
+                    .expect("TUN device (need CAP_NET_ADMIN)"),
+            );
+            // Echo request to self: the kernel answers locally.
+            let echo_id = 0xbeefu16;
+            let b = etherparse::PacketBuilder::ipv4(ip.octets(), ip.octets(), 64)
+                .icmpv4_echo_request(echo_id, 1);
+            let mut req = Vec::new();
+            b.write(&mut req, &[0xCCu8; 32]).unwrap();
+            let mut writer = LinuxTunBatchWriter::new();
+            writer.push(&req);
+            writer
+                .flush(&dev)
+                .await
+                .expect("flush echo request into the kernel");
+            // Read back through the REAL batch engine (pooled slots).
+            let pool = PacketPool::new(8);
+            let mut engine = LinuxBatchEngine::new(pool, 2800);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "no kernel echo reply within 5s"
+                );
+                let packets = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    engine.recv_batch(&dev),
+                )
+                .await
+                .expect("recv_batch must not hang")
+                .expect("recv_batch must succeed on a live device");
+                for p in packets {
+                    let meta = p.meta;
+                    let is_reply = matches!(
+                        meta.transport,
+                        tunnet_common::packet::Transport::Icmpv4 {
+                            type_u8: 0,
+                            echo_id: Some(id),
+                            ..
+                        } if id == echo_id
+                    );
+                    if !is_reply {
+                        continue;
+                    }
+                    assert_eq!(meta.src_v4, Some(ip));
+                    assert_eq!(meta.dst_v4, Some(ip));
+                    assert_eq!(
+                        &p.owner.as_bytes()[p.owner.as_bytes().len() - 32..],
+                        &[0xCCu8; 32]
+                    );
+                    return;
+                }
+            }
+        });
     }
 
     #[test]
