@@ -203,6 +203,14 @@ impl PooledBuffer {
         &mut self.storage[self.start..]
     }
 
+    /// Whole backing storage (capacity view, for TUN batch slot use).
+    /// Unlike [`as_ref`](AsRef::as_ref) (the live packet bytes), this
+    /// covers headroom + sized receive area regardless of the current
+    /// packet length.
+    pub fn storage(&self) -> &[u8] {
+        &self.storage
+    }
+
     /// Raw storage (for TUN batch slot use).
     pub fn storage_mut(&mut self) -> &mut Vec<u8> {
         &mut self.storage

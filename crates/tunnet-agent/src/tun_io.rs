@@ -882,6 +882,8 @@ fn stage_tun_packet(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actors::test_support::test_metrics;
+    use crate::pump::ensure_pump;
 
     const NET_A: Uuid = Uuid::from_u128(0x0a0a);
     const NET_B: Uuid = Uuid::from_u128(0x0b0b);
@@ -951,5 +953,291 @@ mod tests {
             resolve_membership(&registry, &table, &ep, &ep_hex, Uuid::from_u128(0xcc), None)
                 .is_none()
         );
+    }
+
+    /// End-to-end loopback ping (total-loss diagnosis loop): machine A
+    /// (10.7.0.1) sends a real ICMP echo to machine B (10.7.0.2) and back
+    /// over loopback QUIC through the REAL outbound policy + scheduler +
+    /// pump, REAL datagram transport, and the REAL inbound handler
+    /// (decode → membership → antispoof → policy → stage, no TUN device).
+    /// Times out (RED) exactly when user ping would: no frames arrive, or
+    /// the inbound path drops everything.
+    struct Loopback {
+        conn_a: iroh::endpoint::Connection,
+        conn_b: iroh::endpoint::Connection,
+        reg_a: PeerRegistry,
+        reg_b: PeerRegistry,
+        rt_a: PolicyRuntime,
+        rt_b: PolicyRuntime,
+        pool_a: ConnPool,
+        pool_b: ConnPool,
+        id_a: iroh::EndpointId,
+        id_b: iroh::EndpointId,
+        hex_a: String,
+        hex_b: String,
+        net: Uuid,
+    }
+
+    async fn loopback_fixture() -> Loopback {
+        use iroh::endpoint::presets::N0;
+        use tunnet_common::TUNNEL_ALPN;
+        let alpn = TUNNEL_ALPN;
+        let ep_a = iroh::Endpoint::builder(N0)
+            .alpns(vec![alpn.to_vec()])
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let ep_b = iroh::Endpoint::builder(N0)
+            .alpns(vec![alpn.to_vec()])
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let id_a = ep_a.id();
+        let id_b = ep_b.id();
+        let addr_b = ep_b.addr();
+        let ep_b2 = ep_b.clone();
+        let accept_b = tokio::spawn(async move { ep_b2.accept().await.unwrap().await.unwrap() });
+        let conn_a = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            ep_a.connect(addr_b, alpn),
+        )
+        .await
+        .expect("dial A->B must succeed")
+        .unwrap();
+        let conn_b = tokio::time::timeout(std::time::Duration::from_secs(10), accept_b)
+            .await
+            .expect("accept on B")
+            .unwrap();
+
+        let mk_self = |hex: String, ip: std::net::Ipv4Addr| tunnet_core::acl::SelfIdentity {
+            endpoint_hex: hex,
+            ip,
+            tags: vec![],
+            network: "net".into(),
+        };
+        let rt_a = PolicyRuntime::bootstrap(
+            &Default::default(),
+            &Default::default(),
+            &mk_self(format!("{id_a}"), std::net::Ipv4Addr::new(10, 7, 0, 1)),
+            true,
+            false,
+        );
+        let rt_b = PolicyRuntime::bootstrap(
+            &Default::default(),
+            &Default::default(),
+            &mk_self(format!("{id_b}"), std::net::Ipv4Addr::new(10, 7, 0, 2)),
+            true,
+            false,
+        );
+        let net = Uuid::from_u128(0xE2E);
+        let reg_a = PeerRegistry::new();
+        let reg_b = PeerRegistry::new();
+        // A knows B (10.7.0.2), B knows A (10.7.0.1), same network.
+        reg_a.ensure_membership(Arc::new(PeerIdentity {
+            endpoint: id_b,
+            endpoint_hex: format!("{id_b}"),
+            hostname: "b".into(),
+            ip: std::net::Ipv4Addr::new(10, 7, 0, 2),
+            tags: vec![],
+            network_id: net,
+            network_name: "net".into(),
+        }));
+        reg_b.ensure_membership(Arc::new(PeerIdentity {
+            endpoint: id_a,
+            endpoint_hex: format!("{id_a}"),
+            hostname: "a".into(),
+            ip: std::net::Ipv4Addr::new(10, 7, 0, 1),
+            tags: vec![],
+            network_id: net,
+            network_name: "net".into(),
+        }));
+        reg_a.relink_policy(&rt_a);
+        reg_b.relink_policy(&rt_b);
+        // Mirror live conns into transports (slow path, as the pool does).
+        reg_a.set_transport_conn(id_b, Some(conn_a.clone()));
+        reg_b.set_transport_conn(id_a, Some(conn_b.clone()));
+        let pool_a = ConnPool::new(ep_a, alpn);
+        let pool_b = ConnPool::new(ep_b, alpn);
+        Loopback {
+            conn_a,
+            conn_b,
+            reg_a,
+            reg_b,
+            rt_a,
+            rt_b,
+            pool_a,
+            pool_b,
+            id_a,
+            id_b,
+            hex_a: format!("{id_a}"),
+            hex_b: format!("{id_b}"),
+            net,
+        }
+    }
+
+    fn icmp_echo(src: [u8; 4], dst: [u8; 4]) -> Vec<u8> {
+        let b = etherparse::PacketBuilder::ipv4(src, dst, 64).icmpv4_echo_request(7, 1);
+        let mut o = Vec::new();
+        b.write(&mut o, &[0xABu8; 32]).unwrap();
+        o
+    }
+
+    /// One directed leg: outbound policy + scheduler + real pump on the
+    /// sender; real QUIC datagrams; decode + membership + full inbound
+    /// handler on the receiver. Returns the staged TUN payload.
+    struct Leg<'a> {
+        tx_reg: &'a PeerRegistry,
+        tx_rt: &'a PolicyRuntime,
+        tx_pool: &'a ConnPool,
+        tx_peer: iroh::EndpointId,
+        tx_hex: &'a str,
+        tx_host: &'a str,
+        rx_conn: &'a iroh::endpoint::Connection,
+        rx_reg: &'a PeerRegistry,
+        rx_rt: &'a PolicyRuntime,
+        rx_self_ip: std::net::Ipv4Addr,
+        net: Uuid,
+        raw: Vec<u8>,
+    }
+
+    async fn directed_leg(leg: Leg<'_>) -> Vec<u8> {
+        use tunnet_common::packet::PacketPool;
+        let Leg {
+            tx_reg,
+            tx_rt,
+            tx_pool,
+            tx_peer,
+            tx_hex,
+            tx_host,
+            rx_conn,
+            rx_reg,
+            rx_rt,
+            rx_self_ip,
+            net,
+            raw,
+        } = leg;
+        // Outbound policy through the sender's membership slot.
+        let member = tx_reg
+            .get_membership(tx_peer, net)
+            .expect("sender membership");
+        let pkt = LogicalPacket::from_vec(raw.clone()).expect("valid test packet");
+        let slot = member.policy.load();
+        assert_eq!(
+            tx_rt.check(
+                &pkt.meta,
+                Direction::Outbound,
+                tx_hex,
+                &[],
+                Some(tx_host),
+                Some(net),
+                &slot,
+                &slot.counters
+            ),
+            PolicyVerdict::Allow,
+            "outbound policy must allow the echo"
+        );
+        // Scheduler + REAL pump (exits idle on its own).
+        assert!(
+            member
+                .scheduler
+                .lock()
+                .enqueue(pkt, std::time::Instant::now())
+                .is_none()
+        );
+        ensure_pump(
+            &member,
+            tx_pool.clone(),
+            test_metrics(),
+            PacketPool::new(8),
+            tunnet_core::CloudRelayMeter::new(),
+        );
+        // Receiver: real datagrams until the full logical packet stages.
+        let bufs = PacketPool::new(8);
+        let metrics = test_metrics();
+        #[cfg(target_os = "linux")]
+        let mut batch = tun_fast::LinuxTunBatchWriter::new(bufs.clone());
+        #[cfg(not(target_os = "linux"))]
+        let mut batch = tun_fast::TunWriteBatch::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "receiver got nothing within 10s (ping would time out)"
+            );
+            let dg = tokio::time::timeout_at(deadline.into(), rx_conn.read_datagram())
+                .await
+                .expect("frame must arrive")
+                .unwrap();
+            let frame = tunnet_common::packet::decode_frame(&dg).expect("must decode");
+            let got_net = match &frame {
+                tunnet_common::packet::Frame::Single { net, .. } => *net,
+                tunnet_common::packet::Frame::Segment { net, .. } => *net,
+            };
+            assert_eq!(got_net, net, "frame bound to the membership network");
+            let rx_member = rx_reg
+                .get_membership(rx_conn.remote_id(), got_net)
+                .expect("receiver must resolve the membership");
+            let staged = handle_inbound_one(
+                &dg,
+                frame,
+                &rx_member,
+                rx_rt,
+                &std::collections::HashMap::new(),
+                rx_conn,
+                None,
+                &bufs,
+                &metrics,
+                &mut batch,
+                rx_self_ip,
+            )
+            .await;
+            if staged {
+                assert!(!batch.is_empty());
+                return raw;
+            }
+            // Segmented packet: keep draining until completion.
+        }
+    }
+
+    #[tokio::test]
+    async fn loopback_ping_round_trip() {
+        let fx = loopback_fixture().await;
+        let raw_ab = icmp_echo([10, 7, 0, 1], [10, 7, 0, 2]);
+        // Verify the staged payload equals what was sent (single-frame
+        // path stages the exact bytes).
+        let _ = directed_leg(Leg {
+            tx_reg: &fx.reg_a,
+            tx_rt: &fx.rt_a,
+            tx_pool: &fx.pool_a,
+            tx_peer: fx.id_b,
+            tx_hex: &fx.hex_b,
+            tx_host: "b",
+            rx_conn: &fx.conn_b,
+            rx_reg: &fx.reg_b,
+            rx_rt: &fx.rt_b,
+            rx_self_ip: std::net::Ipv4Addr::new(10, 7, 0, 2),
+            net: fx.net,
+            raw: raw_ab,
+        })
+        .await;
+        // Reply direction (ping needs both ways).
+        let raw_ba = icmp_echo([10, 7, 0, 2], [10, 7, 0, 1]);
+        let _ = directed_leg(Leg {
+            tx_reg: &fx.reg_b,
+            tx_rt: &fx.rt_b,
+            tx_pool: &fx.pool_b,
+            tx_peer: fx.id_a,
+            tx_hex: &fx.hex_a,
+            tx_host: "a",
+            rx_conn: &fx.conn_a,
+            rx_reg: &fx.reg_a,
+            rx_rt: &fx.rt_a,
+            rx_self_ip: std::net::Ipv4Addr::new(10, 7, 0, 1),
+            net: fx.net,
+            raw: raw_ba,
+        })
+        .await;
     }
 }

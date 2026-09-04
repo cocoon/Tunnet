@@ -17,7 +17,7 @@ use std::sync::Arc;
 #[cfg(not(target_os = "linux"))]
 use bytes::Bytes;
 use tun_rs::AsyncDevice;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 use tunnet_common::packet::PooledBuffer;
 use tunnet_common::packet::{LogicalPacket, MAX_LOGICAL_LEN, PacketPool};
 
@@ -51,13 +51,25 @@ pub struct LinuxBatchEngine {
     slot_cap: usize,
 }
 
-/// A pool-owned TUN receive slot. `AsMut` exposes the headroomed receive
-/// area (sized by `prepare` before each batch); receipt transfers the
-/// whole buffer into a logical packet with ownership and headroom intact.
-#[cfg(target_os = "linux")]
+/// A pool-owned TUN receive slot.
+///
+/// tun-rs `recv_multiple` contract (see `tun-rs/src/platform/linux/device.rs`
+/// `handle_virtio_read` / `gso_split`): `as_ref().len()` is the RECEIVE
+/// CAPACITY tun-rs checks writes against, and packets land at
+/// `as_mut()[offset..]`. The two views therefore differ on purpose:
+/// - `AsRef` reports the WHOLE backing storage (headroom + sized area),
+///   independent of the current packet length (fresh slots hold no packet
+///   yet — reporting the packet view here fails every batch with
+///   "overflows bufs element len");
+/// - `AsMut` exposes the headroomed receive area sized by `prepare`.
+///
+/// Receipt transfers the whole buffer into a logical packet with ownership
+/// and headroom intact. Platform-independent by design so the contract is
+/// unit-tested everywhere, not only on Linux.
+#[cfg(any(target_os = "linux", test))]
 struct BatchSlot(PooledBuffer);
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 impl BatchSlot {
     fn new(pool: &Arc<PacketPool>, slot_cap: usize) -> Self {
         let mut buf = pool.acquire(slot_cap);
@@ -68,6 +80,9 @@ impl BatchSlot {
     /// Size the receive area for the next batch.
     fn prepare(&mut self, slot_cap: usize) {
         self.0.recv_region(slot_cap);
+        // tun-rs capacity gate: the AsRef view must cover the slot even
+        // when no packet is stored yet (fresh/recycled buffers).
+        debug_assert!(self.as_ref().len() >= slot_cap);
     }
 
     fn into_pooled(self) -> PooledBuffer {
@@ -75,14 +90,16 @@ impl BatchSlot {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 impl AsRef<[u8]> for BatchSlot {
     fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
+        // Capacity view (whole storage), NOT the packet view: tun-rs
+        // validates `as_ref().len()` before writing.
+        self.0.storage()
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 impl AsMut<[u8]> for BatchSlot {
     fn as_mut(&mut self) -> &mut [u8] {
         self.0.recv_area_mut()
@@ -332,5 +349,77 @@ mod tests {
         b.push(Bytes::from_static(&[1, 2, 3]));
         b.push(Bytes::from_static(&[4, 5]));
         assert!(!b.is_empty());
+    }
+
+    #[test]
+    fn batch_slot_satisfies_tun_rs_contract() {
+        // Regression test for total Linux outbound loss (recv_batch failed
+        // every batch with "overflows bufs element len"): tun-rs validates
+        // writes against `as_ref().len()` (capacity) and writes into
+        // `as_mut()[offset..]`. The AsRef view must therefore cover the
+        // slot even when the slot holds NO packet yet (fresh buffers) or a
+        // smaller stale one — the packet view (`len`) is the wrong view.
+        // No TUN device needed: replicates tun-rs's exact checks.
+        use tunnet_common::packet::FRAME_HEADROOM;
+        let pool = PacketPool::new(8);
+        for mtu in [1280usize, 2800, 9000] {
+            let cap = slot_cap_for_mtu(mtu);
+            let mut slot = BatchSlot::new(&pool, cap);
+            slot.prepare(cap);
+            // Fresh slot: packet view empty, capacity view full.
+            assert_eq!(slot.0.len(), 0);
+            assert!(
+                slot.as_ref().len() >= cap,
+                "mtu={mtu}: AsRef must report receive capacity"
+            );
+            assert!(
+                slot.as_mut().len() >= cap,
+                "mtu={mtu}: AsMut must expose the receive area"
+            );
+            // tun-rs handle_virtio_read / gso_split checks, offset 0.
+            let offset = 0usize;
+            for packet_len in [60usize, 1400, cap] {
+                assert!(
+                    !(offset > slot.as_ref().len()),
+                    "mtu={mtu}: invalid offset must not trigger"
+                );
+                assert!(
+                    !(slot.as_ref().len() - offset < packet_len),
+                    "mtu={mtu} len={packet_len}: output buffer too small must not trigger"
+                );
+            }
+            // Simulate a kernel write at as_mut()[0..len], then take
+            // ownership exactly like recv_batch does.
+            let pkt = {
+                let b = etherparse::PacketBuilder::ipv4([10, 7, 0, 1], [10, 7, 0, 2], 64)
+                    .udp(40000, 443);
+                let mut o = Vec::new();
+                b.write(&mut o, &[0xABu8; 200]).unwrap();
+                o
+            };
+            slot.as_mut()[..pkt.len()].copy_from_slice(&pkt);
+            let mut pooled = slot.into_pooled();
+            let parsed = LogicalPacket::from_pooled(pooled, pkt.len()).expect("must parse");
+            assert_eq!(parsed.owner.as_bytes(), pkt.as_slice());
+            // Headroom intact for the single-frame prepend (zero-copy path).
+            pooled = match parsed.owner {
+                tunnet_common::packet::PacketOwner::Pooled(b) => b,
+                _ => panic!("must stay pooled"),
+            };
+            assert!(pooled.header_slot(FRAME_HEADROOM).is_some());
+            // Recycled slot with a SMALLER stale packet length still
+            // reports full capacity (the stale-len trap).
+            let mut slot2 = BatchSlot::new(&pool, cap);
+            slot2.prepare(cap);
+            let mut reused = slot2.into_pooled();
+            reused.set_len(60);
+            drop(reused);
+            let mut slot3 = BatchSlot::new(&pool, cap);
+            slot3.prepare(cap);
+            assert!(
+                slot3.as_ref().len() >= cap,
+                "recycled slot must still report full capacity"
+            );
+        }
     }
 }
