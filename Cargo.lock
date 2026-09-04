@@ -10971,6 +10971,7 @@ dependencies = [
  "noq-proto",
  "parking_lot",
  "prefix-trie 0.10.1",
+ "proptest",
  "rand 0.10.2",
  "reqwest",
  "rstest",

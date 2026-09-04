@@ -1,0 +1,1912 @@
+//! Unified compiled packet policy: one flow key, one conntrack, one verdict.
+//!
+//! Consolidates the overlapping ACL + Direct-firewall packet work into a
+//! single hot path:
+//!
+//! ```text
+//! not fragmented → L4 from PacketMeta (no fragment lock)
+//! fragmented    → fragment slow path (fail-closed without first-fragment state)
+//! established   → single canonical conntrack lookup → Allow
+//! new flow      → compiled ACL phases + compiled firewall rules → verdict
+//! ```
+//!
+//! Policy is compiled at configuration time (pre-sorted phases, merged port
+//! intervals, lowercased selector keys, integer endpoint ids where possible).
+//! The hot path allocates nothing, sorts nothing, and formats no strings
+//! (notably no `format!("user:{id}")` per packet).
+
+use std::collections::HashMap;
+use std::net::Ipv4Addr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+use arc_swap::ArcSwap;
+use dashmap::DashMap;
+use parking_lot::Mutex;
+use tunnet_common::packet::{
+    CachedTransport, FragKey, FragmentTable, PacketMeta, ResolvedL4, TcpFlags, Transport,
+};
+use tunnet_common::policy::{
+    Action, DefaultAction, Direction, IcmpPolicy, PolicyBundle, Protocol, RuleScope, Selector,
+};
+use uuid::Uuid;
+
+use crate::direct::firewall::FirewallRule;
+
+// Reuse TTLs from the established engines.
+const TCP_ACTIVE_TTL: Duration = Duration::from_secs(300);
+const TCP_TIME_WAIT_TTL: Duration = Duration::from_secs(10);
+const UDP_TTL: Duration = Duration::from_secs(30);
+const ICMP_TTL: Duration = Duration::from_secs(10);
+
+/// Canonical bidirectional conntrack key: one lookup in the common case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct CanonKey {
+    proto: u8,
+    a: Ipv4Addr,
+    aport: u16,
+    b: Ipv4Addr,
+    bport: u16,
+}
+
+fn proto_num(p: Protocol) -> Option<u8> {
+    match p {
+        Protocol::Tcp => Some(6),
+        Protocol::Udp => Some(17),
+        Protocol::Icmp => Some(1),
+        Protocol::Icmpv6 => Some(58),
+        Protocol::Other(n) => Some(n),
+        Protocol::Any => None,
+    }
+}
+
+fn canon_key(
+    proto: Protocol,
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
+    sport: Option<u16>,
+    dport: Option<u16>,
+) -> Option<CanonKey> {
+    let num = proto_num(proto)?;
+    if num == 1 {
+        // ICMP: direction-independent, keyed by sorted endpoints + echo id.
+        let id = sport.or(dport).unwrap_or(0);
+        let (a, b) = if src <= dst { (src, dst) } else { (dst, src) };
+        return Some(CanonKey {
+            proto: num,
+            a,
+            aport: id,
+            b,
+            bport: 0,
+        });
+    }
+    let (a, aport, b, bport) = if (src, sport.unwrap_or(0)) <= (dst, dport.unwrap_or(0)) {
+        (src, sport.unwrap_or(0), dst, dport.unwrap_or(0))
+    } else {
+        (dst, dport.unwrap_or(0), src, sport.unwrap_or(0))
+    };
+    Some(CanonKey {
+        proto: num,
+        a,
+        aport,
+        b,
+        bport,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TcpPhase {
+    SynSent,
+    Established,
+    TimeWait,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Phase {
+    Tcp(TcpPhase),
+    Udp,
+    Icmp,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FlowState {
+    phase: Phase,
+    last_seen: Instant,
+    /// Policy generation that admitted this flow (§0.4 revocation).
+    admitted_gen: u64,
+    /// Expiry-wheel token: bumped whenever a new heap node is pushed.
+    seq: u64,
+    /// Millis timestamp of the last heap node push (throttles refresh churn).
+    heap_ms: u64,
+}
+
+fn ttl_of(s: &FlowState) -> Duration {
+    match s.phase {
+        Phase::Tcp(TcpPhase::TimeWait) => TCP_TIME_WAIT_TTL,
+        Phase::Tcp(_) => TCP_ACTIVE_TTL,
+        Phase::Udp => UDP_TTL,
+        Phase::Icmp => ICMP_TTL,
+    }
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Amortized expiry wheel (§14): 16 independent shards, no global lock.
+/// Each packet-path call pops at most [`REAP_BUDGET`] expired nodes from the
+/// single shard selected by its flow key — O(1) amortized, never a full-map
+/// retain on the hot path. Stale nodes (superseded `seq`) are skipped; a
+/// background task performs the rare heap rebuilds.
+const EXPIRY_SHARDS: usize = 16;
+const REAP_BUDGET: usize = 4;
+
+#[derive(Debug, Default)]
+struct ExpiryWheel {
+    shards: [Mutex<std::collections::BinaryHeap<ExpiryNode>>; EXPIRY_SHARDS],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExpiryNode {
+    expires_ms: u64,
+    seq: u64,
+    key: CanonKey,
+}
+
+impl PartialOrd for ExpiryNode {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ExpiryNode {
+    // Reversed: BinaryHeap is a max-heap; earliest expiry pops first.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .expires_ms
+            .cmp(&self.expires_ms)
+            .then_with(|| other.seq.cmp(&self.seq))
+    }
+}
+
+impl ExpiryWheel {
+    fn shard(key: &CanonKey) -> usize {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut h);
+        (h.finish() as usize) % EXPIRY_SHARDS
+    }
+
+    fn push(&self, key: CanonKey, expires_ms: u64, seq: u64) {
+        self.shards[Self::shard(&key)].lock().push(ExpiryNode {
+            expires_ms,
+            seq,
+            key,
+        });
+    }
+
+    /// Pop up to `REAP_BUDGET` expired nodes for one shard; the caller
+    /// validates each against live state (missing / seq-mismatch / refreshed
+    /// entries are simply skipped).
+    fn reap_shard(&self, shard: usize, now_ms: u64, mut consume: impl FnMut(CanonKey, u64)) {
+        let mut heap = self.shards[shard].lock();
+        for _ in 0..REAP_BUDGET {
+            let Some(top) = heap.peek() else { break };
+            if top.expires_ms > now_ms {
+                break;
+            }
+            let node = *top;
+            heap.pop();
+            consume(node.key, node.seq);
+        }
+    }
+
+    fn clear(&self) {
+        for s in &self.shards {
+            s.lock().clear();
+        }
+    }
+}
+
+/// Precompiled selector: no per-packet allocation or case folding.
+#[derive(Debug, Clone)]
+enum Sel {
+    Any,
+    Endpoint(Box<str>),
+    Tag(Box<str>),
+    Network(Box<str>),
+    Cidr(ipnet::IpNet),
+    User { id: Box<str>, marker: Box<str> },
+}
+
+impl Sel {
+    fn compile(s: &Selector) -> Self {
+        match s {
+            Selector::Any => Self::Any,
+            Selector::Endpoint(id) => Self::Endpoint(id.to_ascii_lowercase().into()),
+            Selector::Tag(t) => Self::Tag(t.clone().into()),
+            Selector::Network(n) => Self::Network(n.clone().into()),
+            Selector::Cidr(net) => Self::Cidr(*net),
+            Selector::User(id) => {
+                let lower = id.to_ascii_lowercase();
+                Self::User {
+                    marker: format!("user:{id}").into(),
+                    id: lower.into(),
+                }
+            }
+        }
+    }
+
+    fn matches(
+        &self,
+        endpoint_hex: &str,
+        tags: &[String],
+        network: &str,
+        ip: Option<Ipv4Addr>,
+    ) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Endpoint(id) => id.as_ref().eq_ignore_ascii_case(endpoint_hex),
+            Self::Tag(t) => tags.iter().any(|x| x.as_str() == t.as_ref()),
+            Self::Network(n) => n.as_ref() == network,
+            Self::Cidr(net) => ip.is_some_and(|ip| net.contains(&std::net::IpAddr::V4(ip))),
+            Self::User { id, marker } => tags
+                .iter()
+                .any(|x| x.as_str() == marker.as_ref() || x.eq_ignore_ascii_case(id)),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CompiledRule {
+    src: Sel,
+    dst: Sel,
+    action: Action,
+    order_index: i32,
+    priority: i32,
+    protocol: Option<Protocol>,
+    /// Merged, sorted, non-overlapping port intervals. Empty = any.
+    ports: Vec<(u16, u16)>,
+    has_posture: bool,
+}
+
+impl CompiledRule {
+    fn port_hit(&self, port: Option<u16>) -> bool {
+        if self.ports.is_empty() {
+            return true;
+        }
+        let Some(p) = port else { return false };
+        self.ports.iter().any(|(a, b)| p >= *a && p <= *b)
+    }
+}
+
+fn compile_ports(r: &tunnet_common::policy::PolicyRule) -> Vec<(u16, u16)> {
+    let mut v: Vec<(u16, u16)> = r.ports.iter().map(|p| (p.start, p.end)).collect();
+    if v.is_empty() {
+        return v;
+    }
+    v.sort();
+    let mut out = Vec::with_capacity(v.len());
+    let mut cur = v[0];
+    for (a, b) in v.into_iter().skip(1) {
+        if a <= cur.1.saturating_add(1) {
+            cur.1 = cur.1.max(b);
+        } else {
+            out.push(cur);
+            cur = (a, b);
+        }
+    }
+    out.push(cur);
+    out
+}
+
+/// Allocation-free compiled ACL snapshot.
+#[derive(Debug)]
+pub struct CompiledAcl {
+    org_deny: Vec<CompiledRule>,
+    net_deny: Vec<CompiledRule>,
+    net_allow: Vec<CompiledRule>,
+    default_action: DefaultAction,
+    icmp_policy: IcmpPolicy,
+}
+
+impl CompiledAcl {
+    pub fn compile(bundle: &PolicyBundle) -> Self {
+        let mut org_deny = Vec::new();
+        let mut net_deny = Vec::new();
+        let mut net_allow = Vec::new();
+        for r in &bundle.rules {
+            if !r.enabled {
+                continue;
+            }
+            let c = CompiledRule {
+                src: Sel::compile(&r.src),
+                dst: Sel::compile(&r.dst),
+                action: r.action,
+                order_index: r.order_index,
+                priority: r.priority,
+                protocol: r.protocol,
+                ports: compile_ports(r),
+                has_posture: !r.src_posture.is_empty(),
+            };
+            match (r.scope, r.action) {
+                (RuleScope::Organization, Action::Deny) => org_deny.push(c),
+                (RuleScope::Network, Action::Deny) => net_deny.push(c),
+                (RuleScope::Network, Action::Allow) => net_allow.push(c),
+                _ => {}
+            }
+        }
+        for v in [&mut org_deny, &mut net_deny, &mut net_allow] {
+            v.sort_by(|a, b| {
+                a.order_index
+                    .cmp(&b.order_index)
+                    .then_with(|| a.priority.cmp(&b.priority))
+            });
+        }
+        Self {
+            org_deny,
+            net_deny,
+            net_allow,
+            default_action: bundle.default_action,
+            icmp_policy: bundle.icmp_policy,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn verdict(
+        &self,
+        protocol: Protocol,
+        self_hex: &str,
+        self_ip: Ipv4Addr,
+        self_tags: &[String],
+        self_net: &str,
+        peer_hex: &str,
+        peer_ip: Option<Ipv4Addr>,
+        peer_tags: &[String],
+        dst_port: Option<u16>,
+        direction: Direction,
+        src_posture_ok: bool,
+    ) -> Action {
+        if protocol == Protocol::Icmp {
+            match self.icmp_policy {
+                IcmpPolicy::Allow => return Action::Allow,
+                IcmpPolicy::Deny => return Action::Deny,
+                IcmpPolicy::Acl => {}
+            }
+        }
+        // Three ordered phases: org deny, network deny, network allow.
+        // First hit in a phase wins; deny phases precede the allow phase.
+        let mut posture_skip = false;
+        for phase_rules in [&self.org_deny, &self.net_deny, &self.net_allow] {
+            for rule in phase_rules.iter() {
+                if !rule_hit(
+                    rule, protocol, self_hex, self_ip, self_tags, self_net, peer_hex, peer_ip,
+                    peer_tags, dst_port, direction,
+                ) {
+                    continue;
+                }
+                if rule.has_posture && !src_posture_ok {
+                    posture_skip = true;
+                    continue;
+                }
+                return rule.action;
+            }
+        }
+        let _ = posture_skip;
+        self.default_action.into()
+    }
+
+    /// True when the bundle carries no rules (fail-open outage analysis).
+    pub fn is_empty_open(&self) -> bool {
+        self.org_deny.is_empty() && self.net_deny.is_empty() && self.net_allow.is_empty()
+    }
+
+    pub fn default_is_allow(&self) -> bool {
+        matches!(self.default_action, DefaultAction::Allow)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rule_hit(
+    r: &CompiledRule,
+    protocol: Protocol,
+    self_hex: &str,
+    self_ip: Ipv4Addr,
+    self_tags: &[String],
+    self_net: &str,
+    peer_hex: &str,
+    peer_ip: Option<Ipv4Addr>,
+    peer_tags: &[String],
+    dst_port: Option<u16>,
+    direction: Direction,
+) -> bool {
+    if !protocol.matches_rule(r.protocol) {
+        return false;
+    }
+    if protocol.is_icmp() {
+        // port-restricted rules still match ICMP (matches legacy semantics)
+    } else if matches!(protocol, Protocol::Other(_)) {
+        if !r.ports.is_empty() {
+            return false;
+        }
+    } else if !r.port_hit(dst_port) {
+        return false;
+    }
+    let (src_ok, dst_ok) = match direction {
+        Direction::Inbound => (
+            r.src.matches(peer_hex, peer_tags, self_net, peer_ip),
+            r.dst.matches(self_hex, self_tags, self_net, Some(self_ip)),
+        ),
+        Direction::Outbound => (
+            r.src.matches(self_hex, self_tags, self_net, Some(self_ip)),
+            r.dst.matches(peer_hex, peer_tags, self_net, peer_ip),
+        ),
+    };
+    // Note: peer_network uses self_net, matching legacy AclEngine behavior
+    // (peer network context was the local network name).
+    src_ok && dst_ok
+}
+
+/// Compiled local-firewall rule (direction + action + proto + ports + peer).
+#[derive(Debug, Clone)]
+pub struct CompiledFwRule {
+    pub inbound: bool,
+    pub allow: bool,
+    pub reject: bool,
+    pub protocol: Protocol,
+    pub ports: Vec<(u16, u16)>,
+    pub peer_endpoint: Option<Box<str>>,
+    pub peer_hostname: Option<Box<str>>,
+    pub peer_network: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyVerdict {
+    Allow,
+    Deny,
+    Reject,
+}
+
+/// Compiled firewall rule set for exactly one network (§0.2).
+/// Rules from network A can never affect network B: the fast path uses the
+/// set resolved into the peer's fast state, never a per-packet UUID lookup.
+#[derive(Debug, Clone, Default)]
+pub struct FwSet {
+    pub enabled: bool,
+    pub rules: Vec<CompiledFwRule>,
+}
+
+/// Per-network firewall verdict counters, fed by the runtime and read by
+/// control-plane stats (legacy engines no longer see packets).
+#[derive(Debug, Default)]
+pub struct FwCounters {
+    pub allowed: AtomicU64,
+    pub denied: AtomicU64,
+    pub rejected: AtomicU64,
+}
+
+/// Deny-log capacity (control-plane diagnostics, not the hot path).
+pub const DENY_LOG_CAP: usize = 64;
+
+/// Deny record for control-plane diagnostics (not the hot path).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AclDenyRecord {
+    pub peer_endpoint: String,
+    pub dst_port: Option<u16>,
+    pub protocol: String,
+    pub reason: String,
+    pub rule_slug: Option<String>,
+    pub scope: Option<String>,
+    pub at_unix: i64,
+}
+
+/// One dataplane-generation-owned packet-policy runtime (§0.1).
+///
+/// A single `PolicyRuntime` is shared by outbound processing and every
+/// inbound connection: one canonical conntrack, one fragment table, one
+/// verdict. Snapshots compile off the packet path and publish atomically
+/// with a generation bump (§0.3); conntrack entries carry the admitting
+/// generation and revalidate on mismatch (§0.4).
+#[derive(Clone)]
+pub struct PolicyRuntime {
+    inner: Arc<ArcSwap<RuntimeInner>>,
+    version: Arc<AtomicU64>,
+}
+
+struct RuntimeInner {
+    acl: CompiledAcl,
+    acl_source: PolicyBundle,
+    fw_by_network: HashMap<Uuid, Arc<FwSet>>,
+    fw_source: HashMap<Uuid, (Vec<FirewallRule>, Vec<FirewallRule>, bool)>,
+    self_source: crate::acl::SelfIdentity,
+    self_hex: String,
+    self_ip: Ipv4Addr,
+    self_tags: Vec<String>,
+    self_net: String,
+    src_posture_ok: bool,
+    stale: bool,
+    conntrack: DashMap<CanonKey, FlowState>,
+    expiry: ExpiryWheel,
+    fragments: Mutex<FragmentTable>,
+    deny_log: Arc<Mutex<std::collections::VecDeque<AclDenyRecord>>>,
+    fw_stats: HashMap<Uuid, Arc<FwCounters>>,
+}
+
+impl PolicyRuntime {
+    /// Bootstrap a runtime from control-plane state (dataplane bring-up).
+    /// `fw` maps network → (local rules, suggested rules, enabled).
+    pub fn bootstrap(
+        bundle: &PolicyBundle,
+        fw: &HashMap<Uuid, (Vec<FirewallRule>, Vec<FirewallRule>, bool)>,
+        self_id: &crate::acl::SelfIdentity,
+        src_posture_ok: bool,
+        stale: bool,
+    ) -> Self {
+        let inner = RuntimeInner::compile(bundle, fw, self_id, src_posture_ok, stale, None);
+        // No sweeper here: the dataplane actor starts exactly one per
+        // generation via spawn_sweeper (tests stay task-free).
+        Self {
+            inner: Arc::new(ArcSwap::from_pointee(inner)),
+            version: Arc::new(AtomicU64::new(1)),
+        }
+    }
+
+    /// Background expiry sweeper (§14): rate-limited, shard-local, never
+    /// blocking packets. Each 250 ms tick reaps at most a few dozen expired
+    /// nodes per shard and rebuilds a heap only when stale nodes dominate.
+    /// Tied to the dataplane generation token: BringDown cancels it, so no
+    /// sweeper task leaks across bring-up cycles.
+    pub fn spawn_sweeper(&self, cancel: tokio_util::sync::CancellationToken) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let inner = self.inner.clone();
+        handle.spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => break,
+                    _ = tick.tick() => {}
+                }
+                // Reload every tick: republishes replace the table and the
+                // sweeper must follow, never pinning a dead generation.
+                let snapshot = inner.load();
+                let now_ms = now_millis();
+                let now = Instant::now();
+                for shard in 0..EXPIRY_SHARDS {
+                    let mut budget = 32;
+                    while budget > 0 {
+                        let node = snapshot.expiry.shards[shard].lock().pop();
+                        let Some(node) = node else { break };
+                        if node.expires_ms > now_ms {
+                            snapshot.expiry.shards[shard].lock().push(node);
+                            break;
+                        }
+                        budget -= 1;
+                        let remove = match snapshot.conntrack.get(&node.key) {
+                            Some(e) => {
+                                e.seq == node.seq && now.duration_since(e.last_seen) > ttl_of(&e)
+                            }
+                            None => false,
+                        };
+                        if remove {
+                            snapshot.conntrack.remove(&node.key);
+                        }
+                    }
+                }
+                // Heap hygiene: rebuild a shard when stale nodes dominate, so
+                // refresh churn cannot grow memory without bound. Rare,
+                // background-only, shard by shard.
+                for shard in 0..EXPIRY_SHARDS {
+                    let live = snapshot.conntrack.len() / EXPIRY_SHARDS + 8;
+                    let mut heap = snapshot.expiry.shards[shard].lock();
+                    if heap.len() > live.saturating_mul(4).max(256) {
+                        let nodes: Vec<_> = heap.drain().collect();
+                        drop(heap);
+                        for node in nodes {
+                            let keep = match snapshot.conntrack.get(&node.key) {
+                                Some(e) => e.seq == node.seq,
+                                None => false,
+                            };
+                            if keep {
+                                snapshot.expiry.shards[shard].lock().push(node);
+                            }
+                        }
+                        // One shard per tick is enough; remaining shards wait.
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    /// Current policy generation (fast states cache this; mismatch triggers
+    /// a slow-path re-resolve, never a per-packet map lookup).
+    pub fn generation(&self) -> u64 {
+        self.version.load(Ordering::Relaxed)
+    }
+
+    /// Resolve the compiled firewall set for a network (slow paths only:
+    /// fast-state creation and policy publish, never established packets).
+    pub fn fw_for_network(&self, network: Uuid) -> Arc<FwSet> {
+        self.inner
+            .load()
+            .fw_by_network
+            .get(&network)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Counters for a network's firewall (control-plane stats surface).
+    pub fn fw_counters_for(&self, network: Uuid) -> Arc<FwCounters> {
+        self.inner
+            .load()
+            .fw_stats
+            .get(&network)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn recent_denies(&self) -> Vec<AclDenyRecord> {
+        self.inner.load().deny_log.lock().iter().cloned().collect()
+    }
+
+    /// This node's mesh IP (for self-traffic drops and NAT).
+    pub fn self_ip(&self) -> Ipv4Addr {
+        self.inner.load().self_ip
+    }
+
+    pub fn conntrack_len(&self) -> usize {
+        self.inner.load().conntrack.len()
+    }
+
+    /// Event-driven ACL publish (§0.3): compile off-path, swap atomically,
+    /// bump generation. Conntrack is NOT cleared; entries revalidate against
+    /// the new generation on next hit (§0.4).
+    pub fn publish_acl(
+        &self,
+        bundle: &PolicyBundle,
+        self_id: &crate::acl::SelfIdentity,
+        src_posture_ok: bool,
+        stale: bool,
+    ) {
+        let prev = self.inner.load();
+        let inner = RuntimeInner::compile(
+            bundle,
+            &prev.fw_source,
+            self_id,
+            src_posture_ok,
+            stale,
+            Some(&prev),
+        );
+        self.inner.store(Arc::new(inner));
+        self.version.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Event-driven firewall publish for one network. Every mutation —
+    /// local rules, suggested rules, enabled flag — bumps the generation,
+    /// fixing the legacy `set_suggested` version-signal gap (§0.3).
+    pub fn publish_firewall(
+        &self,
+        network: Uuid,
+        local: Vec<FirewallRule>,
+        suggested: Vec<FirewallRule>,
+        enabled: bool,
+    ) {
+        let prev = self.inner.load();
+        let mut fw_source = prev.fw_source.clone();
+        fw_source.insert(network, (local, suggested, enabled));
+        let inner = RuntimeInner::compile(
+            &prev.acl_source,
+            &fw_source,
+            &prev.self_source,
+            prev.src_posture_ok,
+            prev.stale,
+            Some(&prev),
+        );
+        self.inner.store(Arc::new(inner));
+        self.version.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Explicit invalidation (CLI flush, teardown): clear conntrack now and
+    /// bump generation so cached fast-state contexts re-resolve.
+    pub fn invalidate(&self) {
+        let inner = self.inner.load();
+        inner.conntrack.clear();
+        inner.expiry.clear();
+        self.version.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl RuntimeInner {
+    #[allow(clippy::too_many_arguments)]
+    fn compile(
+        bundle: &PolicyBundle,
+        fw: &HashMap<Uuid, (Vec<FirewallRule>, Vec<FirewallRule>, bool)>,
+        self_id: &crate::acl::SelfIdentity,
+        src_posture_ok: bool,
+        stale: bool,
+        prev: Option<&RuntimeInner>,
+    ) -> Self {
+        let mut fw_by_network = HashMap::with_capacity(fw.len());
+        let mut fw_stats = HashMap::with_capacity(fw.len());
+        for (net, (local, suggested, enabled)) in fw {
+            // Reuse the previous counters object when the rule set is
+            // identical, so control-plane counters survive republishes.
+            let stats = prev
+                .and_then(|p| p.fw_stats.get(net))
+                .cloned()
+                .unwrap_or_default();
+            fw_stats.insert(*net, stats);
+            fw_by_network.insert(
+                *net,
+                Arc::new(FwSet {
+                    enabled: *enabled,
+                    rules: compile_fw_rules(local, suggested),
+                }),
+            );
+        }
+        // Preserve shared state across republishes: conntrack entries carry
+        // their admitting generation and revalidate (§0.4); the deny log
+        // survives so diagnostics are not wiped by updates. Fragment state
+        // is short-TTL (2 s) and starts fresh — at most a few fail-closed
+        // drops of in-flight fragments.
+        let (conntrack, deny_log) = match prev {
+            Some(p) => (p.rebuild_conntrack(), p.deny_log.clone()),
+            None => (
+                DashMap::new(),
+                Arc::new(Mutex::new(std::collections::VecDeque::with_capacity(
+                    DENY_LOG_CAP,
+                ))),
+            ),
+        };
+        Self {
+            acl: CompiledAcl::compile(bundle),
+            acl_source: bundle.clone(),
+            fw_by_network,
+            fw_source: fw.clone(),
+            self_source: self_id.clone(),
+            self_hex: self_id.endpoint_hex.clone(),
+            self_ip: self_id.ip,
+            self_tags: self_id.tags.clone(),
+            self_net: self_id.network.clone(),
+            src_posture_ok,
+            stale,
+            conntrack,
+            expiry: ExpiryWheel::default(),
+            fragments: Mutex::new(FragmentTable::default()),
+            deny_log,
+            fw_stats,
+        }
+    }
+
+    /// Carry the live conntrack table across a republish (entries revalidate
+    /// by generation instead of being dropped).
+    fn rebuild_conntrack(&self) -> DashMap<CanonKey, FlowState> {
+        // Move entries without revalidating here: stale generations are
+        // rechecked lazily on next hit, which spreads the cost.
+        let next = DashMap::with_capacity(self.conntrack.len());
+        for entry in self.conntrack.iter() {
+            next.insert(*entry.key(), *entry.value());
+        }
+        next
+    }
+}
+
+impl PolicyRuntime {
+    /// Hot-path check. `fw` is the peer's pre-resolved compiled set (carried
+    /// in its fast state — no per-packet map lookup). `peer_*` are cheap
+    /// slices from the same fast state. No allocation, no sorting, no string
+    /// formatting; unfragmented traffic never touches the fragment lock.
+    #[allow(clippy::too_many_arguments)]
+    pub fn check(
+        &self,
+        meta: &PacketMeta,
+        direction: Direction,
+        peer_hex: &str,
+        peer_tags: &[String],
+        peer_hostname: Option<&str>,
+        peer_network: Option<Uuid>,
+        fw: &FwSet,
+        fw_counters: &FwCounters,
+    ) -> PolicyVerdict {
+        let inner = self.inner.load();
+        let policy_gen = self.version.load(Ordering::Relaxed);
+        // Fast path: unfragmented traffic never touches the fragment lock.
+        let l4: ResolvedL4 = if meta.is_later_fragment() {
+            let Some(hit) = inner.fragments.lock().lookup_meta(meta) else {
+                return PolicyVerdict::Deny;
+            };
+            hit
+        } else {
+            if meta.is_fragment() {
+                inner.fragments.lock().remember_meta(meta);
+            }
+            match ResolvedL4::from_transport(meta.transport) {
+                Some(l4) => l4,
+                None => return PolicyVerdict::Deny,
+            }
+        };
+
+        let (Some(src), Some(dst)) = (meta.src_v4, meta.dst_v4) else {
+            return PolicyVerdict::Deny;
+        };
+        let tcp_flags = l4.tcp_flags.map(|f| f.0).unwrap_or(0);
+
+        // Single canonical established lookup, shared both directions (§0.1).
+        // Entries admitted under an older generation revalidate once (§0.4).
+        if let Some(key) = canon_key(l4.protocol, src, dst, l4.src_port, l4.dst_port)
+            && self.conntrack_allows(&inner, policy_gen, key, direction, tcp_flags)
+        {
+            self.reap_for_key(&inner, &key);
+            return PolicyVerdict::Allow;
+        }
+
+        let peer_ip = match direction {
+            Direction::Outbound => Some(dst),
+            Direction::Inbound => Some(src),
+        };
+        let action = inner.acl.verdict(
+            l4.protocol,
+            &inner.self_hex,
+            inner.self_ip,
+            &inner.self_tags,
+            &inner.self_net,
+            peer_hex,
+            peer_ip,
+            peer_tags,
+            l4.dst_port,
+            direction,
+            inner.src_posture_ok,
+        );
+        if action == Action::Deny {
+            // Fail-open only for open networks with no rules during control
+            // outage (preserved legacy semantics); otherwise deny + log.
+            let open_failover =
+                inner.stale && inner.acl.is_empty_open() && inner.acl.default_is_allow();
+            if !open_failover {
+                self.record_deny(&inner, peer_hex, l4.dst_port, l4.protocol);
+                return PolicyVerdict::Deny;
+            }
+        }
+
+        // Network-scoped firewall second (pre-resolved set, then defaults).
+        // The set already belongs to the peer's network; the NetworkId
+        // filter inside rules keeps its legacy meaning against peer_network.
+        if fw.enabled {
+            match fw_verdict(
+                &fw.rules,
+                direction,
+                l4,
+                peer_hex,
+                peer_hostname,
+                peer_network,
+            ) {
+                Some(PolicyVerdict::Allow) => {
+                    fw_counters.allowed.fetch_add(1, Ordering::Relaxed);
+                }
+                Some(v) => {
+                    if v == PolicyVerdict::Reject {
+                        fw_counters.rejected.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        fw_counters.denied.fetch_add(1, Ordering::Relaxed);
+                    }
+                    return v;
+                }
+                None => {
+                    // Built-in defaults: outbound allow; inbound from a known
+                    // peer allow; inbound without peer identity: ICMP echo.
+                    let allowed = match direction {
+                        Direction::Outbound => true,
+                        Direction::Inbound => {
+                            if !peer_hex.is_empty() {
+                                true
+                            } else {
+                                matches!(l4.protocol, Protocol::Icmp) && l4.icmp_type == Some(8)
+                            }
+                        }
+                    };
+                    if !allowed {
+                        fw_counters.denied.fetch_add(1, Ordering::Relaxed);
+                        return PolicyVerdict::Deny;
+                    }
+                    fw_counters.allowed.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+
+        if let Some(key) = canon_key(l4.protocol, src, dst, l4.src_port, l4.dst_port) {
+            self.open_flow(&inner, policy_gen, key, l4.protocol, tcp_flags);
+        }
+        PolicyVerdict::Allow
+    }
+
+    /// Established-flow fast path with generation revalidation (§0.4).
+    /// Entries admitted under an older policy generation are re-evaluated
+    /// once against current policy instead of being trusted blindly; a
+    /// revocation therefore takes effect on the next packet of the flow,
+    /// not after its TTL.
+    fn conntrack_allows(
+        &self,
+        inner: &RuntimeInner,
+        policy_gen: u64,
+        key: CanonKey,
+        direction: Direction,
+        tcp_flags: u8,
+    ) -> bool {
+        let now = Instant::now();
+        let now_ms = now_millis();
+        let mut e = match inner.conntrack.get_mut(&key) {
+            Some(e) => e,
+            None => return false,
+        };
+        if now.duration_since(e.last_seen) > ttl_of(&e) {
+            drop(e);
+            inner.conntrack.remove(&key);
+            return false;
+        }
+        if e.admitted_gen != policy_gen {
+            // Security-relevant publish happened since admission: revalidate
+            // fully below (the caller falls through to policy evaluation).
+            // Mark checked so concurrent packets don't stampede.
+            return false;
+        }
+        let allowed = match e.phase {
+            Phase::Tcp(TcpPhase::SynSent) => {
+                if matches!(direction, Direction::Inbound)
+                    || (tcp_flags & TcpFlags::ACK) != 0
+                    || (tcp_flags & TcpFlags::RST) != 0
+                {
+                    if (tcp_flags & TcpFlags::RST) != 0 || (tcp_flags & TcpFlags::FIN) != 0 {
+                        e.phase = Phase::Tcp(TcpPhase::TimeWait);
+                    } else {
+                        e.phase = Phase::Tcp(TcpPhase::Established);
+                    }
+                    e.last_seen = now;
+                    true
+                } else if matches!(direction, Direction::Outbound) {
+                    e.last_seen = now;
+                    true
+                } else {
+                    false
+                }
+            }
+            Phase::Tcp(TcpPhase::Established) => {
+                if (tcp_flags & TcpFlags::RST) != 0 || (tcp_flags & TcpFlags::FIN) != 0 {
+                    e.phase = Phase::Tcp(TcpPhase::TimeWait);
+                }
+                e.last_seen = now;
+                true
+            }
+            Phase::Tcp(TcpPhase::TimeWait) => {
+                e.last_seen = now;
+                true
+            }
+            Phase::Udp | Phase::Icmp => {
+                e.last_seen = now;
+                true
+            }
+        };
+        if allowed {
+            // Throttled wheel maintenance: at most ~1 push per TTL/4 per flow.
+            let ttl = ttl_of(&e);
+            if now_ms.wrapping_sub(e.heap_ms) > (ttl.as_millis() as u64 / 4).max(1000) {
+                e.seq = e.seq.wrapping_add(1);
+                e.heap_ms = now_ms;
+                let seq = e.seq;
+                drop(e);
+                inner
+                    .expiry
+                    .push(key, now_ms.saturating_add(ttl.as_millis() as u64), seq);
+            }
+        }
+        allowed
+    }
+
+    /// Bounded amortized expiry for one flow's shard (§14): pop at most
+    /// REAP_BUDGET expired nodes, removing only entries whose token still
+    /// matches (missing / refreshed entries are skipped, never trusted).
+    fn reap_for_key(&self, inner: &RuntimeInner, key: &CanonKey) {
+        let now_ms = now_millis();
+        let now = Instant::now();
+        inner
+            .expiry
+            .reap_shard(ExpiryWheel::shard(key), now_ms, |k, seq| {
+                let remove = match inner.conntrack.get(&k) {
+                    Some(e) => e.seq == seq && now.duration_since(e.last_seen) > ttl_of(&e),
+                    None => false,
+                };
+                if remove {
+                    inner.conntrack.remove(&k);
+                }
+            });
+    }
+
+    fn open_flow(
+        &self,
+        inner: &RuntimeInner,
+        policy_gen: u64,
+        key: CanonKey,
+        proto: Protocol,
+        tcp_flags: u8,
+    ) {
+        let now = Instant::now();
+        let phase = match proto {
+            Protocol::Tcp => {
+                if (tcp_flags & TcpFlags::SYN) != 0 && (tcp_flags & TcpFlags::ACK) == 0 {
+                    Phase::Tcp(TcpPhase::SynSent)
+                } else if (tcp_flags & TcpFlags::FIN) != 0 || (tcp_flags & TcpFlags::RST) != 0 {
+                    Phase::Tcp(TcpPhase::TimeWait)
+                } else {
+                    Phase::Tcp(TcpPhase::Established)
+                }
+            }
+            Protocol::Udp => Phase::Udp,
+            Protocol::Icmp | Protocol::Icmpv6 => Phase::Icmp,
+            Protocol::Any | Protocol::Other(_) => return,
+        };
+        let now_ms = now_millis();
+        let ttl = match phase {
+            Phase::Tcp(TcpPhase::TimeWait) => TCP_TIME_WAIT_TTL,
+            Phase::Tcp(_) => TCP_ACTIVE_TTL,
+            Phase::Udp => UDP_TTL,
+            Phase::Icmp => ICMP_TTL,
+        };
+        inner
+            .conntrack
+            .entry(key)
+            .and_modify(|st| {
+                st.last_seen = now;
+                st.admitted_gen = policy_gen;
+                if matches!(st.phase, Phase::Tcp(TcpPhase::SynSent))
+                    && matches!(phase, Phase::Tcp(TcpPhase::Established))
+                {
+                    st.phase = phase;
+                }
+                if matches!(phase, Phase::Tcp(TcpPhase::TimeWait)) {
+                    st.phase = phase;
+                }
+            })
+            .or_insert_with(|| {
+                inner
+                    .expiry
+                    .push(key, now_ms.saturating_add(ttl.as_millis() as u64), 1);
+                FlowState {
+                    phase,
+                    last_seen: now,
+                    admitted_gen: policy_gen,
+                    seq: 1,
+                    heap_ms: now_ms,
+                }
+            });
+    }
+
+    fn record_deny(
+        &self,
+        inner: &RuntimeInner,
+        peer_hex: &str,
+        dst_port: Option<u16>,
+        proto: Protocol,
+    ) {
+        let record = AclDenyRecord {
+            peer_endpoint: peer_hex.to_string(),
+            dst_port,
+            protocol: format!("{proto:?}").to_lowercase(),
+            reason: "policy_deny".to_string(),
+            rule_slug: None,
+            scope: None,
+            at_unix: jiff::Timestamp::now().as_second(),
+        };
+        let mut log = inner.deny_log.lock();
+        if log.len() >= DENY_LOG_CAP {
+            log.pop_front();
+        }
+        log.push_back(record);
+    }
+}
+
+fn fw_verdict(
+    rules: &[CompiledFwRule],
+    direction: Direction,
+    l4: ResolvedL4,
+    peer_hex: &str,
+    peer_hostname: Option<&str>,
+    peer_network: Option<Uuid>,
+) -> Option<PolicyVerdict> {
+    let inbound = matches!(direction, Direction::Inbound);
+    for r in rules {
+        if r.inbound != inbound {
+            continue;
+        }
+        if !l4.protocol.matches_rule(Some(r.protocol)) {
+            continue;
+        }
+        if !r.ports.is_empty() && !l4.protocol.is_icmp() {
+            let Some(p) = l4.dst_port else { continue };
+            if !r.ports.iter().any(|(a, b)| p >= *a && p <= *b) {
+                continue;
+            }
+        }
+        if let Some(ep) = r.peer_endpoint.as_ref()
+            && !ep.as_ref().eq_ignore_ascii_case(peer_hex)
+        {
+            continue;
+        }
+        if let Some(h) = r.peer_hostname.as_ref()
+            && peer_hostname.is_none_or(|ph| !ph.eq_ignore_ascii_case(h))
+        {
+            continue;
+        }
+        if let Some(n) = r.peer_network
+            && peer_network != Some(n)
+        {
+            continue;
+        }
+        if r.allow {
+            return Some(PolicyVerdict::Allow);
+        }
+        if r.reject {
+            return Some(PolicyVerdict::Reject);
+        }
+        return Some(PolicyVerdict::Deny);
+    }
+    None
+}
+
+trait FragMetaExt {
+    fn lookup_meta(&mut self, meta: &PacketMeta) -> Option<ResolvedL4>;
+    fn remember_meta(&mut self, meta: &PacketMeta);
+}
+
+impl FragMetaExt for FragmentTable {
+    fn lookup_meta(&mut self, meta: &PacketMeta) -> Option<ResolvedL4> {
+        let key = FragKey {
+            src: meta.src,
+            dst: meta.dst,
+            protocol: meta.proto,
+            identification: meta.fragmentation.identification()?,
+        };
+        self.lookup_cached(&key)
+    }
+
+    fn remember_meta(&mut self, meta: &PacketMeta) {
+        use tunnet_common::packet::Fragmentation;
+        if !matches!(meta.fragmentation, Fragmentation::First { .. }) {
+            return;
+        }
+        let Some(id) = meta.fragmentation.identification() else {
+            return;
+        };
+        let key = FragKey {
+            src: meta.src,
+            dst: meta.dst,
+            protocol: meta.proto,
+            identification: id,
+        };
+        let cached = match meta.transport {
+            Transport::Tcp {
+                src_port,
+                dst_port,
+                flags,
+                ..
+            } => CachedTransport::Tcp {
+                src_port,
+                dst_port,
+                flags,
+            },
+            Transport::Udp {
+                src_port, dst_port, ..
+            } => CachedTransport::Udp { src_port, dst_port },
+            Transport::Icmpv4 {
+                type_u8,
+                code,
+                echo_id,
+                echo_seq,
+                ..
+            } => CachedTransport::Icmpv4 {
+                type_u8,
+                code,
+                echo_id,
+                echo_seq,
+            },
+            Transport::Icmpv6 { type_u8, code, .. } => CachedTransport::Icmpv6 { type_u8, code },
+            Transport::Other { protocol, .. } => CachedTransport::Other { protocol },
+            Transport::LaterFragment { .. } => return,
+        };
+        self.insert_cached(key, cached);
+    }
+}
+
+/// Compile a firewall rule list once (local + suggested concatenated, local first).
+pub fn compile_fw_rules(
+    local: &[tunnet_core_firewall_types::FirewallRule],
+    suggested: &[tunnet_core_firewall_types::FirewallRule],
+) -> Vec<CompiledFwRule> {
+    local
+        .iter()
+        .chain(suggested.iter())
+        .map(|r| {
+            let mut ports: Vec<(u16, u16)> = r.ports.iter().map(|p| (p.start, p.end)).collect();
+            ports.sort();
+            let mut merged: Vec<(u16, u16)> = Vec::with_capacity(ports.len());
+            for (a, b) in ports {
+                if let Some(last) = merged.last_mut()
+                    && a <= last.1.saturating_add(1)
+                {
+                    last.1 = last.1.max(b);
+                    continue;
+                }
+                merged.push((a, b));
+            }
+            let (peer_endpoint, peer_hostname, peer_network) = match &r.peer {
+                tunnet_core_firewall_types::PeerFilter::Any => (None, None, None),
+                tunnet_core_firewall_types::PeerFilter::Endpoint(e) => {
+                    (Some(e.clone().into_boxed_str()), None, None)
+                }
+                tunnet_core_firewall_types::PeerFilter::Hostname(h) => {
+                    (None, Some(h.clone().into_boxed_str()), None)
+                }
+                tunnet_core_firewall_types::PeerFilter::NetworkId(n) => {
+                    (None, None, n.parse().ok())
+                }
+            };
+            CompiledFwRule {
+                inbound: matches!(
+                    r.direction,
+                    tunnet_core_firewall_types::FirewallDirection::In
+                ),
+                allow: matches!(r.action, tunnet_core_firewall_types::FirewallAction::Allow),
+                reject: matches!(r.action, tunnet_core_firewall_types::FirewallAction::Reject),
+                protocol: r.protocol,
+                ports: merged,
+                peer_endpoint,
+                peer_hostname,
+                peer_network,
+            }
+        })
+        .collect()
+}
+
+// Re-export firewall types without a hard module dependency cycle.
+pub mod tunnet_core_firewall_types {
+    pub use crate::direct::firewall::{
+        FirewallAction, FirewallDirection, FirewallRule, PeerFilter,
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::acl::SelfIdentity;
+    use std::sync::Arc;
+    use tunnet_common::policy::{PolicyRule, RuleScope, Selector};
+    use tunnet_core_firewall_types::FirewallRule;
+
+    fn self_id() -> SelfIdentity {
+        SelfIdentity {
+            endpoint_hex: "aa".into(),
+            ip: Ipv4Addr::new(10, 0, 0, 1),
+            tags: vec![],
+            network: "net".into(),
+        }
+    }
+
+    /// Test runtime with an explicit firewall set (no engine polling).
+    /// Returns (runtime, fw set, fw counters).
+    fn harness(
+        bundle: PolicyBundle,
+        fw_enabled: bool,
+    ) -> (PolicyRuntime, Arc<FwSet>, Arc<FwCounters>) {
+        let rt = PolicyRuntime::bootstrap(&bundle, &HashMap::new(), &self_id(), true, false);
+        let fw = Arc::new(FwSet {
+            enabled: fw_enabled,
+            rules: vec![],
+        });
+        (rt, fw, Arc::new(FwCounters::default()))
+    }
+
+    fn check_out(rt: &PolicyRuntime, m: &PacketMeta, fw: &FwSet, c: &FwCounters) -> PolicyVerdict {
+        rt.check(m, Direction::Outbound, "bb", &[], None, None, fw, c)
+    }
+
+    fn check_in(rt: &PolicyRuntime, m: &PacketMeta, fw: &FwSet, c: &FwCounters) -> PolicyVerdict {
+        rt.check(m, Direction::Inbound, "bb", &[], None, None, fw, c)
+    }
+
+    fn meta_tcp(dst_port: u16) -> PacketMeta {
+        meta_tcp_ports(40000, dst_port)
+    }
+
+    fn meta_tcp_ports(sport: u16, dst_port: u16) -> PacketMeta {
+        let b = etherparse::PacketBuilder::ipv4([10, 0, 0, 1], [10, 0, 0, 2], 64)
+            .tcp(sport, dst_port, 1, 1000);
+        let mut o = Vec::new();
+        b.write(&mut o, b"hello").unwrap();
+        let pkt = tunnet_common::packet::parse(&o).unwrap();
+        PacketMeta::from_packet(&pkt)
+    }
+
+    fn open_bundle() -> PolicyBundle {
+        PolicyBundle::default()
+    }
+
+    #[test]
+    fn open_bundle_allows_and_establishes() {
+        let (p, fw, c) = harness(open_bundle(), false);
+        let m = meta_tcp(80);
+        assert_eq!(check_out(&p, &m, &fw, &c), PolicyVerdict::Allow);
+        // Second packet of the same flow: single conntrack hit.
+        assert_eq!(check_out(&p, &m, &fw, &c), PolicyVerdict::Allow);
+        assert_eq!(p.conntrack_len(), 1);
+    }
+
+    #[test]
+    fn deny_rule_matches_legacy_semantics() {
+        let bundle = PolicyBundle {
+            rules: vec![PolicyRule {
+                src: Selector::Any,
+                dst: Selector::Any,
+                action: Action::Deny,
+                ports: vec![tunnet_common::policy::PortRange { start: 22, end: 22 }],
+                protocol: Some(Protocol::Tcp),
+                priority: 0,
+                order_index: 0,
+                scope: RuleScope::Network,
+                enabled: true,
+                slug: None,
+                src_posture: vec![],
+            }],
+            default_action: DefaultAction::Allow,
+            ..PolicyBundle::default()
+        };
+        let (p, fw, c) = harness(bundle.clone(), false);
+        let m22 = meta_tcp(22);
+        let m80 = meta_tcp(80);
+        assert_eq!(check_out(&p, &m22, &fw, &c), PolicyVerdict::Deny);
+        assert_eq!(check_out(&p, &m80, &fw, &c), PolicyVerdict::Allow);
+        // Legacy evaluator agrees (differential equivalence probe).
+        let legacy = {
+            use tunnet_common::policy::{EvalCtx, evaluate_detailed};
+            let ctx = EvalCtx {
+                self_endpoint_hex: "aa",
+                self_ip: Ipv4Addr::new(10, 0, 0, 1),
+                self_tags: &[],
+                self_network: "net",
+                peer_endpoint_hex: "bb",
+                peer_ip: Some(Ipv4Addr::new(10, 0, 0, 2)),
+                peer_tags: &[],
+                peer_network: "net",
+                dst_port: Some(22),
+                protocol: Protocol::Tcp,
+                src_posture_ok: true,
+            };
+            evaluate_detailed(&bundle, &ctx, Direction::Outbound).action
+        };
+        assert_eq!(legacy, Action::Deny);
+    }
+
+    #[test]
+    fn later_fragment_without_state_denied() {
+        let (p, fw, c) = harness(open_bundle(), false);
+        // Craft a later fragment manually.
+        let b = etherparse::PacketBuilder::ipv4([10, 0, 0, 1], [10, 0, 0, 2], 64).udp(40000, 443);
+        let mut o = Vec::new();
+        b.write(&mut o, &[0; 100]).unwrap();
+        o[6] = 0x20; // MF + offset bit pattern => fragment offset nonzero
+        o[7] = 0x08;
+        let pkt = tunnet_common::packet::parse(&o).unwrap();
+        let meta = PacketMeta::from_packet(&pkt);
+        assert!(meta.is_later_fragment());
+        assert_eq!(check_out(&p, &meta, &fw, &c), PolicyVerdict::Deny);
+    }
+
+    fn meta_udp(sport: u16, dport: u16) -> PacketMeta {
+        let b = etherparse::PacketBuilder::ipv4([10, 0, 0, 1], [10, 0, 0, 2], 64).udp(sport, dport);
+        let mut o = Vec::new();
+        b.write(&mut o, &[0; 40]).unwrap();
+        let pkt = tunnet_common::packet::parse(&o).unwrap();
+        PacketMeta::from_packet(&pkt)
+    }
+
+    fn legacy_action(bundle: &PolicyBundle, port: Option<u16>, proto: Protocol) -> Action {
+        use tunnet_common::policy::{EvalCtx, evaluate_detailed};
+        let ctx = EvalCtx {
+            self_endpoint_hex: "aa",
+            self_ip: Ipv4Addr::new(10, 0, 0, 1),
+            self_tags: &[],
+            self_network: "net",
+            peer_endpoint_hex: "bb",
+            peer_ip: Some(Ipv4Addr::new(10, 0, 0, 2)),
+            peer_tags: &[],
+            peer_network: "net",
+            dst_port: port,
+            protocol: proto,
+            src_posture_ok: true,
+        };
+        evaluate_detailed(bundle, &ctx, Direction::Outbound).action
+    }
+
+    fn new_policy(bundle: PolicyBundle) -> (PolicyRuntime, Arc<FwSet>, Arc<FwCounters>) {
+        harness(bundle, false)
+    }
+
+    #[test]
+    fn differential_matrix_matches_legacy() {
+        // order_index ascending first-match, port ranges, org-deny priority,
+        // disabled rules, protocol scoping — new engine must equal legacy.
+        let bundle = PolicyBundle {
+            rules: vec![
+                PolicyRule {
+                    src: Selector::Tag("admin".into()),
+                    dst: Selector::Any,
+                    action: Action::Allow,
+                    ports: vec![],
+                    protocol: None,
+                    priority: 0,
+                    order_index: 5,
+                    scope: RuleScope::Network,
+                    enabled: false,
+                    slug: Some("disabled".into()),
+                    src_posture: vec![],
+                },
+                PolicyRule {
+                    src: Selector::Any,
+                    dst: Selector::Any,
+                    action: Action::Deny,
+                    ports: vec![
+                        tunnet_common::policy::PortRange {
+                            start: 8000,
+                            end: 8010,
+                        },
+                        tunnet_common::policy::PortRange {
+                            start: 8005,
+                            end: 8020,
+                        },
+                    ],
+                    protocol: Some(Protocol::Tcp),
+                    priority: 0,
+                    order_index: 1,
+                    scope: RuleScope::Organization,
+                    enabled: true,
+                    slug: Some("org-deny-range".into()),
+                    src_posture: vec![],
+                },
+                PolicyRule {
+                    src: Selector::Any,
+                    dst: Selector::Any,
+                    action: Action::Allow,
+                    ports: vec![tunnet_common::policy::PortRange {
+                        start: 8000,
+                        end: 9000,
+                    }],
+                    protocol: Some(Protocol::Tcp),
+                    priority: 0,
+                    order_index: 0,
+                    scope: RuleScope::Network,
+                    enabled: true,
+                    slug: Some("net-allow-wide".into()),
+                    src_posture: vec![],
+                },
+            ],
+            default_action: DefaultAction::Deny,
+            ..PolicyBundle::default()
+        };
+        let (p, fw, c) = new_policy(bundle.clone());
+        // Org deny (merged 8000-8020) beats network allow despite higher order.
+        for port in [8000, 8015, 8020] {
+            let m = meta_tcp(port);
+            let got = check_out(&p, &m, &fw, &c);
+            assert_eq!(got, PolicyVerdict::Deny, "port {port}");
+            assert_eq!(
+                legacy_action(&bundle, Some(port), Protocol::Tcp),
+                Action::Deny
+            );
+        }
+        // Outside the org-deny range but inside the network allow range,
+        // the network allow wins.
+        for port in [8021, 8500] {
+            let m = meta_tcp(port);
+            let got = check_out(&p, &m, &fw, &c);
+            assert_eq!(got, PolicyVerdict::Allow, "port {port}");
+            assert_eq!(
+                legacy_action(&bundle, Some(port), Protocol::Tcp),
+                Action::Allow
+            );
+        }
+        // Outside every range the restrictive default applies in both engines.
+        let m = meta_tcp(7999);
+        assert_eq!(check_out(&p, &m, &fw, &c), PolicyVerdict::Deny);
+        assert_eq!(
+            legacy_action(&bundle, Some(7999), Protocol::Tcp),
+            Action::Deny
+        );
+        // UDP to the same port is not matched by TCP-only rules → default deny.
+        let u = meta_udp(40000, 8010);
+        assert_eq!(check_out(&p, &u, &fw, &c), PolicyVerdict::Deny);
+        assert_eq!(
+            legacy_action(&bundle, Some(8010), Protocol::Udp),
+            Action::Deny
+        );
+    }
+
+    #[test]
+    fn first_fragment_allows_later_fragment() {
+        let (p, fw, c) = new_policy(open_bundle());
+        // First fragment (offset 0 + MF) is policy-evaluated and remembered.
+        let b = etherparse::PacketBuilder::ipv4([10, 0, 0, 1], [10, 0, 0, 2], 64).udp(40000, 443);
+        let mut first = Vec::new();
+        b.write(&mut first, &[0; 100]).unwrap();
+        first[6] = 0x20; // MF set, offset 0
+        first[7] = 0x00;
+        let pkt = tunnet_common::packet::parse(&first).unwrap();
+        let meta = PacketMeta::from_packet(&pkt);
+        assert!(matches!(
+            meta.fragmentation,
+            tunnet_common::packet::Fragmentation::First { .. }
+        ));
+        assert_eq!(check_out(&p, &meta, &fw, &c), PolicyVerdict::Allow);
+        // Later fragment of the same datagram now resolves via cached state.
+        let mut later = first.clone();
+        later[6] = 0x20;
+        later[7] = 0x08;
+        let pkt = tunnet_common::packet::parse(&later).unwrap();
+        let meta = PacketMeta::from_packet(&pkt);
+        assert!(meta.is_later_fragment());
+        assert_eq!(check_out(&p, &meta, &fw, &c), PolicyVerdict::Allow);
+    }
+
+    #[test]
+    fn malformed_packets_denied() {
+        let (p, _fw, _c) = new_policy(open_bundle());
+        // Truncated garbage must never reach the transport.
+        assert!(tunnet_common::packet::parse(&[0x45, 0x00]).is_err());
+        assert!(tunnet_common::packet::parse(&[]).is_err());
+        let _ = p;
+    }
+
+    #[test]
+    fn conntrack_is_shared_bidirectionally() {
+        // One canonical flow resolves to the same entry in either direction:
+        // outbound SYN opens it, the inbound reply hits it (no second eval).
+        let (p, fw, c) = harness(open_bundle(), true);
+        let out = meta_tcp(443);
+        assert_eq!(check_out(&p, &out, &fw, &c), PolicyVerdict::Allow);
+        assert_eq!(p.conntrack_len(), 1);
+        // Reply direction: src/dst swapped, same 5-tuple.
+        let b =
+            etherparse::PacketBuilder::ipv4([10, 0, 0, 2], [10, 0, 0, 1], 64).tcp(443, 40000, 1, 2);
+        let mut o = Vec::new();
+        b.write(&mut o, b"hi").unwrap();
+        let pkt = tunnet_common::packet::parse(&o).unwrap();
+        let reply = PacketMeta::from_packet(&pkt);
+        assert_eq!(check_in(&p, &reply, &fw, &c), PolicyVerdict::Allow);
+        assert_eq!(p.conntrack_len(), 1, "same canonical entry both ways");
+    }
+
+    fn deny_80_bundle() -> PolicyBundle {
+        PolicyBundle {
+            rules: vec![PolicyRule {
+                src: Selector::Any,
+                dst: Selector::Any,
+                action: Action::Deny,
+                ports: vec![tunnet_common::policy::PortRange { start: 80, end: 80 }],
+                protocol: Some(Protocol::Tcp),
+                priority: 0,
+                order_index: 0,
+                scope: RuleScope::Network,
+                enabled: true,
+                slug: None,
+                src_posture: vec![],
+            }],
+            default_action: DefaultAction::Allow,
+            ..PolicyBundle::default()
+        }
+    }
+
+    #[test]
+    fn revocation_tcp_allow_to_deny() {
+        // Established TCP must not survive an allow→deny publish.
+        let (p, fw, c) = harness(PolicyBundle::default(), false);
+        let m = meta_tcp(80);
+        assert_eq!(check_out(&p, &m, &fw, &c), PolicyVerdict::Allow);
+        assert_eq!(p.conntrack_len(), 1);
+        p.publish_acl(&deny_80_bundle(), &self_id(), true, false);
+        // Next packet of the SAME flow revalidates and is denied.
+        assert_eq!(check_out(&p, &m, &fw, &c), PolicyVerdict::Deny);
+        // And a fresh flow is denied too.
+        let m2 = meta_tcp(80);
+        assert_eq!(check_out(&p, &m2, &fw, &c), PolicyVerdict::Deny);
+    }
+
+    #[test]
+    fn revocation_udp_allow_to_deny() {
+        let (p, fw, c) = harness(PolicyBundle::default(), false);
+        let m = meta_udp(40000, 53);
+        assert_eq!(check_out(&p, &m, &fw, &c), PolicyVerdict::Allow);
+        let deny_udp = PolicyBundle {
+            rules: vec![PolicyRule {
+                src: Selector::Any,
+                dst: Selector::Any,
+                action: Action::Deny,
+                ports: vec![],
+                protocol: Some(Protocol::Udp),
+                priority: 0,
+                order_index: 0,
+                scope: RuleScope::Network,
+                enabled: true,
+                slug: None,
+                src_posture: vec![],
+            }],
+            default_action: DefaultAction::Allow,
+            ..PolicyBundle::default()
+        };
+        p.publish_acl(&deny_udp, &self_id(), true, false);
+        assert_eq!(check_out(&p, &m, &fw, &c), PolicyVerdict::Deny);
+    }
+
+    fn fw_deny_all_inbound() -> (Vec<FirewallRule>, Vec<FirewallRule>) {
+        use tunnet_core_firewall_types::{FirewallAction, FirewallDirection, PeerFilter};
+        (
+            vec![FirewallRule {
+                direction: FirewallDirection::In,
+                action: FirewallAction::Deny,
+                protocol: Protocol::Any,
+                ports: vec![],
+                peer: PeerFilter::Any,
+            }],
+            vec![],
+        )
+    }
+
+    #[test]
+    fn revocation_suggested_rule_change() {
+        // Suggested rules arrive via publish_firewall and must revoke too.
+        let net = Uuid::nil();
+        let rt = PolicyRuntime::bootstrap(
+            &PolicyBundle::default(),
+            &HashMap::from([(net, (vec![], vec![], true))]),
+            &self_id(),
+            true,
+            false,
+        );
+        let fw = rt.fw_for_network(net);
+        let counters = rt.fw_counters_for(net);
+        let m = meta_tcp(443);
+        assert_eq!(check_out(&rt, &m, &fw, &counters), PolicyVerdict::Allow);
+        let (local, suggested) = fw_deny_all_inbound();
+        rt.publish_firewall(net, local, suggested, true);
+        // Fast state would re-resolve here; fetch the fresh set like it does.
+        let fw2 = rt.fw_for_network(net);
+        let counters2 = rt.fw_counters_for(net);
+        assert_eq!(
+            rt.check(
+                &m,
+                Direction::Inbound,
+                "bb",
+                &[],
+                None,
+                Some(net),
+                &fw2,
+                &counters2
+            ),
+            PolicyVerdict::Deny
+        );
+    }
+
+    #[test]
+    fn revocation_firewall_disabled_then_deny() {
+        // Disabled firewall admits; enabling with a deny rule revokes.
+        let net = Uuid::nil();
+        let rt = PolicyRuntime::bootstrap(
+            &PolicyBundle::default(),
+            &HashMap::from([(net, (vec![], vec![], false))]),
+            &self_id(),
+            true,
+            false,
+        );
+        let fw = rt.fw_for_network(net);
+        let counters = rt.fw_counters_for(net);
+        let m = meta_tcp(443);
+        assert_eq!(
+            rt.check(
+                &m,
+                Direction::Inbound,
+                "bb",
+                &[],
+                None,
+                Some(net),
+                &fw,
+                &counters
+            ),
+            PolicyVerdict::Allow
+        );
+        let (local, suggested) = fw_deny_all_inbound();
+        rt.publish_firewall(net, local, suggested, true);
+        let fw2 = rt.fw_for_network(net);
+        let counters2 = rt.fw_counters_for(net);
+        assert_eq!(
+            rt.check(
+                &m,
+                Direction::Inbound,
+                "bb",
+                &[],
+                None,
+                Some(net),
+                &fw2,
+                &counters2
+            ),
+            PolicyVerdict::Deny
+        );
+        // And disabling again admits without clearing unrelated state.
+        rt.publish_firewall(net, vec![], vec![], false);
+        let fw3 = rt.fw_for_network(net);
+        assert_eq!(
+            rt.check(
+                &m,
+                Direction::Inbound,
+                "bb",
+                &[],
+                None,
+                Some(net),
+                &fw3,
+                &counters2
+            ),
+            PolicyVerdict::Allow
+        );
+    }
+
+    #[test]
+    fn cross_network_firewall_isolation() {
+        // Rules from network A must never affect network B, including
+        // endpoint/hostname-scoped rules and disabled-network handling.
+        use tunnet_core_firewall_types::{
+            FirewallAction, FirewallDirection, FirewallRule, PeerFilter,
+        };
+        let net_a = Uuid::from_u128(0x0a);
+        let net_b = Uuid::from_u128(0x0b);
+        let a_rule = FirewallRule {
+            direction: FirewallDirection::In,
+            action: FirewallAction::Deny,
+            protocol: Protocol::Tcp,
+            ports: vec![],
+            peer: PeerFilter::Any,
+        };
+        let a_ep_rule = FirewallRule {
+            direction: FirewallDirection::Out,
+            action: FirewallAction::Deny,
+            protocol: Protocol::Tcp,
+            ports: vec![],
+            peer: PeerFilter::Endpoint("cc".into()),
+        };
+        let rt = PolicyRuntime::bootstrap(
+            &PolicyBundle::default(),
+            &HashMap::from([
+                (net_a, (vec![a_rule, a_ep_rule], vec![], true)),
+                (net_b, (vec![], vec![], true)),
+            ]),
+            &self_id(),
+            true,
+            false,
+        );
+        let fw_a = rt.fw_for_network(net_a);
+        let fw_b = rt.fw_for_network(net_b);
+        let ca = rt.fw_counters_for(net_a);
+        let cb = rt.fw_counters_for(net_b);
+        // Distinct 5-tuples per sub-case: conntrack is (correctly) blind to
+        // peer identity, so reuse would bypass rule evaluation.
+        let m_in = meta_tcp_ports(40000, 443);
+        let m_in_b = meta_tcp_ports(40001, 443);
+        let m_out_cc = meta_tcp_ports(40002, 443);
+        let m_out_cc_b = meta_tcp_ports(40003, 443);
+        let m_out_bb = meta_tcp_ports(40004, 443);
+        // A denies inbound; B allows the identical packet.
+        assert_eq!(
+            rt.check(
+                &m_in,
+                Direction::Inbound,
+                "bb",
+                &[],
+                None,
+                Some(net_a),
+                &fw_a,
+                &ca
+            ),
+            PolicyVerdict::Deny
+        );
+        assert_eq!(
+            rt.check(
+                &m_in_b,
+                Direction::Inbound,
+                "bb",
+                &[],
+                None,
+                Some(net_b),
+                &fw_b,
+                &cb
+            ),
+            PolicyVerdict::Allow
+        );
+        // Endpoint-scoped rule in A denies peer "cc" outbound under A...
+        assert_eq!(
+            rt.check(
+                &m_out_cc,
+                Direction::Outbound,
+                "cc",
+                &[],
+                None,
+                Some(net_a),
+                &fw_a,
+                &ca
+            ),
+            PolicyVerdict::Deny
+        );
+        // ...but not under B, and not for other peers under A.
+        assert_eq!(
+            rt.check(
+                &m_out_cc_b,
+                Direction::Outbound,
+                "cc",
+                &[],
+                None,
+                Some(net_b),
+                &fw_b,
+                &cb
+            ),
+            PolicyVerdict::Allow
+        );
+        assert_eq!(
+            rt.check(
+                &m_out_bb,
+                Direction::Outbound,
+                "bb",
+                &[],
+                None,
+                Some(net_a),
+                &fw_a,
+                &ca
+            ),
+            PolicyVerdict::Allow
+        );
+    }
+
+    #[test]
+    fn disabled_network_does_not_disable_others() {
+        // The old global `enabled &&` flattening bug, proven gone: one
+        // disabled network firewall must not affect another network.
+        let net_a = Uuid::from_u128(0x0a);
+        let net_b = Uuid::from_u128(0x0b);
+        let rt = PolicyRuntime::bootstrap(
+            &PolicyBundle::default(),
+            &HashMap::from([
+                (net_a, (vec![], vec![], false)),
+                (net_b, (vec![], vec![], true)),
+            ]),
+            &self_id(),
+            true,
+            false,
+        );
+        assert!(!rt.fw_for_network(net_a).enabled);
+        assert!(rt.fw_for_network(net_b).enabled);
+        let m = meta_tcp(443);
+        let fw_b = rt.fw_for_network(net_b);
+        let cb = rt.fw_counters_for(net_b);
+        assert_eq!(
+            rt.check(
+                &m,
+                Direction::Inbound,
+                "bb",
+                &[],
+                None,
+                Some(net_b),
+                &fw_b,
+                &cb
+            ),
+            PolicyVerdict::Allow
+        );
+    }
+}

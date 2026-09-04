@@ -56,6 +56,15 @@ impl TunnetTransportProfile {
         }
     }
 
+    /// Override the DATAGRAM send buffer for the §19 experiment matrix
+    /// (16/32/64/128 KiB, 64 KiB control). The application queue and the QUIC
+    /// staging queue are one queueing budget: at ~80 Mbps even 64 KiB is
+    /// several milliseconds, so smaller is not automatically worse.
+    pub fn with_send_buffer(mut self, bytes: usize) -> Self {
+        self.datagram_send_buffer = bytes.clamp(4096, 1024 * 1024);
+        self
+    }
+
     pub fn build(&self) -> QuicTransportConfig {
         let b = QuicTransportConfig::builder();
         let b = b

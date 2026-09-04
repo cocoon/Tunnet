@@ -1,257 +1,372 @@
-//! Owned packet buffer for the data plane.
+//! Dataplane v2 packet ownership: zero/minimal-copy logical packets.
 //!
-//! Parse once: [`PacketBuf`] owns its bytes plus compact parsed metadata,
-//! a stable [`FlowKey`], and an enqueue timestamp for AQM sojourn accounting.
+//! One packet owner moves through TUN receive → parse → scheduler →
+//! segmentation → Iroh without repeated allocation:
 //!
-//! Ownership can be converted into `bytes::Bytes` without a second copy via
-//! the `Vec<u8>` -> `Bytes` path (`Bytes::from(vec)` is zero-copy for the
-//! payload; the old path did `Bytes::copy_from_slice` on top of a reusable
-//! buffer which always copied). A small pool recycles allocations.
+//! ```text
+//! PooledBuffer (Vec storage + pool handle, AsRef<[u8]>)
+//!   -- transmit path --> Bytes::from_owner(owner)  (no copy; pool recycle on Drop)
+//!   -- shared path   --> Bytes kept directly       (inbound, no mutation)
+//! ```
+//!
+//! Safety rules: no lifetime tricks (owners are `'static`), no OS-ring
+//! pinning (pool buffers are plain heap memory), bounded pools with MTU
+//! capacity classes (no 64 KiB retention for normal packets).
 
-use std::collections::VecDeque;
-use std::net::{IpAddr, Ipv4Addr};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::{Arc, Mutex, Weak};
 
 use bytes::Bytes;
 
-use super::{Fragmentation, IpMeta, Packet, Transport, parse};
+use super::{FlowKey, PacketMeta, parse};
 
-/// Stable per-flow scheduling key.
-///
-/// TCP/UDP: IP 5-tuple. ICMP: src/dst/proto + echo id (cheap isolation).
-/// Other protocols without ports: src/dst/proto.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FlowKey {
-    pub src: IpAddr,
-    pub dst: IpAddr,
-    pub proto: u8,
-    pub sport: u16,
-    pub dport: u16,
-}
+/// Headroom reserved at the front of every pooled buffer for the v2 frame
+/// header, so single-frame encoding never copies the payload.
+pub const FRAME_HEADROOM: usize = 32;
 
-impl FlowKey {
-    pub fn for_packet(pkt: &Packet<'_>) -> Self {
-        let (src, dst) = match pkt.ip {
-            IpMeta::V4 { src, dst, .. } => (IpAddr::V4(src), IpAddr::V4(dst)),
-            IpMeta::V6 { src, dst, .. } => (IpAddr::V6(src), IpAddr::V6(dst)),
-        };
-        let proto = pkt.ip.ip_protocol();
-        let (sport, dport) = match pkt.transport {
-            Transport::Tcp {
-                src_port, dst_port, ..
-            }
-            | Transport::Udp {
-                src_port, dst_port, ..
-            } => (src_port, dst_port),
-            Transport::Icmpv4 { echo_id, .. } => (echo_id.unwrap_or(0), 0),
-            Transport::Icmpv6 { .. } => (0, 0),
-            Transport::Other { .. } => (0, 0),
-            Transport::LaterFragment {
-                protocol,
-                identification,
-                ..
-            } => (
-                (identification & 0xffff) as u16,
-                (protocol as u16).wrapping_mul(31),
-            ),
-        };
-        Self {
-            src,
-            dst,
-            proto,
-            sport,
-            dport,
-        }
-    }
+/// Logical/virtual MTU default for Dataplane v2.
+pub const DEFAULT_VIRTUAL_MTU: usize = 2800;
+/// Hard ceiling for a logical packet (framing `total_len` is u16-compatible).
+pub const MAX_LOGICAL_LEN: usize = 9000;
+/// Smallest usable logical MTU.
+pub const MIN_VIRTUAL_MTU: usize = 576;
 
-    /// Canonical bidirectional identity for conntrack fast-path hits.
-    pub fn canonical(self) -> (Self, bool) {
-        let rev = Self {
-            src: self.dst,
-            dst: self.src,
-            proto: self.proto,
-            sport: self.dport,
-            dport: self.sport,
-        };
-        if (self.src, self.sport) <= (self.dst, self.dport) {
-            (self, false)
-        } else {
-            (rev, true)
-        }
-    }
-}
+/// Pool capacity classes (bytes). A buffer is always drawn from the smallest
+/// class that fits, so normal packets never retain huge allocations.
+const CLASSES: [usize; 5] = [512, 1536, 2816, 4096, 9216];
 
-/// Compact parsed metadata stored alongside owned bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PacketMeta {
-    pub src_v4: Option<Ipv4Addr>,
-    pub dst_v4: Option<Ipv4Addr>,
-    pub src: IpAddr,
-    pub dst: IpAddr,
-    pub proto: u8,
-    pub wire_len: usize,
-    pub ip_header_len: usize,
-    pub transport: Transport,
-    pub fragmentation: Fragmentation,
-    pub tcp_flags: u8,
-}
-
-impl PacketMeta {
-    pub fn from_packet(pkt: &Packet<'_>) -> Self {
-        let (src, dst) = match pkt.ip {
-            IpMeta::V4 { src, dst, .. } => (IpAddr::V4(src), IpAddr::V4(dst)),
-            IpMeta::V6 { src, dst, .. } => (IpAddr::V6(src), IpAddr::V6(dst)),
-        };
-        let tcp_flags = match pkt.transport {
-            Transport::Tcp { flags, .. } => flags.0,
-            _ => 0,
-        };
-        Self {
-            src_v4: pkt.ip.v4_src(),
-            dst_v4: pkt.ip.v4_dst(),
-            src,
-            dst,
-            proto: pkt.ip.ip_protocol(),
-            wire_len: pkt.wire_len,
-            ip_header_len: pkt.ip.header_len(),
-            transport: pkt.transport,
-            fragmentation: pkt.fragmentation,
-            tcp_flags,
-        }
-    }
-
-    pub fn is_fragment(&self) -> bool {
-        !matches!(self.fragmentation, Fragmentation::None)
-    }
-
-    pub fn is_later_fragment(&self) -> bool {
-        matches!(self.fragmentation, Fragmentation::Later { .. })
-    }
-
-    /// Cheap SSH-NAT precondition using stored metadata only (no reparse).
-    pub fn ssh_nat_class(&self, self_ip: Ipv4Addr) -> SshNatClass {
-        if self.is_later_fragment() {
-            return SshNatClass::None;
-        }
-        let Transport::Tcp {
-            src_port,
-            dst_port,
-            header_len,
-            ..
-        } = self.transport
-        else {
-            return SshNatClass::None;
-        };
-        if header_len < 18 {
-            return SshNatClass::None;
-        }
-        if self.dst_v4 == Some(self_ip) && dst_port == 22 {
-            return SshNatClass::InboundToInternal;
-        }
-        if self.src_v4 == Some(self_ip) && src_port == 30022 {
-            return SshNatClass::OutboundToExternal;
-        }
-        SshNatClass::None
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SshNatClass {
-    None,
-    InboundToInternal,
-    OutboundToExternal,
-}
-
-/// Owned data-plane packet: bytes + parse-once metadata.
 #[derive(Debug)]
-pub struct PacketBuf {
-    pub data: Vec<u8>,
+struct ClassPool {
+    free: Mutex<Vec<Vec<u8>>>,
+    hits: std::sync::atomic::AtomicU64,
+    misses: std::sync::atomic::AtomicU64,
+}
+
+/// Bounded packet buffer pool with MTU capacity classes.
+#[derive(Debug)]
+pub struct PacketPool {
+    classes: [ClassPool; 5],
+    per_class_cap: usize,
+}
+
+impl Default for PacketPool {
+    fn default() -> Self {
+        Self::for_new(64)
+    }
+}
+
+impl PacketPool {
+    fn for_new(per_class_cap: usize) -> Self {
+        let mk = || ClassPool {
+            free: Mutex::new(Vec::new()),
+            hits: Default::default(),
+            misses: Default::default(),
+        };
+        Self {
+            classes: [mk(), mk(), mk(), mk(), mk()],
+            per_class_cap: per_class_cap.max(4),
+        }
+    }
+
+    pub fn new(per_class_cap: usize) -> Arc<Self> {
+        Arc::new(Self::for_new(per_class_cap))
+    }
+
+    fn class_for(need: usize) -> usize {
+        CLASSES
+            .iter()
+            .position(|c| *c >= need)
+            .unwrap_or(CLASSES.len() - 1)
+    }
+
+    /// Acquire storage for `need` bytes of packet payload plus frame headroom.
+    pub fn acquire(self: &Arc<Self>, need: usize) -> PooledBuffer {
+        let total = need.saturating_add(FRAME_HEADROOM).min(CLASSES[4]);
+        let class = Self::class_for(total);
+        let pool = &self.classes[class];
+        let mut storage = pool.free.lock().expect("pool").pop().unwrap_or_default();
+        if storage.capacity() < total {
+            storage.reserve(total - storage.capacity());
+            pool.misses
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        } else {
+            pool.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        storage.clear();
+        let start = FRAME_HEADROOM.min(storage.capacity());
+        PooledBuffer {
+            storage,
+            start,
+            len: 0,
+            pool: Arc::downgrade(self),
+            class: class as u8,
+        }
+    }
+
+    fn release(&self, mut storage: Vec<u8>, class: usize) {
+        // Never retain absurd buffers: drop storage far above its class.
+        if storage.capacity() > CLASSES[class] * 2 {
+            return;
+        }
+        storage.clear();
+        let pool = &self.classes[class];
+        let mut free = pool.free.lock().expect("pool");
+        if free.len() < self.per_class_cap {
+            free.push(storage);
+        }
+    }
+
+    /// Release a raw `Vec<u8>` (e.g. batch staging storage) into the
+    /// smallest class that fits its capacity.
+    pub fn release_raw(&self, storage: Vec<u8>) {
+        let cap = storage.capacity();
+        if cap < 64 {
+            return;
+        }
+        let class = Self::class_for(cap);
+        self.release(storage, class);
+    }
+
+    /// (hits, misses) across all classes for telemetry.
+    pub fn hit_miss(&self) -> (u64, u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut h = 0;
+        let mut m = 0;
+        for c in &self.classes {
+            h += c.hits.load(Relaxed);
+            m += c.misses.load(Relaxed);
+        }
+        (h, m)
+    }
+}
+
+/// Owned packet storage with frame headroom. `AsRef<[u8]>` exposes exactly
+/// the live packet bytes, so `Bytes::from_owner` views the frame with no
+/// copy and the pool recycles the storage on final drop.
+pub struct PooledBuffer {
+    storage: Vec<u8>,
+    start: usize,
+    len: usize,
+    pool: Weak<PacketPool>,
+    class: u8,
+}
+
+impl std::fmt::Debug for PooledBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PooledBuffer")
+            .field("len", &self.len)
+            .field("class", &self.class)
+            .finish()
+    }
+}
+
+impl PooledBuffer {
+    /// Region with capacity for receiving up to `cap` bytes.
+    pub fn recv_region(&mut self, cap: usize) -> &mut [u8] {
+        let need = self.start + cap;
+        if self.storage.len() < need {
+            self.storage.resize(need, 0);
+        }
+        &mut self.storage[self.start..self.start + cap]
+    }
+
+    pub fn set_len(&mut self, len: usize) {
+        self.len = len;
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Mutable headroom for in-place single-frame header encoding.
+    /// Returns `None` when the header does not fit (caller falls back to a
+    /// staged encode, never corrupting the payload).
+    pub fn header_slot(&mut self, hdr_len: usize) -> Option<&mut [u8]> {
+        if hdr_len > self.start {
+            return None;
+        }
+        self.start -= hdr_len;
+        self.len += hdr_len;
+        Some(&mut self.storage[self.start..self.start + hdr_len])
+    }
+
+    /// Raw storage (for TUN batch slot use).
+    pub fn storage_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.storage
+    }
+
+    pub fn packet_bytes(&self) -> &[u8] {
+        debug_assert!(self.start + self.len <= self.storage.len());
+        let end = (self.start + self.len).min(self.storage.len());
+        &self.storage[self.start..end]
+    }
+
+    /// Move the storage out without pool recycling (batch staging takes
+    /// ownership; the staging layer recycles via `release_raw` after use).
+    pub fn into_vec(mut self) -> Vec<u8> {
+        self.pool = Weak::new();
+        std::mem::take(&mut self.storage)
+    }
+}
+
+impl AsRef<[u8]> for PooledBuffer {
+    fn as_ref(&self) -> &[u8] {
+        self.packet_bytes()
+    }
+}
+
+impl Drop for PooledBuffer {
+    fn drop(&mut self) {
+        if let Some(pool) = self.pool.upgrade() {
+            let storage = std::mem::take(&mut self.storage);
+            pool.release(storage, self.class as usize);
+        }
+    }
+}
+
+/// Ownership of logical packet bytes through the v2 pipeline.
+#[derive(Debug)]
+pub enum PacketOwner {
+    /// Pooled heap storage; converts to `Bytes` via `from_owner` (no copy).
+    Pooled(PooledBuffer),
+    /// Already-owned bytes (inbound DATAGRAM, no mutation needed).
+    Shared(Bytes),
+}
+
+impl PacketOwner {
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Pooled(b) => b.as_ref(),
+            Self::Shared(b) => b.as_ref(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.as_bytes().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.as_bytes().is_empty()
+    }
+
+    /// Consume into a QUIC DATAGRAM payload without copying the payload.
+    pub fn into_datagram(self) -> Bytes {
+        match self {
+            Self::Pooled(b) => Bytes::from_owner(b),
+            Self::Shared(b) => b,
+        }
+    }
+}
+
+/// Owned logical (inner IP) packet: bytes + parse-once metadata + flow key.
+#[derive(Debug)]
+pub struct LogicalPacket {
+    pub owner: PacketOwner,
     pub meta: PacketMeta,
     pub flow: FlowKey,
-    pub enqueued_at: Instant,
+    pub enqueued_at: std::time::Instant,
 }
 
-impl PacketBuf {
-    /// Parse `data[..len]` once; returns `None` on parse failure.
+impl LogicalPacket {
+    /// Parse-and-own from a slice (copies once; prefer the pooled constructors
+    /// on hot paths).
     pub fn from_slice(data: &[u8]) -> Option<Self> {
-        let pkt = parse(data).ok()?;
-        let meta = PacketMeta::from_packet(&pkt);
-        let flow = FlowKey::for_packet(&pkt);
+        let (meta, flow) = {
+            let pkt = parse(data).ok()?;
+            (PacketMeta::from_packet(&pkt), FlowKey::for_packet(&pkt))
+        };
         Some(Self {
-            data: data.to_vec(),
+            owner: PacketOwner::Shared(Bytes::copy_from_slice(data)),
             meta,
             flow,
-            enqueued_at: Instant::now(),
+            enqueued_at: std::time::Instant::now(),
         })
     }
 
-    /// Take ownership of a `Vec<u8>` of exactly `len` bytes without copying.
-    pub fn from_vec(mut data: Vec<u8>, len: usize) -> Option<Self> {
-        data.truncate(len);
-        let pkt = parse(&data).ok()?;
-        let meta = PacketMeta::from_packet(&pkt);
-        let flow = FlowKey::for_packet(&pkt);
+    /// Take ownership of pooled storage filled with exactly `len` bytes.
+    pub fn from_pooled(mut buf: PooledBuffer, len: usize) -> Option<Self> {
+        buf.set_len(len);
+        let (meta, flow) = {
+            let pkt = parse(buf.as_ref()).ok()?;
+            (PacketMeta::from_packet(&pkt), FlowKey::for_packet(&pkt))
+        };
         Some(Self {
-            data,
+            owner: PacketOwner::Pooled(buf),
             meta,
             flow,
-            enqueued_at: Instant::now(),
+            enqueued_at: std::time::Instant::now(),
+        })
+    }
+
+    /// Zero-copy inbound: retain the DATAGRAM's bytes, parse directly.
+    pub fn from_shared(bytes: Bytes) -> Option<Self> {
+        let (meta, flow) = {
+            let pkt = parse(&bytes).ok()?;
+            (PacketMeta::from_packet(&pkt), FlowKey::for_packet(&pkt))
+        };
+        Some(Self {
+            owner: PacketOwner::Shared(bytes),
+            meta,
+            flow,
+            enqueued_at: std::time::Instant::now(),
+        })
+    }
+
+    /// Take ownership of a `Vec<u8>` without copying (`Bytes::from` moves
+    /// the allocation). Used for batch-slot transfers and reassembly output.
+    pub fn from_vec(data: Vec<u8>) -> Option<Self> {
+        let (meta, flow) = {
+            let pkt = parse(&data).ok()?;
+            (PacketMeta::from_packet(&pkt), FlowKey::for_packet(&pkt))
+        };
+        Some(Self {
+            owner: PacketOwner::Shared(Bytes::from(data)),
+            meta,
+            flow,
+            enqueued_at: std::time::Instant::now(),
         })
     }
 
     pub fn len(&self) -> usize {
-        self.data.len()
+        self.owner.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.owner.is_empty()
     }
 
     pub fn sojourn(&self) -> std::time::Duration {
         self.enqueued_at.elapsed()
     }
 
-    /// Zero-extra-copy conversion into QUIC DATAGRAM payload.
-    pub fn into_bytes(self) -> Bytes {
-        Bytes::from(self.data)
-    }
-
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.data
-    }
-}
-
-/// Recycled owned buffers to avoid per-packet allocation churn.
-#[derive(Debug, Default)]
-pub struct PacketPool {
-    free: Mutex<VecDeque<Vec<u8>>>,
-    cap: usize,
-}
-
-impl PacketPool {
-    pub fn new(cap: usize) -> Arc<Self> {
-        Arc::new(Self {
-            free: Mutex::new(VecDeque::new()),
-            cap: cap.max(8),
-        })
-    }
-
-    pub fn acquire(&self, capacity: usize) -> Vec<u8> {
-        if let Some(mut v) = self.free.lock().expect("pool").pop_front() {
-            v.clear();
-            v.reserve(capacity.saturating_sub(v.capacity()));
-            return v;
+    /// Materialize mutable pooled storage (NAT rewrite and other rare
+    /// mutations only). Returns false when the packet cannot be materialized.
+    pub fn materialize(&mut self, pool: &Arc<PacketPool>) -> bool {
+        if matches!(self.owner, PacketOwner::Pooled(_)) {
+            return true;
         }
-        Vec::with_capacity(capacity)
+        let bytes = self.owner.as_bytes();
+        let mut buf = pool.acquire(bytes.len());
+        let region = buf.recv_region(bytes.len());
+        region.copy_from_slice(bytes);
+        buf.set_len(bytes.len());
+        // Re-derive metadata only if a later mutation needs it; the caller
+        // refreshes after mutating.
+        self.owner = PacketOwner::Pooled(buf);
+        true
     }
 
-    pub fn release(&self, mut v: Vec<u8>) {
-        v.clear();
-        let mut free = self.free.lock().expect("pool");
-        if free.len() < self.cap {
-            free.push_back(v);
-        }
+    /// Refresh metadata/flow after an in-place mutation (rare path).
+    pub fn refresh(&mut self) -> bool {
+        let Ok(pkt) = parse(self.owner.as_bytes()) else {
+            return false;
+        };
+        self.meta = PacketMeta::from_packet(&pkt);
+        self.flow = FlowKey::for_packet(&pkt);
+        true
     }
 }
 
@@ -267,20 +382,61 @@ mod tests {
     }
 
     #[test]
-    fn flow_key_stable_for_5tuple() {
+    fn pooled_round_trip_no_copy_view() {
+        let pool = PacketPool::new(8);
         let raw = udp_packet();
-        let a = PacketBuf::from_slice(&raw).unwrap();
-        let b = PacketBuf::from_slice(&raw).unwrap();
-        assert_eq!(a.flow, b.flow);
-        assert_eq!(a.meta, b.meta);
+        let mut buf = pool.acquire(raw.len());
+        buf.recv_region(raw.len()).copy_from_slice(&raw);
+        let p = LogicalPacket::from_pooled(buf, raw.len()).unwrap();
+        assert_eq!(p.len(), raw.len());
+        assert_eq!(p.owner.as_bytes(), raw.as_slice());
     }
 
     #[test]
-    fn into_bytes_no_copy_length() {
+    fn header_slot_prepends_without_copy() {
+        let pool = PacketPool::new(8);
         let raw = udp_packet();
-        let p = PacketBuf::from_slice(&raw).unwrap();
-        let n = p.len();
-        let b = p.into_bytes();
-        assert_eq!(b.len(), n);
+        let mut buf = pool.acquire(raw.len());
+        buf.recv_region(raw.len()).copy_from_slice(&raw);
+        buf.set_len(raw.len());
+        let slot = buf.header_slot(4).unwrap();
+        slot.copy_from_slice(&[9, 9, 9, 9]);
+        assert_eq!(&buf.as_ref()[..4], &[9, 9, 9, 9]);
+        assert_eq!(&buf.as_ref()[4..], raw.as_slice());
+    }
+
+    #[test]
+    fn from_owner_keeps_storage_alive() {
+        let pool = PacketPool::new(8);
+        let raw = udp_packet();
+        let mut buf = pool.acquire(raw.len());
+        buf.recv_region(raw.len()).copy_from_slice(&raw);
+        buf.set_len(raw.len());
+        let b = Bytes::from_owner(buf);
+        assert_eq!(&b[..], raw.as_slice());
+        let c = b.clone();
+        drop(b);
+        assert_eq!(&c[..], raw.as_slice());
+    }
+
+    #[test]
+    fn pool_recycles_and_reports() {
+        let pool = PacketPool::new(8);
+        {
+            let _ = pool.acquire(100);
+        }
+        let (h, m) = pool.hit_miss();
+        assert_eq!(h + m, 1);
+        let _ = pool.acquire(100);
+        let (h2, _) = pool.hit_miss();
+        assert_eq!(h2, h + 1, "second acquire should hit the pool");
+    }
+
+    #[test]
+    fn shared_inbound_no_copy() {
+        let raw = udp_packet();
+        let bytes = Bytes::from(raw.clone());
+        let p = LogicalPacket::from_shared(bytes).unwrap();
+        assert_eq!(p.owner.as_bytes(), raw.as_slice());
     }
 }

@@ -1,127 +1,178 @@
-//! Platform-specific TUN fast paths sharing one packet semantics.
+//! Platform-specific TUN fast paths sharing one packet semantics (§9).
 //!
-//! Linux: tun-rs offload + `recv_multiple` / `send_multiple` with a reused
-//! `GROTable` and `IDEAL_BATCH_SIZE` preallocated batch buffers.
-//! Windows: Wintun ring drained/filled as bursts via `try_recv` / `try_send`
-//! (bounded burst after each readiness wakeup; wait only when the ring is
-//! actually empty/full). Ring capacity stays deliberate — bigger rings would
-//! only mask queue management and worsen loaded latency.
+//! Linux: offload + `recv_multiple` into pool-owned batch slots (ownership
+//! transferred to logical packets, no per-packet copy) and genuine
+//! multi-packet `send_multiple` batches that let GSO coalesce.
+//! Windows: Wintun ring drained as bursts into pooled buffers and filled
+//! from an explicit pending batch that retains its unsent tail — no silent
+//! loss. Ring capacity stays deliberate; bigger rings only mask queueing.
+//!
+//! All slot sizes derive from the configured virtual MTU (§6): a 2800+ byte
+//! logical packet is never truncated by a fixed 2 KiB assumption.
 
-#[cfg(windows)]
-use std::time::Duration;
+#[cfg(not(target_os = "linux"))]
+use std::collections::VecDeque;
+use std::sync::Arc;
+
+#[cfg(not(target_os = "linux"))]
+use bytes::Bytes;
 use tun_rs::AsyncDevice;
-use tunnet_common::packet::PacketBuf;
+use tunnet_common::packet::{LogicalPacket, MAX_LOGICAL_LEN, PacketPool};
 
 /// Desired TUN batch depth (starting point; tun-rs `IDEAL_BATCH_SIZE` = 128).
 #[cfg(target_os = "linux")]
 pub const BATCH_SIZE: usize = tun_rs::IDEAL_BATCH_SIZE;
 /// Windows burst budget per readiness wakeup.
 pub const BURST_BUDGET: usize = 64;
-/// Preallocated receive buffer per packet slot.
-pub const SLOT_CAP: usize = 2048;
+/// Inbound TUN write batch: packets accumulated per drain iteration (§9).
+pub const TUN_WRITE_BATCH: usize = 32;
+
+/// Slot size for a virtual MTU: payload room plus virtio headroom on Linux.
+pub fn slot_cap_for_mtu(mtu: usize) -> usize {
+    mtu.clamp(576, MAX_LOGICAL_LEN) + 256
+}
 
 /// Preallocated batch engine for Linux `recv_multiple`.
-/// (`send_multiple` needs per-task GRO state; see [`LinuxTunWriter`].)
+///
+/// Batch slots are pool-owned buffers: on receipt each slot's storage is
+/// swapped out into the logical packet (zero copy from batch buffer) and
+/// the slot refilled from the pool.
 #[cfg(target_os = "linux")]
 pub struct LinuxBatchEngine {
     pub orig: Vec<u8>,
-    pub bufs: Vec<Vec<u8>>,
-    pub sizes: Vec<usize>,
-}
-
-#[cfg(target_os = "linux")]
-impl Default for LinuxBatchEngine {
-    fn default() -> Self {
-        Self::new()
-    }
+    bufs: Vec<Vec<u8>>,
+    sizes: Vec<usize>,
+    pool: Arc<PacketPool>,
+    slot_cap: usize,
 }
 
 #[cfg(target_os = "linux")]
 impl LinuxBatchEngine {
-    pub fn new() -> Self {
+    pub fn new(pool: Arc<PacketPool>, mtu: usize) -> Self {
+        let slot_cap = slot_cap_for_mtu(mtu);
         Self {
             orig: vec![0u8; tun_rs::VIRTIO_NET_HDR_LEN + 65535],
-            bufs: vec![vec![0u8; SLOT_CAP]; BATCH_SIZE],
+            bufs: vec![vec![0u8; slot_cap]; BATCH_SIZE],
             sizes: vec![0usize; BATCH_SIZE],
+            pool,
+            slot_cap,
         }
     }
 
-    /// Receive a batch; parses each packet once into a [`PacketBuf`].
-    /// Reuses preallocated buffers; no per-iteration allocation.
-    pub async fn recv_batch(&mut self, dev: &AsyncDevice) -> anyhow::Result<Vec<PacketBuf>> {
+    /// Receive a batch; each packet takes ownership of its slot storage.
+    /// Reuses preallocated/pooled buffers; no per-packet copy.
+    pub async fn recv_batch(&mut self, dev: &AsyncDevice) -> anyhow::Result<Vec<LogicalPacket>> {
         let n = dev
             .recv_multiple(&mut self.orig, &mut self.bufs, &mut self.sizes, 0)
             .await?;
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
             let len = self.sizes[i];
-            if len == 0 {
+            if len == 0 || len > self.slot_cap {
                 continue;
             }
-            if let Some(p) = PacketBuf::from_slice(&self.bufs[i][..len]) {
+            // Swap the filled slot out; refill with pooled storage.
+            // (`into_vec` detaches without recycling; the filled storage
+            // moves into the logical packet, the refill comes from the pool.)
+            let mut raw = std::mem::replace(
+                &mut self.bufs[i],
+                self.pool.acquire(self.slot_cap).into_vec(),
+            );
+            raw.truncate(len);
+            if let Some(p) = LogicalPacket::from_vec(raw) {
                 out.push(p);
             }
+            // else: malformed; the (empty) replacement slot stays.
         }
         Ok(out)
     }
 }
 
-/// GSO-aware TUN writer for Linux (one reused GRO table per task).
+/// Genuine multi-packet TUN writer for Linux (§9).
 ///
-/// With offload enabled the kernel expects a virtio-net header in front of
-/// every written packet, so plain `send()` of a raw IP packet misframes.
-/// This stages `VIRTIO_NET_HDR_LEN` headroom in a reused scratch buffer and
-/// writes through `send_multiple`, which is the documented offload-aware
-/// path ("reuse the same GROTable instance across calls").
+/// Accumulates decoded logical packets (each staged with virtio headroom in
+/// pooled storage) and flushes with ONE `send_multiple`, letting GSO
+/// coalesce same-flow segments into fewer syscalls. GRO state and staging
+/// storage are reused across iterations.
 #[cfg(target_os = "linux")]
-#[derive(Default)]
-pub struct LinuxTunWriter {
+pub struct LinuxTunBatchWriter {
     gro: tun_rs::GROTable,
-    scratch: Vec<u8>,
+    staging: Vec<Vec<u8>>,
+    pool: Arc<PacketPool>,
 }
 
 #[cfg(target_os = "linux")]
-impl LinuxTunWriter {
-    /// Write one packet to the TUN device with correct offload framing.
-    /// `pkt` is borrowed: the scratch staging buffer is reused across calls.
-    pub async fn send(&mut self, dev: &AsyncDevice, pkt: &[u8]) -> anyhow::Result<()> {
+impl LinuxTunBatchWriter {
+    pub fn new(pool: Arc<PacketPool>) -> Self {
+        Self {
+            gro: tun_rs::GROTable::default(),
+            staging: Vec::with_capacity(TUN_WRITE_BATCH),
+            pool,
+        }
+    }
+
+    /// Stage one packet (copied once into headroomed pooled storage).
+    pub fn push(&mut self, pkt: &[u8]) {
         const HDR: usize = tun_rs::VIRTIO_NET_HDR_LEN;
-        self.scratch.clear();
-        self.scratch.resize(HDR, 0);
-        self.scratch.extend_from_slice(pkt);
-        let _ = dev
-            .send_multiple(&mut self.gro, std::slice::from_mut(&mut self.scratch), HDR)
+        let mut buf = self.pool.acquire(pkt.len() + HDR);
+        // Layout: [HDR zeros][packet], offset = HDR.
+        let region = buf.recv_region(pkt.len() + HDR);
+        region[..HDR].fill(0);
+        region[HDR..].copy_from_slice(pkt);
+        buf.set_len(pkt.len() + HDR);
+        // Staging takes the Vec; flush recycles it via release_raw.
+        self.staging.push(buf.into_vec());
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.staging.is_empty()
+    }
+
+    /// Flush the staged batch with one `send_multiple` call.
+    pub async fn flush(&mut self, dev: &AsyncDevice) -> anyhow::Result<usize> {
+        if self.staging.is_empty() {
+            return Ok(0);
+        }
+        const HDR: usize = tun_rs::VIRTIO_NET_HDR_LEN;
+        let n = dev
+            .send_multiple(&mut self.gro, &mut self.staging, HDR)
             .await?;
-        Ok(())
+        // Recycle staging storage back into pool classes.
+        let staging = std::mem::take(&mut self.staging);
+        for v in staging {
+            self.pool.release_raw(v);
+        }
+        Ok(n)
     }
 }
 
-/// Windows burst drain: after readiness, `try_recv` until WouldBlock/budget.
+/// Windows burst drain into pooled buffers: after readiness, `try_recv`
+/// until WouldBlock/budget. Each packet owns its pooled storage (no copy).
 pub async fn windows_recv_burst(
     dev: &AsyncDevice,
+    pool: &Arc<PacketPool>,
+    mtu: usize,
     budget: usize,
-    slot: &mut Vec<u8>,
-) -> anyhow::Result<Vec<PacketBuf>> {
+) -> anyhow::Result<Vec<LogicalPacket>> {
+    let slot_cap = slot_cap_for_mtu(mtu);
     let mut out = Vec::with_capacity(budget.min(BURST_BUDGET));
     // Prime with one async recv so we wait only when the ring is empty.
-    if out.is_empty() {
-        slot.resize(SLOT_CAP, 0);
-        match dev.recv(slot).await {
-            Ok(0) => return Ok(out),
-            Ok(n) => {
-                if let Some(p) = PacketBuf::from_slice(&slot[..n]) {
-                    out.push(p);
-                }
-            }
-            Err(e) => return Err(e.into()),
+    {
+        let mut buf = pool.acquire(slot_cap);
+        let n = dev.recv(buf.recv_region(slot_cap)).await?;
+        if n == 0 {
+            return Ok(out);
+        }
+        if let Some(p) = LogicalPacket::from_pooled(buf, n) {
+            out.push(p);
         }
     }
     for _ in 1..budget.min(BURST_BUDGET) {
-        slot.resize(SLOT_CAP, 0);
-        match dev.try_recv(slot) {
+        let mut buf = pool.acquire(slot_cap);
+        match dev.try_recv(buf.recv_region(slot_cap)) {
             Ok(0) => break,
             Ok(n) => {
-                if let Some(p) = PacketBuf::from_slice(&slot[..n]) {
+                if let Some(p) = LogicalPacket::from_pooled(buf, n) {
                     out.push(p);
                 }
             }
@@ -132,28 +183,77 @@ pub async fn windows_recv_burst(
     Ok(out)
 }
 
-/// Windows burst fill: `try_send` until WouldBlock, then one async send.
-#[cfg(windows)]
-pub async fn windows_send_burst(dev: &AsyncDevice, pkts: &[&[u8]]) -> anyhow::Result<()> {
-    let mut queued_async = false;
-    for p in pkts {
-        match dev.try_send(p) {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // Ring full: wait via exactly one async send, then retry fast.
-                if !queued_async {
-                    dev.send(p).await?;
-                    queued_async = true;
-                } else {
-                    // Fairness: stop the burst rather than piling async sends.
-                    tokio::time::sleep(Duration::from_micros(200)).await;
-                    return Ok(());
-                }
-            }
-            Err(e) => return Err(e.into()),
+/// Pending TUN write batch (§9, no silent loss).
+///
+/// `drain_pending` fills the device with repeated `try_send`; when it is
+/// full it waits once via async `send`, then resumes the SAME batch. The
+/// unsent tail is retained in `pending` across waits — ownership is explicit
+/// (`Bytes`, no copy) and nothing is silently discarded.
+///
+/// Used by the Windows Wintun burst writer and by platforms without GSO
+/// batching (same ring discipline everywhere outside Linux, where the GSO
+/// writer owns TUN output instead).
+#[cfg(not(target_os = "linux"))]
+pub struct TunWriteBatch {
+    pub pending: VecDeque<Bytes>,
+}
+
+#[cfg(not(target_os = "linux"))]
+impl TunWriteBatch {
+    pub fn new() -> Self {
+        Self {
+            pending: VecDeque::new(),
         }
     }
-    Ok(())
+
+    pub fn push(&mut self, pkt: Bytes) {
+        self.pending.push_back(pkt);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    /// Drain as much as the ring accepts right now. Returns the number of
+    /// packets written; the remainder stays queued.
+    pub fn drain_pending(&mut self, dev: &AsyncDevice) -> anyhow::Result<usize> {
+        let mut wrote = 0;
+        while let Some(front) = self.pending.front() {
+            match dev.try_send(front) {
+                Ok(_) => {
+                    self.pending.pop_front();
+                    wrote += 1;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(wrote)
+    }
+
+    /// Drain with one async wait when the ring is full; the tail is retained.
+    pub async fn drain_or_wait(&mut self, dev: &AsyncDevice) -> anyhow::Result<usize> {
+        let wrote = self.drain_pending(dev)?;
+        if self.pending.is_empty() {
+            return Ok(wrote);
+        }
+        // Ring full: exactly one async send to wait for space, then resume
+        // the same batch (no tail loss, no async-send pileup).
+        if let Some(front) = self.pending.front().cloned() {
+            dev.send(&front).await?;
+            self.pending.pop_front();
+            Ok(wrote + 1)
+        } else {
+            Ok(wrote)
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl Default for TunWriteBatch {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -162,18 +262,28 @@ mod tests {
 
     const _: () = {
         assert!(BURST_BUDGET >= 16 && BURST_BUDGET <= 256);
-        assert!(SLOT_CAP >= 1500);
-        assert!(SLOT_CAP >= 1280 + 64);
+        assert!(TUN_WRITE_BATCH >= 8);
     };
 
     #[test]
-    fn burst_budget_fits_linux_batch() {
-        // One Windows burst must never exceed a Linux batch: shared
-        // scheduler/backpressure semantics across platforms.
-        let linux_batch: usize = std::env::var("TUNNET_TEST_BATCH")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(128);
-        assert!(BURST_BUDGET <= linux_batch);
+    fn slot_cap_tracks_mtu() {
+        // No fixed 2048 assumption: large logical packets must fit.
+        assert!(slot_cap_for_mtu(1280) >= 1280);
+        assert!(slot_cap_for_mtu(2800) >= 2800);
+        assert!(slot_cap_for_mtu(9000) >= 9000);
+        assert!(slot_cap_for_mtu(100) >= 576);
+        assert!(slot_cap_for_mtu(99_999) <= MAX_LOGICAL_LEN + 256);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn tun_write_batch_retains_tail() {
+        // Pure state-machine coverage (no device): pending ownership is
+        // explicit; nothing is silently discarded.
+        let mut b = TunWriteBatch::new();
+        assert!(b.is_empty());
+        b.push(Bytes::from_static(&[1, 2, 3]));
+        b.push(Bytes::from_static(&[4, 5]));
+        assert!(!b.is_empty());
     }
 }

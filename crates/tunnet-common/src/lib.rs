@@ -25,7 +25,12 @@ use uuid::Uuid;
 pub type EndpointIdHex = String;
 
 /// ALPN identifier for our tunnel protocol (mesh datagrams).
-pub const TUNNEL_ALPN: &[u8] = b"tunnet/tunnel/1";
+/// v2: Datagram Framing v2 is the only wire format (segmented logical
+/// packets). There is intentionally no v1 compatibility decoder.
+pub const TUNNEL_ALPN: &[u8] = b"tunnet/tunnel/2";
+/// Previous wire format (raw IP per DATAGRAM). Never accepted on v2
+/// connections; kept so logs/diagnostics can name it.
+pub const TUNNEL_ALPN_V1: &[u8] = b"tunnet/tunnel/1";
 
 /// ALPN for agent ↔ public edge reverse tunnels.
 pub const EDGE_ALPN: &[u8] = b"tunnet/edge/1";

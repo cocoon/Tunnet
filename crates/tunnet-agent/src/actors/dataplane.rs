@@ -276,12 +276,6 @@ impl DataPlaneActor {
         }
         crate::forward::ensure_exit_nat(self.node.routes.is_exit_node());
 
-        let firewalls: std::collections::HashMap<_, _> = self
-            .node
-            .direct
-            .iter()
-            .map(|(id, rt)| (*id, rt.firewall.clone()))
-            .collect();
         // The outbound loop's unexpected end is abnormal: report it so
         // supervision restarts us. Shutdown ends it via abort (the
         // generation token is already cancelled then, so no report fires).
@@ -289,14 +283,20 @@ impl DataPlaneActor {
             .generation_cancel
             .clone()
             .expect("generation token published above");
+        // Shared v2 packet resources for this generation: pooled buffers and
+        // the runtime sweeper (tied to the generation token — no leaked tasks
+        // across bring-up cycles).
+        let packet_pool = tunnet_common::packet::PacketPool::new(128);
+        self.node.policy.spawn_sweeper(exit_gen.clone());
         let exit_weak = self_ref.clone();
         let outbound = crate::dataplane::spawn_outbound(crate::dataplane::OutboundSpawn {
             tun,
             routes: self.node.routes.clone(),
             pool: self.node.tunnel_pool.clone(),
-            acl: self.node.acl.clone(),
-            firewalls,
+            runtime: self.node.policy.clone(),
             metrics: self.metrics.clone(),
+            bufs: packet_pool,
+            meter: self.node.tunnel_pool.cloud_relay_meter(),
             mtu: self.cfg.mtu,
             on_unexpected_end: Box::new(move || {
                 if !exit_gen.is_cancelled()

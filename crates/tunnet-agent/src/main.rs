@@ -17,7 +17,7 @@ mod ingress;
 mod magic_dns;
 mod metrics;
 mod policy_api;
-mod qos;
+mod pump;
 mod recorder;
 mod runtime;
 #[cfg(unix)]

@@ -13,6 +13,8 @@ use tunnet_common::{
 };
 use uuid::Uuid;
 
+use crate::peers::{PeerFastState, PeerIdentity, PeerRegistry};
+
 pub struct PeerInfo {
     pub endpoint: EndpointId,
     pub endpoint_hex: String,
@@ -22,6 +24,10 @@ pub struct PeerInfo {
     pub network_id: Uuid,
     pub network_name: String,
     pub ssh_host_key: Option<String>,
+    /// Stable fast state shared with the established packet path (§0.5).
+    /// Reused across routing snapshot rebuilds; cloned (not looked up) per
+    /// packet via the route decision.
+    pub fast: Arc<PeerFastState>,
 }
 
 // Manual Debug: EndpointId may not implement it in all feature sets; keep a
@@ -101,8 +107,9 @@ pub struct Tables {
     pub by_hostname: std::collections::HashMap<String, Arc<PeerInfo>>,
     /// Longest-prefix-match subnet routes (via PrefixMap).
     pub subnets: PrefixMap<Ipv4Net, Arc<PeerInfo>>,
-    /// CIDRs this node itself advertises (local LAN forwarding).
-    pub advertised: Vec<Ipv4Net>,
+    /// CIDRs this node itself advertises, as a prefix structure (§12: no
+    /// linear scan on the hot path).
+    pub advertised: PrefixMap<Ipv4Net, ()>,
     /// Exact hostname → gateway.
     pub hostname_exact: std::collections::HashMap<String, Arc<HostnameRouteInfo>>,
     /// Wildcard suffixes, longest first.
@@ -119,6 +126,8 @@ pub struct Tables {
     pub exit_node: Option<Arc<PeerInfo>>,
     /// When true, RFC1918 destinations are not sent via the exit node.
     pub allow_local_lan: bool,
+    /// This node advertises a default route (computed at rebuild).
+    pub is_exit: bool,
     pub version: u64,
 }
 
@@ -130,6 +139,10 @@ pub struct RoutingTable {
     slices: Arc<Mutex<BTreeMap<Uuid, NetworkSlice>>>,
     /// Manual IP overrides: (network_id, peer_key) → ip. peer_key is hostname or endpoint hex.
     overrides: Arc<DashMap<(Uuid, String), Ipv4Addr>>,
+    /// Stable per-peer fast states, shared with ConnPool slow paths (§0.5).
+    /// Rebuilds reuse these objects; the packet path never touches this map
+    /// (states ride inside PeerInfo/route decisions instead).
+    fast_registry: Arc<PeerRegistry>,
 }
 
 impl Default for RoutingTable {
@@ -147,7 +160,7 @@ impl RoutingTable {
                 by_endpoint: Default::default(),
                 by_hostname: Default::default(),
                 subnets: PrefixMap::new(),
-                advertised: Default::default(),
+                advertised: PrefixMap::new(),
                 hostname_exact: Default::default(),
                 hostname_wildcards: Default::default(),
                 advertised_hostnames: Default::default(),
@@ -157,12 +170,42 @@ impl RoutingTable {
                 magic_ip: Ipv4Addr::new(100, 100, 100, 53),
                 exit_node: None,
                 allow_local_lan: true,
+                is_exit: false,
                 version: 0,
             })),
             dynamic_synth: Arc::new(DashMap::new()),
             slices: Arc::new(Mutex::new(BTreeMap::new())),
             overrides: Arc::new(DashMap::new()),
+            fast_registry: Arc::new(PeerRegistry::new()),
         }
+    }
+
+    /// Stable fast-state registry shared with connection slow paths.
+    pub fn peer_registry(&self) -> &Arc<PeerRegistry> {
+        &self.fast_registry
+    }
+
+    /// Ensure (slow path: rebuild only) the stable fast state for a peer.
+    #[allow(clippy::too_many_arguments)]
+    fn ensure_fast(
+        &self,
+        endpoint: EndpointId,
+        endpoint_hex: &str,
+        hostname: &str,
+        ip: Ipv4Addr,
+        tags: &[String],
+        network_id: Uuid,
+        network_name: &str,
+    ) -> Arc<PeerFastState> {
+        self.fast_registry.ensure(Arc::new(PeerIdentity {
+            endpoint,
+            endpoint_hex: endpoint_hex.to_string(),
+            hostname: hostname.to_string(),
+            ip,
+            tags: tags.to_vec(),
+            network_id,
+            network_name: network_name.to_string(),
+        }))
     }
 
     /// Look up peer by (network, ip) for inbound / firewall context.
@@ -197,7 +240,7 @@ impl RoutingTable {
         if *dst == tables.magic_ip {
             return RouteDecision::LocalMagic;
         }
-        if tables.advertised.iter().any(|net| net.contains(dst)) {
+        if tables.advertised.get_lpm(&Ipv4Net::from(*dst)).is_some() {
             return RouteDecision::LocalAdvertised;
         }
         if let Some(peer) = tables.by_ip.get(dst).cloned() {
@@ -235,12 +278,8 @@ impl RoutingTable {
     }
 
     pub fn is_exit_node(&self) -> bool {
-        // Advertised default route means we are an exit.
-        self.inner
-            .load()
-            .advertised
-            .iter()
-            .any(|n| n.prefix_len() == 0)
+        // Computed at rebuild: we advertise a default route.
+        self.inner.load().is_exit
     }
 
     pub fn lookup_endpoint(&self, hex: &str) -> Option<Arc<PeerInfo>> {
@@ -277,8 +316,8 @@ impl RoutingTable {
         self.inner
             .load()
             .advertised
-            .iter()
-            .any(|net| net.contains(ip))
+            .get_lpm(&Ipv4Net::from(*ip))
+            .is_some()
     }
 
     /// True when this node is the gateway for a hostname route matching `host`.
@@ -295,7 +334,12 @@ impl RoutingTable {
     }
 
     pub fn advertised_subnets(&self) -> Vec<Ipv4Net> {
-        self.inner.load().advertised.clone()
+        self.inner
+            .load()
+            .advertised
+            .iter()
+            .map(|(p, _)| p)
+            .collect()
     }
 
     pub fn peers(&self) -> Vec<Arc<PeerInfo>> {
@@ -617,7 +661,7 @@ impl RoutingTable {
         let mut by_hostname: std::collections::HashMap<String, Arc<PeerInfo>> =
             std::collections::HashMap::new();
         let mut subnets: PrefixMap<Ipv4Net, Arc<PeerInfo>> = PrefixMap::new();
-        let mut advertised = Vec::new();
+        let mut advertised: PrefixMap<Ipv4Net, ()> = PrefixMap::new();
         let mut hostname_exact: std::collections::HashMap<String, Arc<HostnameRouteInfo>> =
             std::collections::HashMap::new();
         let mut hostname_wildcards = Vec::new();
@@ -658,6 +702,15 @@ impl RoutingTable {
                         break;
                     }
                 }
+                let fast = self.ensure_fast(
+                    ep,
+                    &p.endpoint_id,
+                    &p.hostname,
+                    ip,
+                    &p.tags,
+                    *network_id,
+                    &slice.network_name,
+                );
                 let info = Arc::new(PeerInfo {
                     endpoint: ep,
                     endpoint_hex: p.endpoint_id.clone(),
@@ -667,6 +720,7 @@ impl RoutingTable {
                     network_id: *network_id,
                     network_name: slice.network_name.clone(),
                     ssh_host_key: p.ssh_host_key.clone(),
+                    fast,
                 });
                 by_network_ip.insert((*network_id, ip), info.clone());
                 // First-joined wins on outbound by_ip.
@@ -704,10 +758,10 @@ impl RoutingTable {
 
             for route in &slice.subnet_routes {
                 if route.via_endpoint_id == slice.self_endpoint_id {
-                    advertised.push(route.cidr);
+                    advertised.insert(route.cidr, ());
                     continue;
                 }
-                let peer = peer_for_via(
+                let peer = self.peer_for_via(
                     &local_by_endpoint,
                     &route.via_endpoint_id,
                     route.via_ip,
@@ -724,7 +778,7 @@ impl RoutingTable {
             for exit in &slice.exit_nodes {
                 if exit.endpoint_id == slice.self_endpoint_id {
                     for cidr in &exit.allowed_cidrs {
-                        advertised.push(*cidr);
+                        advertised.insert(*cidr, ());
                     }
                 }
             }
@@ -732,7 +786,7 @@ impl RoutingTable {
             if let Some(exit_id) = &slice.profile.exit_node_endpoint_id
                 && let Some(exit) = slice.exit_nodes.iter().find(|e| &e.endpoint_id == exit_id)
             {
-                let peer = peer_for_via(
+                let peer = self.peer_for_via(
                     &local_by_endpoint,
                     &exit.endpoint_id,
                     exit.via_ip,
@@ -754,7 +808,7 @@ impl RoutingTable {
 
             for route in &slice.hostname_routes {
                 let hostname = route.hostname.to_ascii_lowercase();
-                let peer = peer_for_via(
+                let peer = self.peer_for_via(
                     &local_by_endpoint,
                     &route.via_endpoint_id,
                     route.via_ip,
@@ -785,8 +839,29 @@ impl RoutingTable {
 
         hostname_wildcards.sort_by_key(|route| std::cmp::Reverse(route.hostname.len()));
 
+        // Prune departed peers from fast states (slow path only): keep every
+        // endpoint reachable via direct, subnet, or exit routes. Readers
+        // holding Arcs are unaffected by removal.
+        let mut live = std::collections::HashSet::new();
+        // by_network_ip is the superset (same IP may lose by_ip on clash
+        // but stays reachable for inbound/policy context).
+        for peer in by_network_ip.values() {
+            live.insert(peer.endpoint);
+        }
+        for (_, peer) in subnets.iter() {
+            live.insert(peer.endpoint);
+        }
+        if let Some(exit) = &exit_node {
+            live.insert(exit.endpoint);
+        }
+        for entry in self.dynamic_synth.iter() {
+            live.insert(entry.value().endpoint);
+        }
+        self.fast_registry.retain(&live);
+
         // Keep dynamic_synth across rebuild - it lives outside the tables Arc so
         // wildcard DNS answers survive membership/policy refreshes.
+        let is_exit = advertised.iter().any(|(p, _)| p.prefix_len() == 0);
         self.inner.store(Arc::new(Tables {
             by_ip,
             by_network_ip,
@@ -803,8 +878,46 @@ impl RoutingTable {
             magic_ip,
             exit_node,
             allow_local_lan,
+            is_exit,
             version,
         }));
+    }
+
+    fn peer_for_via(
+        &self,
+        by_endpoint: &std::collections::HashMap<String, Arc<PeerInfo>>,
+        via_endpoint_id: &str,
+        via_ip: Ipv4Addr,
+        network_id: Uuid,
+        network_name: &str,
+    ) -> Option<Arc<PeerInfo>> {
+        if let Some(existing) = by_endpoint.get(via_endpoint_id) {
+            return Some(existing.clone());
+        }
+        let Ok(ep) = via_endpoint_id.parse::<EndpointId>() else {
+            tracing::warn!(id = %via_endpoint_id, "skip route with bad via endpoint id");
+            return None;
+        };
+        let fast = self.ensure_fast(
+            ep,
+            via_endpoint_id,
+            "",
+            via_ip,
+            &[],
+            network_id,
+            network_name,
+        );
+        Some(Arc::new(PeerInfo {
+            endpoint: ep,
+            endpoint_hex: via_endpoint_id.to_string(),
+            hostname: String::new(),
+            ip: via_ip,
+            tags: Vec::new(),
+            network_id,
+            network_name: network_name.to_string(),
+            ssh_host_key: None,
+            fast,
+        }))
     }
 }
 
@@ -827,32 +940,6 @@ fn synthetic_ip_for(host: &str) -> Ipv4Addr {
     let hi = ((offset >> 8) & 0xff) as u8;
     let low = (offset & 0xff) as u8;
     Ipv4Addr::new(100, 100, hi, low)
-}
-
-fn peer_for_via(
-    by_endpoint: &std::collections::HashMap<String, Arc<PeerInfo>>,
-    via_endpoint_id: &str,
-    via_ip: Ipv4Addr,
-    network_id: Uuid,
-    network_name: &str,
-) -> Option<Arc<PeerInfo>> {
-    if let Some(existing) = by_endpoint.get(via_endpoint_id) {
-        return Some(existing.clone());
-    }
-    let Ok(ep) = via_endpoint_id.parse::<EndpointId>() else {
-        tracing::warn!(id = %via_endpoint_id, "skip route with bad via endpoint id");
-        return None;
-    };
-    Some(Arc::new(PeerInfo {
-        endpoint: ep,
-        endpoint_hex: via_endpoint_id.to_string(),
-        hostname: String::new(),
-        ip: via_ip,
-        tags: Vec::new(),
-        network_id,
-        network_name: network_name.to_string(),
-        ssh_host_key: None,
-    }))
 }
 
 fn hostname_matches_wildcard(host: &str, suffix: &str) -> bool {
