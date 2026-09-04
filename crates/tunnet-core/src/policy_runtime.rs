@@ -577,6 +577,12 @@ pub struct PolicyRuntime {
     /// Unified publication token (§2.2-2): bumped once per publish and
     /// stamped on the ACL snapshot and every touched firewall snapshot.
     publication: Arc<AtomicU64>,
+    /// Serializes publishers (ACL, firewall, invalidate) into one atomic
+    /// transaction each: load → allocate generation → compile → swap slots
+    /// → store snapshot. Committed generations are strictly monotonic and
+    /// no publish can clobber a concurrent one (§2.2 blocker). Control
+    /// path only — the packet hot path never takes this lock.
+    publish_lock: Arc<parking_lot::Mutex<()>>,
 }
 
 struct RuntimeInner {
@@ -612,6 +618,7 @@ impl PolicyRuntime {
             inner: Arc::new(ArcSwap::from_pointee(RuntimeInner::empty())),
             slots: Arc::new(DashMap::new()),
             publication: Arc::new(AtomicU64::new(1)),
+            publish_lock: Arc::new(parking_lot::Mutex::new(())),
         };
         let inner = this.compile_new(bundle, fw, self_id, src_posture_ok, stale, None, 1);
         // No sweeper here: the dataplane actor starts exactly one per
@@ -729,17 +736,14 @@ impl PolicyRuntime {
         self.inner.load().conntrack.len()
     }
 
-    /// Event-driven ACL publish (§0.3, §2.1-4, §2.2-2): bump the unified
-    /// token, compile off-path, publish with ONE atomic store carrying the
-    /// new generation. Conntrack is NOT cleared; entries revalidate against
-    /// the new generations on next hit (§0.4).
     pub fn publish_acl(
         &self,
         bundle: &PolicyBundle,
         self_id: &crate::acl::SelfIdentity,
         src_posture_ok: bool,
         stale: bool,
-    ) {
+    ) -> u64 {
+        let _guard = self.publish_lock.lock();
         let generation = self.publication.fetch_add(1, Ordering::SeqCst) + 1;
         let prev = self.inner.load();
         let inner = self.compile_new(
@@ -752,23 +756,17 @@ impl PolicyRuntime {
             generation,
         );
         self.inner.store(Arc::new(inner));
+        generation
     }
 
-    /// Event-driven firewall publish for one network. Every mutation —
-    /// local rules, suggested rules, enabled flag — swaps the network's
-    /// stable slot snapshot (visible to all live fast states immediately,
-    /// no relink) stamped with the new unified token, then publishes the
-    /// ACL snapshot with the same token. Slot-swap-before-inner-store is
-    /// the ordering the packet path relies on (§2.2-2); reversing it would
-    /// reintroduce the torn-publication race. Also fixes the legacy
-    /// `set_suggested` version-signal gap (§0.3).
     pub fn publish_firewall(
         &self,
         network: Uuid,
         local: Vec<FirewallRule>,
         suggested: Vec<FirewallRule>,
         enabled: bool,
-    ) {
+    ) -> u64 {
+        let _guard = self.publish_lock.lock();
         let generation = self.publication.fetch_add(1, Ordering::SeqCst) + 1;
         let prev = self.inner.load();
         let mut fw_source = prev.fw_source.clone();
@@ -783,11 +781,11 @@ impl PolicyRuntime {
             generation,
         );
         self.inner.store(Arc::new(inner));
+        generation
     }
 
-    /// Explicit invalidation (CLI flush, teardown): clear conntrack now and
-    /// publish a fresh generation so cached contexts re-resolve.
-    pub fn invalidate(&self) {
+    pub fn invalidate(&self) -> u64 {
+        let _guard = self.publish_lock.lock();
         let generation = self.publication.fetch_add(1, Ordering::SeqCst) + 1;
         let inner = self.inner.load();
         inner.conntrack.clear();
@@ -802,6 +800,7 @@ impl PolicyRuntime {
             generation,
         );
         self.inner.store(Arc::new(next));
+        generation
     }
 }
 
@@ -2268,6 +2267,157 @@ mod tests {
             }
         }
         assert!(saw_deny > 0 && saw_allow > 0, "must observe both phases");
+    }
+
+    #[test]
+    fn concurrent_publishers_lose_no_updates() {
+        use std::sync::Mutex;
+        use tunnet_common::policy::PortRange;
+        use tunnet_core_firewall_types::{FirewallAction, FirewallDirection, PeerFilter};
+        let net = Uuid::from_u128(0x23);
+        let rt = PolicyRuntime::bootstrap(
+            &PolicyBundle::default(),
+            &HashMap::from([(net, (vec![], vec![], true))]),
+            &self_id(),
+            true,
+            false,
+        );
+        let m = meta_tcp(80);
+        let slot0 = rt.slot_for_network(net);
+        assert_eq!(
+            rt.check(
+                &m,
+                Direction::Outbound,
+                "bb",
+                &[],
+                None,
+                Some(net),
+                &slot0,
+                &slot0.counters
+            ),
+            PolicyVerdict::Allow
+        );
+        const PUBLISHERS_PER_KIND: u64 = 4;
+        const ITERS: u64 = 200;
+        const PUBLISHERS: u64 = 2 * PUBLISHERS_PER_KIND;
+        let total = PUBLISHERS * ITERS;
+        let seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let log = Arc::new(Mutex::new(Vec::<(u64, u8, u16)>::new()));
+        let gen_samples = Arc::new(Mutex::new(Vec::<u64>::new()));
+        let acl_bundle = |port: u16| PolicyBundle {
+            rules: vec![PolicyRule {
+                src: Selector::Any,
+                dst: Selector::Any,
+                action: Action::Deny,
+                ports: vec![PortRange {
+                    start: port,
+                    end: port,
+                }],
+                protocol: Some(Protocol::Tcp),
+                priority: 0,
+                order_index: 0,
+                scope: RuleScope::Network,
+                enabled: true,
+                slug: None,
+                src_posture: vec![],
+            }],
+            default_action: DefaultAction::Allow,
+            ..PolicyBundle::default()
+        };
+        let fw_rule = |port: u16| FirewallRule {
+            direction: FirewallDirection::Out,
+            action: FirewallAction::Deny,
+            protocol: Protocol::Tcp,
+            ports: vec![PortRange {
+                start: port,
+                end: port,
+            }],
+            peer: PeerFilter::Any,
+        };
+        std::thread::scope(|scope| {
+            for kind in [0u8, 0, 0, 0, 1, 1, 1, 1] {
+                let rt_p = rt.clone();
+                let seq_p = seq.clone();
+                let log_p = log.clone();
+                scope.spawn(move || {
+                    for _ in 0..ITERS {
+                        let s = seq_p.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let port = 9000 + (s % 500) as u16;
+                        let committed = if kind == 0 {
+                            rt_p.publish_acl(&acl_bundle(port), &self_id(), true, false)
+                        } else {
+                            rt_p.publish_firewall(net, vec![fw_rule(port)], vec![], true)
+                        };
+                        log_p.lock().unwrap().push((committed, kind, port));
+                    }
+                });
+            }
+            for _ in 0..2 {
+                let rt_r = rt.clone();
+                let samples_r = gen_samples.clone();
+                scope.spawn(move || {
+                    let mut last = 0u64;
+                    for _ in 0..ITERS * 4 {
+                        let g = rt_r.generation();
+                        assert!(g >= last, "generation regressed {last} -> {g}");
+                        last = g;
+                        samples_r.lock().unwrap().push(g);
+                    }
+                });
+            }
+        });
+        assert_eq!(rt.generation(), 1 + total);
+        let log = log.lock().unwrap();
+        assert_eq!(log.len() as u64, total);
+        let mut gens: Vec<u64> = log.iter().map(|(g, _, _)| *g).collect();
+        gens.sort();
+        gens.dedup();
+        assert_eq!(
+            gens.len() as u64,
+            total,
+            "every publish committed distinctly"
+        );
+        assert_eq!(gens[0], 2);
+        assert_eq!(gens[gens.len() - 1], 1 + total);
+        let (last_gen, last_kind, last_port) = *log.iter().max_by_key(|(g, _, _)| g).unwrap();
+        assert_eq!(last_gen, 1 + total);
+        let inner = rt.inner.load();
+        if last_kind == 0 {
+            assert!(
+                inner.acl_source.rules.iter().any(|r| r
+                    .ports
+                    .iter()
+                    .any(|p| p.start == last_port && p.end == last_port)),
+                "final ACL must be the last-committed bundle (port {last_port})"
+            );
+        } else {
+            let snap = rt.slot_for_network(net).snapshot.load();
+            assert_eq!(snap.generation, last_gen);
+            assert!(
+                snap.set
+                    .rules
+                    .iter()
+                    .any(|r| r.ports.contains(&(last_port, last_port))),
+                "final firewall must be the last-committed set (port {last_port})"
+            );
+        }
+        assert!(!gen_samples.lock().unwrap().is_empty());
+        rt.publish_acl(&PolicyBundle::default(), &self_id(), true, false);
+        rt.publish_firewall(net, vec![], vec![], true);
+        let slot = rt.slot_for_network(net);
+        assert_eq!(
+            rt.check(
+                &m,
+                Direction::Outbound,
+                "bb",
+                &[],
+                None,
+                Some(net),
+                &slot,
+                &slot.counters
+            ),
+            PolicyVerdict::Allow
+        );
     }
 
     #[test]
