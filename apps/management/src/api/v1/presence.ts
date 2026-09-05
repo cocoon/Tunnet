@@ -20,121 +20,263 @@ export const presenceRoutes = new Elysia()
     "/organizations/:orgId/presence/stream",
     ({ authContext, params, request }) => {
       getAuth({ authContext });
+
       const orgId = params.orgId;
       const encoder = new TextEncoder();
+
       let listenClient: ReturnType<typeof createListenClient> | null = null;
       let heartbeat: ReturnType<typeof setInterval> | null = null;
+      let cancelled = false;
+      let listenPromise: Promise<void> | null = null;
+      let cleanupPromise: Promise<void> | null = null;
 
       const stream = new ReadableStream({
         start: (controller) => {
-          void (async () => {
-            const send = (data: unknown) => {
+          const send = (data: unknown) => {
+            if (cancelled) return;
+
+            try {
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify(data)}\n\n`),
               );
-            };
+            } catch {
+              cancelled = true;
+            }
+          };
 
-            send({ type: "ready", organizationId: orgId });
+          const cleanup = async () => {
+            if (cleanupPromise) {
+              return cleanupPromise;
+            }
 
-            listenClient = createListenClient();
-            await listenClient.listen(
-              PRESENCE_NOTIFY_CHANNEL,
-              async (payload: string) => {
+            cleanupPromise = (async () => {
+              cancelled = true;
+
+              if (heartbeat) {
+                clearInterval(heartbeat);
+                heartbeat = null;
+              }
+
+              const client = listenClient;
+              listenClient = null;
+
+              if (!client) {
+                return;
+              }
+
+              /*
+               * Do not destroy the PostgreSQL connection while a LISTEN
+               * operation is still being established. This prevents
+               * postgres from throwing CONNECTION_DESTROYED from inside
+               * listen().
+               */
+              if (listenPromise) {
                 try {
-                  const parsed = JSON.parse(payload) as {
-                    organizationId?: string;
-                    endpointId?: string;
-                  };
-                  if (parsed.organizationId !== orgId || !parsed.endpointId) {
-                    return;
+                  await listenPromise;
+                } catch (error) {
+                  /*
+                   * If the stream was cancelled while LISTEN was starting,
+                   * the error can be a consequence of the cancellation
+                   * itself. Log it for diagnostics but continue cleanup.
+                   */
+                  if (!cancelled) {
+                    console.error(
+                      "[presence] listen initialization failed during cleanup:",
+                      error,
+                    );
                   }
+                }
+              }
 
-                  const row = await db.query.devices.findFirst({
-                    where: and(
-                      eq(schema.devices.endpointId, parsed.endpointId),
-                      eq(schema.devices.organizationId, orgId),
-                    ),
-                    with: {
-                      memberships: {
-                        limit: 1,
+              try {
+                await client.end();
+              } catch (error) {
+                console.error(
+                  "[presence] failed to close listen client:",
+                  error,
+                );
+              }
+            })();
+
+            return cleanupPromise;
+          };
+
+          request.signal.addEventListener(
+            "abort",
+            () => {
+              void cleanup().finally(() => {
+                try {
+                  controller.close();
+                } catch {
+                  // already closed
+                }
+              });
+            },
+            { once: true },
+          );
+
+          void (async () => {
+            try {
+              send({ type: "ready", organizationId: orgId });
+
+              if (request.signal.aborted) {
+                await cleanup();
+                return;
+              }
+
+              listenClient = createListenClient();
+
+              const client = listenClient;
+
+              /*
+               * Keep the promise so cleanup can wait for LISTEN to finish
+               * before closing the PostgreSQL connection.
+               */
+              listenPromise = client.listen(
+                PRESENCE_NOTIFY_CHANNEL,
+                async (payload: string) => {
+                  if (cancelled) return;
+
+                  try {
+                    const parsed = JSON.parse(payload) as {
+                      organizationId?: string;
+                      endpointId?: string;
+                    };
+
+                    if (
+                      parsed.organizationId !== orgId ||
+                      !parsed.endpointId
+                    ) {
+                      return;
+                    }
+
+                    const row = await db.query.devices.findFirst({
+                      where: and(
+                        eq(schema.devices.endpointId, parsed.endpointId),
+                        eq(schema.devices.organizationId, orgId),
+                      ),
+                      with: {
+                        memberships: {
+                          limit: 1,
+                        },
                       },
-                    },
-                  });
-                  if (!row) return;
+                    });
 
-                  const networkId = row.memberships[0]?.networkId;
-                  if (!networkId) return;
+                    if (!row || cancelled) return;
 
-                  send({
-                    type: "presence",
-                    patch: serializePresencePatch({
-                      ...row,
-                      networkId,
-                    }),
-                  });
-                } catch {
-                  // ignore malformed payloads
-                }
-              },
-            );
+                    const networkId = row.memberships[0]?.networkId;
 
-            await listenClient.listen(
-              ENTITY_NOTIFY_CHANNEL,
-              (payload: string) => {
-                try {
-                  const parsed = JSON.parse(payload) as {
-                    organizationId?: string;
-                    kind?: string;
-                    entityId?: string;
-                    networkId?: string | null;
-                  };
-                  if (
-                    parsed.organizationId !== orgId ||
-                    !parsed.kind ||
-                    !parsed.entityId
-                  ) {
-                    return;
+                    if (!networkId) return;
+
+                    send({
+                      type: "presence",
+                      patch: serializePresencePatch({
+                        ...row,
+                        networkId,
+                      }),
+                    });
+                  } catch (error) {
+                    if (!cancelled) {
+                      console.error(
+                        "[presence] failed to process presence payload:",
+                        error,
+                      );
+                    }
                   }
-                  send({
-                    type: "entity",
-                    kind: parsed.kind,
-                    entityId: parsed.entityId,
-                    networkId: parsed.networkId ?? null,
-                  });
-                } catch {
-                  // ignore malformed payloads
+                },
+              );
+
+              try {
+                await listenPromise;
+              } finally {
+                listenPromise = null;
+              }
+
+              if (cancelled) {
+                await cleanup();
+                return;
+              }
+
+              await client.listen(
+                ENTITY_NOTIFY_CHANNEL,
+                (payload: string) => {
+                  if (cancelled) return;
+
+                  try {
+                    const parsed = JSON.parse(payload) as {
+                      organizationId?: string;
+                      kind?: string;
+                      entityId?: string;
+                      networkId?: string | null;
+                    };
+
+                    if (
+                      parsed.organizationId !== orgId ||
+                      !parsed.kind ||
+                      !parsed.entityId
+                    ) {
+                      return;
+                    }
+
+                    send({
+                      type: "entity",
+                      kind: parsed.kind,
+                      entityId: parsed.entityId,
+                      networkId: parsed.networkId ?? null,
+                    });
+                  } catch (error) {
+                    if (!cancelled) {
+                      console.error(
+                        "[presence] failed to process entity payload:",
+                        error,
+                      );
+                    }
+                  }
+                },
+              );
+
+              if (cancelled) {
+                await cleanup();
+                return;
+              }
+
+              heartbeat = setInterval(() => {
+                if (cancelled) {
+                  if (heartbeat) {
+                    clearInterval(heartbeat);
+                    heartbeat = null;
+                  }
+                  return;
                 }
-              },
-            );
 
-            heartbeat = setInterval(() => {
-              try {
-                controller.enqueue(encoder.encode(": keepalive\n\n"));
-              } catch {
-                if (heartbeat) clearInterval(heartbeat);
+                try {
+                  controller.enqueue(encoder.encode(": keepalive\n\n"));
+                } catch (error) {
+                  console.error("[presence] heartbeat failed:", error);
+                  void cleanup();
+                }
+              }, 25_000);
+            } catch (error) {
+              if (!cancelled) {
+                console.error(
+                  `[presence] stream failed for organization ${orgId}:`,
+                  error,
+                );
               }
-            }, 25_000);
 
-            request.signal.addEventListener("abort", () => {
-              if (heartbeat) clearInterval(heartbeat);
-              if (listenClient) {
-                void listenClient.end();
-                listenClient = null;
-              }
+              await cleanup();
+
               try {
-                controller.close();
+                controller.error(error);
               } catch {
                 // already closed
               }
-            });
+            }
           })();
         },
-        cancel: () => {
-          if (heartbeat) clearInterval(heartbeat);
-          if (listenClient) {
-            void listenClient.end();
-            listenClient = null;
-          }
+
+        cancel: async () => {
+          await cleanup();
         },
       });
 
@@ -151,27 +293,35 @@ export const presenceRoutes = new Elysia()
     "/organizations/:orgId/devices/:endpointId/presence",
     async ({ authContext, params }) => {
       const auth = getAuth({ authContext });
+
       const device = await db.query.devices.findFirst({
         where: and(
           eq(schema.devices.endpointId, params.endpointId),
           eq(schema.devices.organizationId, auth.organizationId),
         ),
       });
+
       if (!device) return notFound("Device not found");
 
       const events = await db.query.devicePresenceEvents.findMany({
-        where: eq(schema.devicePresenceEvents.endpointId, params.endpointId),
+        where: eq(
+          schema.devicePresenceEvents.endpointId,
+          params.endpointId,
+        ),
         orderBy: desc(schema.devicePresenceEvents.at),
         limit: 100,
       });
 
-      return { events: events.map(serializePresenceEvent) };
+      return {
+        events: events.map(serializePresenceEvent),
+      };
     },
   )
   .get(
     "/organizations/:orgId/devices/:endpointId/addresses",
     async ({ authContext, params }) => {
       const auth = getAuth({ authContext });
+
       const device = await db.query.devices.findFirst({
         where: and(
           eq(schema.devices.endpointId, params.endpointId),
@@ -183,6 +333,7 @@ export const presenceRoutes = new Elysia()
           },
         },
       });
+
       if (!device) return notFound("Device not found");
 
       return {
